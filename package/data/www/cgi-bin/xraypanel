@@ -1648,7 +1648,7 @@ page_footer() {
 		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','srv_toggle','set_default',
 		'save_bridge','del_bridge','bridge_toggle','dedup','import_link','sub_save','sub_del','sub_update',
 		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
-		'panel_install','panel_dirs','settings'];
+		'panel_install','panel_dirs'];
 	var lastBtn = null;
 
 	/* кнопка «добавить правило»: вставляем новую строку прямо в таблицу */
@@ -1709,7 +1709,7 @@ page_footer() {
 			var t = ev.target;
 			if (!t || !t.closest) return;
 			/* тянем, зажав правило в любом месте, кроме кнопок и полей */
-			if (t.closest('button, a, input, select, textarea, form')) return;
+			if (t.closest('button, a, input, select, textarea')) return;
 			row = t.closest('tr[data-rule]');
 			if (!row) return;
 			body = row.parentNode;
@@ -3565,7 +3565,7 @@ rule_who_pick() { # $1 = текущие источники через запят
 	_w=$(cat /tmp/.whosel.$$ 2>/dev/null | sed -e 's/, $//')
 	rm -f /tmp/.whosel.$$ 2>/dev/null
 	[ -n "$_w" ] && _sel="${_sel:+$_sel, }$_w"
-	printf '%s</summary>' "$(h "${_sel:-все устройства}")"
+	printf '%s</summary><div class="dd-body">' "$(h "${_sel:-все устройства}")"
 	printf '<label class="chk"><input type="checkbox" name="%s" value="" checked style="display:none">' "$_nm"
 	if [ -n "$_sub" ]; then
 		case "$_cur" in *" $_sub "*) _c=checked;; *) _c="";; esac
@@ -3580,7 +3580,7 @@ rule_who_pick() { # $1 = текущие источники через запят
 		case "$_cur" in *" $_ip "*) _c=checked;; *) _c="";; esac
 		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_ip")" "$_c" "$(h "$_nm2")" "$(h "$_ip")"
 	done
-	printf '</details>'
+	printf '</div></details>'
 }
 
 # выпадающий список с галочками: какие наборы
@@ -3592,13 +3592,13 @@ rule_sets_pick() { # $1 = текущие наборы через запятую,
 	for _st in $(set_sections); do
 		case "$_cur" in *",$_st,"*) _txt="${_txt:+$_txt, }$(set_name "$_st")";; esac
 	done
-	printf '%s</summary>' "$(h "${_txt:-выбрать наборы}")"
+	printf '%s</summary><div class="dd-body">' "$(h "${_txt:-выбрать наборы}")"
 	for _st in $(set_sections); do
 		case "$_cur" in *",$_st,"*) _c=checked;; *) _c="";; esac
 		_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
 		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_st")" "$_c" "$(h "$(set_name "$_st")")" "$_cnt"
 	done
-	printf '</details>'
+	printf '</div></details>'
 }
 
 page_rules() {
@@ -3640,7 +3640,7 @@ page_rules() {
 				*)
 					_tip="за 10 минут: $_top"
 					_acttxt="<span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
-					if [ "$_age" -lt 300 ]; then _rowcls=' row-ok'; _outcls=' class="tagmark active"'; fi
+					if [ "$_age" -lt 300 ]; then _rowcls=' row-live'; _outcls=' class="tagmark active"'; fi
 					;;
 			esac
 		fi

@@ -77,8 +77,16 @@ button,.btn{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var
 details.dd{position:relative}
 details.dd>summary{cursor:pointer;border:1px solid var(--input-bd);border-radius:7px;padding:5px 7px;font-size:13px;background:var(--input-bg);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px}
 details.dd[open]>summary{border-color:var(--nav-line)}
+details.dd .dd-body{position:absolute;top:100%;left:0;z-index:30;background:var(--card);border:1px solid var(--card-bd);border-radius:8px;box-shadow:0 10px 26px rgba(0,0,0,.35);padding:6px 8px;min-width:230px;max-height:320px;overflow:auto}
 details.dd>label.chk{display:flex;gap:6px;align-items:center;margin:2px 0;font-size:13px}
 details.dd>label.chk input{width:auto}
+details.dd .dd-body label.chk{display:flex;gap:6px;align-items:center;margin:3px 0;font-size:13px}
+details.dd .dd-body label.chk input{width:auto}
+/* активное правило: яркая мигающая подсветка */
+tr.row-live{background:var(--row-ok);animation:rowpulse 1.6s ease-in-out infinite}
+tr.row-live td{background:transparent}
+@keyframes rowpulse{0%,100%{background:var(--row-ok)}50%{background:rgba(74,222,128,.35)}}
+@media (prefers-reduced-motion:reduce){tr.row-live{animation:none}}
 tr.dragging{opacity:.55;background:var(--row-ok)}
 tr.drop-target{box-shadow:inset 0 2px 0 0 var(--nav-line)}
 /* компактные кнопки действий в таблицах (правила, серверы) */
