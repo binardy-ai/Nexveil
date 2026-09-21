@@ -1,5 +1,5 @@
 Package: xraypanel
-Version: 0.63.4
+Version: 0.63.5
 Depends: uhttpd
 Source: local
 SourceName: xraypanel

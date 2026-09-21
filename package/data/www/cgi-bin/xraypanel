@@ -3555,57 +3555,48 @@ set_item_type_title() { # $1 = тип
 }
 
 
-# выпадающий список с галочками: кто идёт (клиенты, вся сеть, роутер)
-rule_who_pick() { # $1 = текущие источники через запятую, $2 = имя полей
-	_cur=" $1 "
-	_nm="$2"
-	_sel=""
+# выбор «кто идёт»: обычный список, выбирается один пункт
+rule_who_pick() { # $1 = текущий источник, $2 = имя поля
+	_cur="$1"
+	printf '<select name="%s">' "$2"
+	printf '<option value=""%s>все устройства</option>' "$([ -z "$_cur" ] && echo ' selected')"
 	_sub=$(lan_subnet)
-	printf '<details class="dd"><summary>'
-	case "$_cur" in *" $_sub "*) _sel="вся локальная сеть";; esac
-	_rlip=$(uci -q get network.lan.ipaddr 2>/dev/null)
-	case "$_cur" in *" $_rlip "*) _sel="${_sel:+$_sel, }сам роутер";; esac
-	_cn=0
-	lan_clients_named 2>/dev/null | while IFS="$(printf '\t')" read -r _nm2 _ip; do
-		[ -n "$_ip" ] || continue
-		case "$_cur" in *" $_ip "*) printf '%s, ' "$_nm2";; esac
-	done > /tmp/.whosel.$$ 2>/dev/null
-	_w=$(cat /tmp/.whosel.$$ 2>/dev/null | sed -e 's/, $//')
-	rm -f /tmp/.whosel.$$ 2>/dev/null
-	[ -n "$_w" ] && _sel="${_sel:+$_sel, }$_w"
-	printf '%s</summary><div class="dd-body">' "$(h "${_sel:-все устройства}")"
 	if [ -n "$_sub" ]; then
-		case "$_cur" in *" $_sub "*) _c=checked;; *) _c="";; esac
-		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> вся локальная сеть (%s)</label>' "$_nm" "$(h "$_sub")" "$_c" "$(h "$_sub")"
+		printf '<option value="%s"%s>вся локальная сеть (%s)</option>' "$(h "$_sub")" "$([ "$_cur" = "$_sub" ] && echo ' selected')" "$(h "$_sub")"
 	fi
+	_rlip=$(uci -q get network.lan.ipaddr 2>/dev/null)
 	if [ -n "$_rlip" ]; then
-		case "$_cur" in *" $_rlip "*) _c=checked;; *) _c="";; esac
-		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> сам роутер (%s)</label>' "$_nm" "$(h "$_rlip")" "$_c" "$(h "$_rlip")"
+		printf '<option value="%s"%s>сам роутер (%s)</option>' "$(h "$_rlip")" "$([ "$_cur" = "$_rlip" ] && echo ' selected')" "$(h "$_rlip")"
 	fi
 	lan_clients_named 2>/dev/null | while IFS="$(printf '\t')" read -r _nm2 _ip; do
 		[ -n "$_ip" ] || continue
-		case "$_cur" in *" $_ip "*) _c=checked;; *) _c="";; esac
-		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_ip")" "$_c" "$(h "$_nm2")" "$(h "$_ip")"
+		case "$_cur" in
+			"$_ip") printf '<option value="%s" selected>%s (%s)</option>' "$(h "$_ip")" "$(h "$_nm2")" "$(h "$_ip")" ;;
+			*)      printf '<option value="%s">%s (%s)</option>' "$(h "$_ip")" "$(h "$_nm2")" "$(h "$_ip")" ;;
+		esac
 	done
-	printf '</div></details>'
+	# адрес, которого нет среди подключённых, не теряем
+	case "$_cur" in
+		''|"$_sub"|"$_rlip") ;;
+		*)
+			if ! lan_clients 2>/dev/null | grep -qx -- "$_cur"; then
+				printf '<option value="%s" selected>%s (текущий адрес)</option>' "$(h "$_cur")" "$(h "$_cur")"
+			fi
+			;;
+	esac
+	printf '</select>'
 }
 
-# выпадающий список с галочками: какие наборы
-rule_sets_pick() { # $1 = текущие наборы через запятую, $2 = имя полей
-	_cur=",$1,"
-	_nm="$2"
-	printf '<details class="dd"><summary>'
-	_txt=""
+# выбор набора: один пункт из списка
+rule_sets_pick() { # $1 = текущий набор, $2 = имя поля
+	_cur="$1"
+	printf '<select name="%s">' "$2"
+	printf '<option value=""%s>— ничего не выбрано —</option>' "$([ -z "$_cur" ] && echo ' selected')"
 	for _st in $(set_sections); do
-		case "$_cur" in *",$_st,"*) _txt="${_txt:+$_txt, }$(set_name "$_st")";; esac
-	done
-	printf '%s</summary><div class="dd-body">' "$(h "${_txt:-выбрать наборы}")"
-	for _st in $(set_sections); do
-		case "$_cur" in *",$_st,"*) _c=checked;; *) _c="";; esac
 		_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
-		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_st")" "$_c" "$(h "$(set_name "$_st")")" "$_cnt"
+		printf '<option value="%s"%s>%s (%s)</option>' "$(h "$_st")" "$([ "$_cur" = "$_st" ] && echo ' selected')" "$(h "$(set_name "$_st")")" "$_cnt"
 	done
-	printf '</div></details>'
+	printf '</select>'
 }
 
 page_rules() {
