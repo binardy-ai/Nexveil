@@ -3686,7 +3686,7 @@ page_rules() {
 		[ "$_s" = "$_cur_set" ] && _known=1
 	done
 	[ "$_known" = 1 ] || _cur_set=$(set_sections | head -1)
-	printf '<div class="card" style="order:2" id="sets-card"><h2>Наборы адресов и доменов</h2>'
+	printf '<div class="card" style="order:2" id="sets-card"><h2>Наборы адресов и доменов</h2><details class="pick" open><summary>показать наборы и их содержимое</summary>'
 	if [ -z "$(set_sections)" ]; then
 		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
 	else
@@ -3730,7 +3730,7 @@ page_rules() {
 		fi
 	fi
 	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="set_new"><label>Новый набор</label><input name="setname" placeholder="например: Германия-YouTube"><p><button>Создать набор</button></p></form>'
-	printf '</div>\n'
+	printf '</details></div>\n'
 
 	# 3) подобрать правило для домена
 	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
