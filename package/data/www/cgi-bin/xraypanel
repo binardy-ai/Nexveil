@@ -1651,6 +1651,42 @@ page_footer() {
 		'panel_install','panel_dirs'];
 	var lastBtn = null;
 
+	/* «применить конфиг» на «Маршрутах»: собираем все строки и отправляем тихо */
+	document.addEventListener('click', function (ev) {
+		var b = ev.target && ev.target.closest ? ev.target.closest('button.rules-apply') : null;
+		if (!b) return;
+		ev.preventDefault();
+		var box = document.getElementById('rules-form');
+		if (!box) return;
+		var data = new URLSearchParams();
+		Array.prototype.forEach.call(box.querySelectorAll('input[name^="src_"],input[name^="sets_"],select[name^="out_"]'), function (el) {
+			if (el.value !== undefined && el.value !== '') data.append(el.getAttribute('name'), el.value);
+		});
+		var nr = document.getElementById('newrows');
+		if (nr && nr.value) data.set('newrows', nr.value);
+		data.set('action', 'save_rules_all');
+		data.set('ajax', '1');
+		b.disabled = true;
+		fetch(location.pathname + '?page=rules', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: data,
+			cache: 'no-store'
+		}).then(function (r) { return r.json(); }).then(function (d) {
+			if (d && d.msg) toast(d.msg);
+			if (window.__panelRepaint) window.__panelRepaint();
+			fetch(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' })
+				.then(function (r) { return r.text(); })
+				.then(function (html) {
+					var doc = new DOMParser().parseFromString(html, 'text/html');
+					['#rules-card', '#sets-card'].forEach(function (sel) {
+						var fresh = doc.querySelector(sel), cur = document.querySelector(sel);
+						if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+					});
+				}).catch(function () {});
+		}).catch(function () {}).then(function () { b.disabled = false; });
+	});
+
 	/* любое открытое выпадающее меню закрываем по щелчку вне него */
 	document.addEventListener('click', function (ev) {
 		var inDd = ev.target && ev.target.closest ? ev.target.closest('details.dd') : null;
@@ -3619,7 +3655,7 @@ page_rules() {
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
 	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
-	printf '<form method="post" id="rules-form"><input type="hidden" name="action" value="save_rules_all"><input type="hidden" name="newrows" id="newrows" value="">'
+	printf '<div id="rules-form"><input type="hidden" name="newrows" id="newrows" value="">'
 	printf '<table class="responsive" id="rules-table"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
 	for _r in $(rule_sections); do
 		_ro=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
@@ -3672,7 +3708,7 @@ page_rules() {
 	else
 		_albl="конфиг применён"; _acls="btn apply-btn done"
 	fi
-	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button class="%s">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></form>' "$_acls" "$_albl"
+	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button type="button" class="%s rules-apply">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></div>' "$_acls" "$_albl"
 	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее решает, куда пойдёт трафик. Строку можно утащить на другое место — зажмите её на секунду. Наборы адресов — в блоке ниже.</p></div>\n'
 	# 2) наборы
 	_cur_set=$(param set)
