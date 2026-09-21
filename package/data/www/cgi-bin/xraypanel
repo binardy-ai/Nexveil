@@ -109,6 +109,19 @@ if [ -n "$PW" ]; then
 fi
 
 redirect() { # redirect "страница" "сообщение"
+	# тихий режим: страница сама обновит нужный блок, перезагрузка не нужна
+		if [ "$(param ajax)" = 1 ]; then
+			printf 'Content-Type: application/json; charset=utf-8\n\n'
+			if [ -n "$_AJAX_HTML" ]; then
+				printf '{"ok":true,"msg":"%s","target":"%s","html":"%s"}\n' \
+					"$(jesc "$2")" "$(jesc "$_AJAX_TARGET")" "$(jesc "$_AJAX_HTML")"
+			else
+				printf '{"ok":true,"msg":"%s"}\n' "$(jesc "$2")"
+			fi
+			# ВАЖНО: не выходим — действие ещё должно доработать (перезапуск,
+			# фоновые задачи). Ответ уже отдан, браузеру он и нужен.
+			exit 0
+		fi
 	echo "Status: 303 See Other"
 	printf 'Location: %s?page=%s&msg=%s\n' "$SCRIPT_NAME" "$1" "$(urlenc "$2")"
 	echo "Content-Type: text/html; charset=utf-8"
@@ -120,6 +133,18 @@ redirect() { # redirect "страница" "сообщение"
 # Отдать ответ браузеру и НЕ завершать скрипт. Нужно перед перезапуском xray:
 # браузер получает готовый ответ сразу, а перезапуск идёт уже после него.
 respond_now() { # respond_now "страница" "сообщение"
+	# тихий режим: отвечаем JSON, страница обновит надписи сама
+	if [ "$(param ajax)" = 1 ]; then
+		printf 'Content-Type: application/json; charset=utf-8\n\n'
+		if [ -n "$_AJAX_HTML" ]; then
+			printf '{"ok":true,"msg":"%s","target":"%s","html":"%s"}\n' \
+				"$(jesc "$2")" "$(jesc "$_AJAX_TARGET")" "$(jesc "$_AJAX_HTML")"
+		else
+			printf '{"ok":true,"msg":"%s"}\n' "$(jesc "$2")"
+		fi
+		# не выходим: действие ещё должно доработать (включение правил, перезапуск)
+		return 0
+	fi
 	echo "Status: 303 See Other"
 	printf 'Location: %s?page=%s&msg=%s\n' "$SCRIPT_NAME" "$1" "$(urlenc "$2")"
 	echo "Content-Length: 0"
@@ -1534,6 +1559,90 @@ page_footer() {
 	cat <<'EOF'
 </main>
 <script>
+/* Тихое выполнение действий: любое переключение (включить/выключить, удалить,
+   добавить запись) уходит на сервер без перезагрузки страницы. Сервер отвечает
+   JSON-ом: сообщение для показа и, если нужно, готовый HTML блока, который
+   страница подменяет на месте. */
+(function () {
+	var QUIET = ['rule_toggle','del_rule','item_add','item_del','item_toggle','set_new','set_del','set_toggle',
+		'traffic_reset','traffic_reset_one','dnslog_on','dnslog_off','dnslog_repair',
+		'trans_on','trans_keep','trans_off'];
+	var lastBtn = null;
+	document.addEventListener('click', function (ev) {
+		var b = ev.target && ev.target.closest ? ev.target.closest('button,input[type=submit]') : null;
+		if (b) lastBtn = b;
+	}, true);
+	function toast(msg) {
+		var el = document.getElementById('quiet-msg');
+		if (!el) {
+			el = document.createElement('div');
+			el.id = 'quiet-msg';
+			el.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;z-index:9999;max-width:90%';
+			document.body.appendChild(el);
+		}
+		el.textContent = msg;
+		el.style.display = '';
+		clearTimeout(el._t);
+		el._t = setTimeout(function () { el.style.display = 'none'; }, 4000);
+	}
+	document.addEventListener('submit', function (ev) {
+		var f = ev.target;
+		if (!f || f.tagName !== 'FORM') return;
+		var m = (f.getAttribute('method') || 'get').toLowerCase();
+		if (m !== 'post') return;
+		if ((f.getAttribute('enctype') || '').indexOf('multipart') >= 0) return;
+		var hidden = f.querySelector('input[name="action"]');
+		var sub = ev.submitter || lastBtn;
+		var act = '';
+		if (sub && sub.name === 'action' && sub.value) act = sub.value;
+		else if (hidden) act = hidden.value;
+		if (!act || QUIET.indexOf(act) < 0) return;
+		ev.preventDefault();
+		var data = new URLSearchParams();
+		var fd = new FormData(f);
+		fd.forEach(function (v, k) { data.append(k, v); });
+		if (sub && sub.name && sub.name !== 'action') data.append(sub.name, sub.value);
+		if (sub && sub.name === 'action') data.set('action', sub.value);
+		data.set('ajax', '1');
+		if (sub && sub.disabled !== undefined) sub.disabled = true;
+		fetch(location.pathname + location.search, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: data,
+			cache: 'no-store'
+		})
+			.then(function (r) { return r.json(); })
+			.then(function (d) {
+				if (d && d.html && d.target) {
+					var t = document.querySelector(d.target);
+					if (t) t.innerHTML = d.html;
+				}
+				if (d && d.msg) toast(d.msg);
+				if (window.__panelRepaint) window.__panelRepaint();
+				/* обновляем блоки страницы на месте — без перезагрузки.
+				   Кнопки внутри новых блоков работают: обработчики здесь
+				   делегированные, то есть висят на всём документе. */
+				var live = [];
+				['#rules-card','#sets-card','#proxy-card'].forEach(function (sel) {
+					if (document.querySelector(sel)) live.push(sel);
+				});
+				if (live.length) {
+					fetch(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' })
+						.then(function (r) { return r.text(); })
+						.then(function (html) {
+							var doc = new DOMParser().parseFromString(html, 'text/html');
+							live.forEach(function (sel) {
+								var fresh = doc.querySelector(sel), cur = document.querySelector(sel);
+								if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+							});
+						})
+						.catch(function () {});
+				}
+			})
+			.catch(function () {})
+			.then(function () { if (sub && sub.disabled !== undefined) sub.disabled = false; });
+	});
+})();
 /* Тихие действия: проверка узлов, обновление подписки, сбор названий списков.
    Страница при этом не перезагружается — меняются только нужные строки. */
 (function () {
@@ -2083,6 +2192,7 @@ page_footer() {
 			})
 			.catch(function () {});
 	}
+	window.__panelRepaint = paint;
 	setTimeout(function () { paint(); setInterval(paint, 10000); }, 1500);
 })();
 
@@ -3231,7 +3341,7 @@ page_rules() {
 	# 1) правила
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
-	printf '<div class="card" style="order:1"><h2>Правила</h2>'
+	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
 	printf '<table class="responsive"><tr><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Работает</th><th>Действия</th></tr>'
 	_n=0
 	for _r in $(rule_sections); do
@@ -3315,7 +3425,7 @@ page_rules() {
 	# 2) наборы
 	_cur_set=$(param set)
 	[ -n "$_cur_set" ] || _cur_set=$(set_sections | head -1)
-	printf '<div class="card" style="order:2"><h2>Наборы адресов и доменов</h2>'
+	printf '<div class="card" style="order:2" id="sets-card"><h2>Наборы адресов и доменов</h2>'
 	if [ -z "$(set_sections)" ]; then
 		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
 	else
@@ -3585,7 +3695,7 @@ page_transparent() {
 	fi
 
 	cat <<EOF
-<div class="card"><h2>Прозрачный режим</h2>
+<div class="card" id="proxy-card"><h2>Прозрачный режим</h2>
 <form method="post" style="display:flex;flex-direction:column">
 <table style="order:-3">
 <tr><th>Правила фаервола</th><td id="t-rules" class="$_sc">$_sv</td></tr>
