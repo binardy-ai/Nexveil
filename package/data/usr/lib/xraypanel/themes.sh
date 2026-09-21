@@ -69,6 +69,12 @@ button,.btn{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var
    зелёная — после применения */
 .apply-btn.pending{color:var(--bad);border-color:var(--bad);background:var(--btn2);font-weight:600}
 .apply-btn.done{color:var(--ok);border-color:var(--ok);background:var(--btn2);font-weight:600}
+/* ручка перетаскивания правил: зажать на секунду и тянуть */
+.drag-cell{width:26px;text-align:center}
+.drag-handle{cursor:grab;color:var(--muted);font-size:17px;line-height:1;user-select:none;touch-action:none;padding:2px 4px}
+.drag-handle:hover{color:var(--fg)}
+tr.dragging{opacity:.55;background:var(--row-ok)}
+tr.drop-target{box-shadow:inset 0 2px 0 0 var(--nav-line)}
 /* компактные кнопки действий в таблицах (правила, серверы) */
 .acts{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center}
 .acts form{display:inline;margin:0}

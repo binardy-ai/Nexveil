@@ -378,6 +378,18 @@ act_del_rule() {
 }
 
 # --- наборы (категории) и их записи ------------------------------------------
+act_rule_reorder() { # новый порядок правил (перетаскиванием)
+	_o=$(param order)
+	[ -n "$_o" ] || redirect rules "новый порядок не пришёл"
+	rules_set_order "$_o" >/dev/null
+	pending_note "изменён порядок правил (перетаскиванием)"
+	if [ "$(param ajax)" = 1 ]; then
+		printf 'Content-Type: application/json; charset=utf-8\n\n{"ok":true,"msg":"порядок правил сохранён — не забудьте «применить конфиг»"}\n'
+		exit 0
+	fi
+	redirect rules "порядок правил обновлён"
+}
+
 act_set_pick() { # запомнить, какой набор открыт (чтобы не сбрасывался)
 	_st=$(param set)
 	case "$_st" in
@@ -1374,6 +1386,7 @@ case "$ACTION" in
 	del_rule)    act_del_rule ;;
 	set_new)     act_set_new ;;
 	set_pick)    act_set_pick ;;
+	rule_reorder) act_rule_reorder ;;
 	set_del)     act_set_del ;;
 	set_toggle)  act_set_toggle ;;
 	item_add)    act_item_add ;;
@@ -1603,6 +1616,66 @@ page_footer() {
 		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
 		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
+	/* Перетаскивание правил: держим ручку «⠿» секунду — строка «поднимается»,
+	   дальше тянем на нужное место. Порядок сохраняется тихо. */
+	(function () {
+		var hold = null, row = null, body = null, dragging = false;
+		function finishDrag(save) {
+			if (hold) { clearTimeout(hold); hold = null; }
+			if (!dragging) return;
+			dragging = false;
+			document.body.style.userSelect = '';
+			var order = [];
+			document.querySelectorAll('tr[data-rule]').forEach(function (r) {
+				r.classList.remove('dragging', 'drop-target');
+				var id = r.getAttribute('data-rule');
+				if (id) order.push(id);
+			});
+			if (!save || !order.length) return;
+			fetch(location.pathname + '?page=rules', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: new URLSearchParams({ action: 'rule_reorder', order: order.join(','), ajax: '1' }),
+				cache: 'no-store'
+			}).then(function (r) { return r.json(); }).then(function (d) {
+				if (d && d.msg) toast(d.msg);
+				if (window.__panelRepaint) window.__panelRepaint();
+			}).catch(function () {});
+		}
+		document.addEventListener('pointerdown', function (ev) {
+			var h = ev.target && ev.target.closest ? ev.target.closest('[data-drag-handle]') : null;
+			if (!h) return;
+			row = h.closest('tr[data-rule]');
+			if (!row) return;
+			body = row.parentNode;
+			ev.preventDefault();
+			hold = setTimeout(function () {
+				hold = null; dragging = true;
+				row.classList.add('dragging');
+				document.body.style.userSelect = 'none';
+				toast('тяните строку на нужное место');
+			}, 1000);
+		}, true);
+		document.addEventListener('pointermove', function (ev) {
+			if (!dragging) { if (hold) { clearTimeout(hold); hold = null; } return; }
+			ev.preventDefault();
+			var rows = document.querySelectorAll('tr[data-rule]');
+			var y = ev.clientY;
+			for (var i = 0; i < rows.length; i++) {
+				var r = rows[i];
+				if (r === row) continue;
+				var b = r.getBoundingClientRect();
+				if (y >= b.top && y <= b.bottom) {
+					r.classList.add('drop-target');
+					body.insertBefore(row, (y < b.top + b.height / 2) ? r : r.nextSibling);
+					break;
+				}
+			}
+			Array.prototype.forEach.call(rows, function (r2) { if (r2 !== row) r2.classList.remove('drop-target'); });
+		}, true);
+		document.addEventListener('pointerup', function () { finishDrag(true); }, true);
+		document.addEventListener('pointercancel', function () { finishDrag(false); }, true);
+	})();
 	/* переключение наборов адресов: подменяем только блок наборов */
 	document.addEventListener('click', function (ev) {
 		var a = ev.target && ev.target.closest ? ev.target.closest('[data-set-pick]') : null;
@@ -3427,7 +3500,7 @@ page_rules() {
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
 	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
-	printf '<table class="responsive"><tr><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
+	printf '<table class="responsive"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
 	_n=0
 	for _r in $(rule_sections); do
 		_n=$((_n + 1))
@@ -3459,8 +3532,8 @@ page_rules() {
 		rule_disabled "$_r" && { _off=' style="opacity:.55"'; _offmark=' <span class="bad">выключено</span>'; }
 		# лампочка
 		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $4 "\t" $5; exit }')
-		_dotcls="dot"; _tip="нет свежих записей"
-		_acttxt='<span class="muted">нет свежих записей</span>'
+		_dotcls="dot"; _tip="нет свежих записей"; _rowcls=""
+		_acttxt='<span class="muted">—</span>'
 		if [ -n "$_seen" ]; then
 			_age=$(printf '%s' "$_seen" | cut -f1)
 			_out_real=$(printf '%s' "$_seen" | cut -f2)
@@ -3471,17 +3544,16 @@ page_rules() {
 					if [ "$_age" -lt 30 ]; then _dotcls="dot live"
 					elif [ "$_age" -lt 300 ]; then _dotcls="dot warm"; fi
 					_tip="выход $(out_text "$_out_real"), $(human_age "$_age") назад; за 10 минут: $_top"
-					_acttxt="<span class=\"ok\">$(h "$(out_text "$_out_real")")</span> <span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
+					# активный выход виден в столбце «Через что» — здесь только
+					# время, а сама строка подсвечивается как в реверсе
+					_acttxt="<span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
+					[ "$_age" -lt 300 ] && _rowcls=" row-ok"
 					;;
 			esac
 		fi
-		printf '<tr data-rule="%s"%s><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
-			"$(h "$_r")" "$_off" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_acttxt"
+		printf '<tr data-rule="%s" class="%s"><td class="drag-cell"><span class="drag-handle" data-drag-handle title="потяните, чтобы переставить правило">⠿</span></td><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
+			"$(h "$_r")" "${_rowcls# }" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_acttxt"
 		printf '<span class="acts">'
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="top"><button class="btn rule-move top" title="в самое начало">⤒</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="up"><button class="btn rule-move up" title="поднять выше">↑</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="down"><button class="btn rule-move down" title="опустить ниже">↓</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="bottom"><button class="btn rule-move bottom" title="в самый конец">⤓</button></form>' "$(h "$_r")"
 		printf '<a class="btn sec" href="%s?page=rule&amp;sec=%s" title="изменить правило">✎</a>' "$SCRIPT_NAME" "$(h "$_r")"
 		if rule_disabled "$_r"; then
 			printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn start" title="включить правило">▶</button></form>' "$(h "$_r")"

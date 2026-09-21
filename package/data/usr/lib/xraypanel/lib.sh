@@ -1367,6 +1367,19 @@ rule_move_last() {
 	return 0
 }
 
+rules_set_order() { # $1 = разделы через запятую в нужном порядке
+	_i=0
+	for _r in $(printf '%s' "$1" | tr ',' ' '); do
+		[ -n "$_r" ] || continue
+		# принимаем только реально существующие правила
+		[ -n "$(uci -q get "$UCI_APP.$_r" 2>/dev/null)" ] || continue
+		_i=$((_i + 1))
+		uci -q set "$UCI_APP.$_r.ord=$((_i * 10))"
+	done
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_i"
+}
+
 rule_move() {
 	_sec="$1"
 	_dir="$2"
