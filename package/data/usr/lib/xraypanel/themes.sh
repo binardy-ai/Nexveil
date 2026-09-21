@@ -65,6 +65,10 @@ label{display:block;font-size:12px;color:var(--muted);margin:8px 0 2px}
 button,.btn{font:inherit;padding:6px 12px;border-radius:8px;border:1px solid var(--btn-bd);background:var(--btn);color:var(--btn-fg);cursor:pointer;text-decoration:none;display:inline-block;margin:0 4px 4px 0}
 .btn.sec{background:var(--btn2);color:var(--btn2-fg);border-color:var(--btn2-bd)}
 .btn.danger{background:var(--btn2);color:var(--danger-fg);border-color:var(--danger-bd)}
+/* кнопка применения конфига: красная, пока есть неприменённые изменения,
+   зелёная — после применения */
+.apply-btn.pending{color:var(--bad);border-color:var(--bad);background:var(--btn2);font-weight:600}
+.apply-btn.done{color:var(--ok);border-color:var(--ok);background:var(--btn2);font-weight:600}
 /* компактные кнопки действий в таблицах (правила, серверы) */
 .acts{display:inline-flex;flex-wrap:wrap;gap:4px;align-items:center}
 .acts form{display:inline;margin:0}

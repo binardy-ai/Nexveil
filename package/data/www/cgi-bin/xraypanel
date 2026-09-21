@@ -1532,7 +1532,14 @@ EOF
 # кнопка «Применить конфиг» — одна и та же на всех страницах,
 # $1 = куда вернуться после применения
 apply_form() {
-	printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><input type="hidden" name="back" value="%s"><button>Применить конфиг</button></form>' "$(h "$1")"
+	# Надпись на кнопке: пока есть неприменённые изменения — «применить конфиг»
+	# красным, а после применения — «конфиг применён» зелёным.
+	if config_dirty || [ -n "$(pending_list 1 2>/dev/null)" ]; then
+		_lbl="применить конфиг"; _cls="btn apply-btn pending"
+	else
+		_lbl="конфиг применён"; _cls="btn apply-btn done"
+	fi
+	printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><input type="hidden" name="back" value="%s"><button class="%s">%s</button></form>' "$(h "$1")" "$_cls" "$_lbl"
 }
 
 # компактная строка настроек: подпись | поле | подсказка в одну строку
@@ -2264,7 +2271,7 @@ page_footer() {
 			var h = f.closest ? f.closest('header') : null;
 			if (h) {
 				var sp = f.parentNode;
-				if (sp && sp.tagName === 'SPAN') sp.style.display = 'none';
+				if (sp && sp.tagName === 'SPAN') sp.style.display = '';
 			}
 		});
 		// на странице «Конфиг»: файл на роутере теперь совпадает с настройками
@@ -2298,9 +2305,23 @@ page_footer() {
 	}
 	function finish(rc, msg) {
 		clearPending();
-		restore();
-		if (rc === '0') say('Конфиг применён, xray перезапущен.');
-		else say('xray не поднялся с новым конфигом — вернул прежний. ' + (msg || ''), 'bad');
+		if (rc === '0') {
+			forms.forEach(function (f) {
+				var b = f.querySelector('button');
+				if (!b) return;
+				b.disabled = false;
+				b.textContent = 'конфиг применён';
+				b.className = 'btn apply-btn done';
+			});
+			say('Конфиг применён, xray перезапущен.');
+		} else {
+			restore();
+			forms.forEach(function (f) {
+				var b = f.querySelector('button');
+				if (b) b.className = 'btn apply-btn pending';
+			});
+			say('xray не поднялся с новым конфигом — вернул прежний. ' + (msg || ''), 'bad');
+		}
 	}
 	function poll(n) {
 		if (n > 80) { restore(); say('Применение идёт долго — обновите страницу и посмотрите журнал на странице «Конфиг».', 'bad'); return; }
