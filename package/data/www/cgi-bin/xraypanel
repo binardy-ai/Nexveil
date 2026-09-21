@@ -1648,7 +1648,7 @@ page_footer() {
 		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','srv_toggle','set_default',
 		'save_bridge','del_bridge','bridge_toggle','dedup','import_link','sub_save','sub_del','sub_update',
 		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
-		'panel_install','panel_dirs'];
+		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
 
 	/* «применить конфиг» на «Маршрутах»: собираем все строки и отправляем тихо */
@@ -1864,6 +1864,11 @@ page_footer() {
 				}
 				if (d && d.msg) toast(d.msg);
 				if (window.__panelRepaint) window.__panelRepaint();
+				/* тему применяем сразу: если она сменилась — перезагружаем страницу */
+				if (act === 'settings') {
+					var th = document.querySelector('select[name=theme]');
+					if (th && th.getAttribute('data-old') && th.getAttribute('data-old') !== th.value) { location.reload(); return; }
+				}
 				/* если действие относится к другой странице (сохранил сервер,
 				   правило, настройки) — переходим туда. Это переход, а не
 				   перезагрузка текущей страницы. */
@@ -4176,11 +4181,17 @@ EOF
 		list) _sel_show=1 ;;
 		*)    _sel_show=0 ;;
 	esac
+	# список клиентов нужен только в режиме «только клиенты из списка»:
+	# в остальных режимах заворачиваются все — показывать нечего
 	case "$_ps" in
-		router) _cl_hide=';display:none' ;;
-		*)      _cl_hide="" ;;
+		list) _cl_hide="" ;;
+		*)    _cl_hide=';display:none' ;;
 	esac
-	if [ "$_sel_show" = 1 ]; then _cltitle="Кого заворачивать: список адресов"; else _cltitle="Клиенты и их трафик"; fi
+	# включён ли сейчас прозрачный режим: пока выключен — галочки, когда
+	# включён — список только для просмотра (завёрнутые зелёные, новые серые)
+	_acting=0
+	[ "$_st" = "on" ] && _acting=1
+	_cltitle="Кого заворачивать: список адресов"
 	printf '<div id="clients-box" style="order:-1%s"><h2>%s</h2>' "$_cl_hide" "$(h "$_cltitle")"
 	_ctr=$(client_traffic 2>/dev/null)
 	# через какой выход идёт трафик каждого клиента (по свежим записям журнала)
@@ -4207,16 +4218,13 @@ EOF
 		done < "$_dhcp"
 	fi
 	if [ -n "$_list" ]; then
-		if [ "$_sel_show" = 1 ]; then
-			# как читать пустой список галочек — главный вопрос по этому блоку,
-			# поэтому пишем подсказку прямо над таблицей
-			printf '<p class="muted">Отмеченные галочками адреса и заворачиваются. Если не отмечено ничего, панель считает, что нужны <b>все</b> — включая те устройства, что появятся позже.</p>'
+		if [ "$_acting" = 0 ]; then
+			# режим ещё не включён — выбираем галочками
+			printf '<p class="muted">Отметьте нужных клиентов и нажмите «включить прокси». Если не отмечено ничего, панель считает, что нужны <b>все</b> — включая те устройства, что появятся позже.</p>'
 			printf '<table class="responsive"><tr><th>завернуть</th><th>имя</th><th>адрес</th><th>MAC</th><th>трафик ↑/↓</th><th>идёт через</th><th></th></tr>'
 		else
-			# в этом режиме выбирать нечего, поэтому список клиентов не показываем:
-			# он остаётся только как статистика и спрятан под спойлер
-			printf '<p class="muted">В этом режиме заворачиваются <b>все</b> клиенты локальной сети: и выданные по DHCP, и прописанные статикой, и те, что появятся позже. Отмечать никого не нужно.</p>'
-			printf '<details class="pick"><summary>Трафик по клиентам — открыть список</summary>'
+			# режим включён: галочек нет, список только для просмотра
+			printf '<p class="muted">Режим включён: <span class="ok">зелёные</span> — эти клиенты завёрнуты в туннель, <span class="muted">серые</span> — не в списке (идут как обычно). Чтобы поменять выбор, нажмите «можно и выключить».</p>'
 			printf '<table class="responsive"><tr><th>имя</th><th>адрес</th><th>MAC</th><th>трафик ↑/↓</th><th>идёт через</th><th></th></tr>'
 		fi
 		printf '%s' "$_list" | while IFS='|' read -r _ip _host _mac; do
@@ -4247,13 +4255,21 @@ EOF
 			else
 				_cxhtml='<span class="muted">нет свежих записей</span>'
 			fi
-			if [ "$_sel_show" = 1 ]; then
+			if [ "$_acting" = 0 ]; then
 				_ckcell="<td><input type=\"checkbox\" name=\"client\" value=\"$(h "$_ip")\" style=\"width:auto\" $_ck></td>"
 			else
 				_ckcell=""
 			fi
-			printf '<tr data-client="%s">%s<td>%s</td><td>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span></td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">сброс</button></td></tr>\n' \
-				"$(h "$_ip")" "$_ckcell" "$(h "$_host")" "$(h "$_ip")" "$(h "$_mac")" \
+			# в активном режиме: завёрнутые — зелёным, новые — серым
+			_rcls=""
+			if [ "$_acting" = 1 ]; then
+				case "$_pc" in
+					'') _rcls=' class="ok"' ;;
+					*)  case ",$_pc," in *",$_ip,"*) _rcls=' class="ok"' ;; *) _rcls=' class="muted"' ;; esac ;;
+				esac
+			fi
+			printf '<tr data-client="%s">%s<td%s>%s</td><td%s>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span></td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">сброс</button></td></tr>\n' \
+				"$(h "$_ip")" "$_ckcell" "$_rcls" "$(h "$_host")" "$_rcls" "$(h "$_ip")" "$(h "$_mac")" \
 				"$(h "$(human_bytes "${_cup:-0}")")" "$(h "$(human_bytes "${_cdn:-0}")")" "$_cxhtml" "$(h "$_ip")"
 		done
 		printf '</table><p class="muted">Список — постоянные аренды DHCP и текущие выданные адреса. «Трафик» — сколько устройство отдало и получило через туннель; «сброс» обнуляет счётчик у этого клиента. Есть и общая кнопка — обнуляет всем.</p>'
@@ -4449,7 +4465,7 @@ page_settings() {
 		printf '<option value="%s" %s>%s</option>' "$_n" "$([ "$_si" = "$_n" ] && echo selected)" "$_lbl"
 	done
 	printf '</select></div>'
-	printf '<div><label>Оформление панели</label><select name="theme">'
+	printf '<div><label>Оформление панели</label><select name="theme" data-old="%s">' "$(h "$(theme_name)")"
 	for _t in $THEME_LIST; do
 		printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$(theme_name)" = "$_t" ] && echo selected)" "$(h "$(theme_title "$_t")")"
 	done
