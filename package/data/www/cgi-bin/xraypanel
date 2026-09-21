@@ -1405,8 +1405,8 @@ opt_select_close() { # $1=подсказка справа
 }
 
 # начало и конец строки с произвольным содержимым (галочки, раскрывающийся список)
-opt_html_open() { # $1=подпись
-	printf '<div class="opt"><label>%s</label><div class="opt-f">' "$(h "$1")"
+opt_html_open() { # $1=подпись, $2=доп. класс (например wide — в один столбец)
+	printf '<div class="opt%s"><label>%s</label><div class="opt-f">' "${2:+ $2}" "$(h "$1")"
 }
 opt_html_close() { # $1=подсказка справа
 	printf '</div><span class="opt-h" title="%s">%s</span></div>\n' "$(h "$1")" "$(h "$1")"
@@ -3201,18 +3201,20 @@ EOF
 		printf '<option value="%s" %s>%s</option>' "$_k" "$([ "$_ps" = "$_k" ] && echo selected)" "$(h "$_v")"
 	done
 	opt_select_close "весь трафик, только сам роутер, и то и другое или только выбранные клиенты из списка"
-	# Интерфейсы сети: галочки в раскрывающемся списке
+	# Интерфейсы сети: галочки списком, как в блоке «Перехват DNS»
 	_ifs="$(lan_ifaces)"
 	_autoif=$(lan_main_iface)
 	[ -n "$_pi" ] || _pi="$_autoif"
+	# как в блоке «Перехват DNS»: галочки и подписи к ним в одном столбце,
+	# но сам список спрятан под спойлер, чтобы не занимать место
 	opt_html_open "Интерфейсы сети"
 	printf '<details class="pick"><summary>выбрать интерфейсы</summary>'
 	_seen=""
 	for _if in $_ifs; do
 		_seen="$_seen$_if "
 		case " $(printf '%s' "$_pi" | tr ', ' ' ') " in
-			*" $_if "*) printf '<label class="chk"><input type="checkbox" name="transparent_iface" value="%s" checked> %s</label>' "$(h "$_if")" "$(h "$_if")" ;;
-			*)          printf '<label class="chk"><input type="checkbox" name="transparent_iface" value="%s"> %s</label>' "$(h "$_if")" "$(h "$_if")" ;;
+			*" $_if "*) printf '<label class="chk"><input type="checkbox" name="transparent_iface" value="%s" style="width:auto" checked> %s</label>' "$(h "$_if")" "$(h "$_if")" ;;
+			*)          printf '<label class="chk"><input type="checkbox" name="transparent_iface" value="%s" style="width:auto"> %s</label>' "$(h "$_if")" "$(h "$_if")" ;;
 		esac
 	done
 	printf '</details>'
@@ -3220,7 +3222,7 @@ EOF
 	for _x in $(printf '%s' "$_pi" | tr ', ' ' '); do
 		case " $_seen " in *" $_x "*) ;; *) _extra="$_extra$_x " ;; esac
 	done
-	printf '<input name="transparent_iface_manual" value="%s" placeholder="интерфейс, которого нет в списке">' "$(h "${_extra% }")"
+	printf '<input name="transparent_iface_manual" value="%s" placeholder="другой интерфейс">' "$(h "${_extra% }")"
 	printf '<span class="muted">Выбрано: <b id="if-sel">%s</b></span>' "$(h "${_pi:-нет}")"
 	opt_html_close "по умолчанию — LAN-мост роутера; в режиме «только сам роутер» не нужны"
 	printf '<script>(function(){var b=document.querySelectorAll("input[name=transparent_iface]"),o=document.getElementById("if-sel");if(!b.length||!o)return;function u(){var v=[];b.forEach(function(x){if(x.checked)v.push(x.value)});o.textContent=v.length?v.join(", "):"нет"}b.forEach(function(x){x.addEventListener("change",u)});u()})()</script>\n'
