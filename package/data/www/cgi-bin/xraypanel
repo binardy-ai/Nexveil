@@ -3666,7 +3666,15 @@ page_rules() {
 		printf '</span></td></tr>\n'
 	done
 	printf '</table>'
-	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button class="btn">сохранить конфиг</button> <span class="muted">эта кнопка сохраняет правила и применяет конфиг</span></p></form>'
+	# кнопка такая же, как «применить конфиг» на других страницах: пока есть
+	# неприменённые изменения — красная «применить конфиг», после применения —
+	# зелёная «конфиг применён»
+	if config_dirty || [ -n "$(pending_list 1 2>/dev/null)" ]; then
+		_albl="применить конфиг"; _acls="btn apply-btn pending"
+	else
+		_albl="конфиг применён"; _acls="btn apply-btn done"
+	fi
+	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button class="%s">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></form>' "$_acls" "$_albl"
 	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее решает, куда пойдёт трафик. Строку можно утащить на другое место — зажмите её на секунду. Наборы адресов — в блоке ниже.</p></div>\n'
 	# 2) наборы
 	_cur_set=$(param set)
