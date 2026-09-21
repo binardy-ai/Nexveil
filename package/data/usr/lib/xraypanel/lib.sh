@@ -1106,13 +1106,25 @@ set_item_sections() { # $1 = раздел набора -> разделы зап�
 }
 
 recent_dests() { # «имя<TAB>сколько секунд назад» — что недавно шло через xray
+	# Результат кэшируем на 5 секунд: лампочки в наборе спрашивают его для
+	# каждой записи, и без кэша страница перечитывала журнал десятки раз —
+	# переключение наборов из-за этого было медленным.
+	_c="$STATE_DIR/recent-dests.cache"
+	_t="$STATE_DIR/recent-dests.at"
+	_now0=$(date +%s 2>/dev/null)
+	case "$_now0" in ''|*[!0-9]*) _now0=0 ;; esac
+	if [ -s "$_c" ] && [ "$_now0" -gt 0 ]; then
+		_old=$(cat "$_t" 2>/dev/null)
+		case "$_old" in ''|*[!0-9]*) _old=0 ;; esac
+		if [ $((_now0 - _old)) -lt 5 ]; then
+			cat "$_c"
+			return 0
+		fi
+	fi
 	_log="$(cfg log_dir "/var/log")/xray-access.log"
 	[ -f "$_log" ] || return 0
-	_now=$(date +%s 2>/dev/null)
-	[ -n "$_now" ] || _now=0
-	# адреса переводим в имена по карте dnsmasq — иначе в журнале почти всегда
-	# только IP, и записи-домены в наборах никогда бы не «загорались»
-	tail -n 400 "$_log" 2>/dev/null | LC_ALL=C awk -v now="$_now" -v mapf="$DNS_LOG_MAP" '
+	_now="$_now0"
+	_res=$(tail -n 400 "$_log" 2>/dev/null | LC_ALL=C awk -v now="$_now" -v mapf="$DNS_LOG_MAP" '
 		BEGIN {
 			while ((getline ln < mapf) > 0) {
 				split(ln, mf, "\t")
@@ -1135,7 +1147,12 @@ recent_dests() { # «имя<TAB>сколько секунд назад» — ч�
 			if (!(dst in best) || age < best[dst]) best[dst] = age
 		}
 		END { for (d in best) printf "%s\t%d\n", d, best[d] }
-	'
+	')
+	if [ -n "$_res" ]; then
+		printf '%s\n' "$_res" > "$_c.tmp.$$" 2>/dev/null && mv -f "$_c.tmp.$$" "$_c" 2>/dev/null
+		printf '%s' "$_now0" > "$_t" 2>/dev/null
+	fi
+	printf '%s' "$_res"
 }
 
 set_item_hit() { # $1 = раздел записи -> сколько секунд назад сработала (пусто)
@@ -1143,10 +1160,10 @@ set_item_hit() { # $1 = раздел записи -> сколько секунд
 	_v=$(uci -q get "$UCI_APP.$1.value" 2>/dev/null)
 	[ -n "$_v" ] || return 0
 	_low=$(printf '%s' "$_v" | tr 'A-Z' 'a-z')
-	_gl=""
-	if [ "$_t" = geosite ]; then
-		_gl=$(geo_list_domains "$_v" 20000 2>/dev/null | cut -f1 | tr 'A-Z' 'a-z')
-	fi
+	# Готовые списки (geosite/geoip) в лампочках не разбираем: разбор файлов со
+	# списками занимает секунды, и отрисовка страницы растягивалась. Такие
+	# записи показываем без лампочки — по ним лампочка ничего не значит.
+	case "$_t" in geosite|geoip) return 0 ;; esac
 	_best=""
 	while IFS="$(printf '\t')" read -r _d _a; do
 		[ -n "$_d" ] || continue
@@ -1160,18 +1177,6 @@ set_item_hit() { # $1 = раздел записи -> сколько секунд
 			keyword) case "$_dl" in *"$_low"*) _ok=1 ;; esac ;;
 			regexp)  printf '%s\n' "$_dl" | grep -Eq -- "$_low" 2>/dev/null && _ok=1 ;;
 			ip|geoip) [ "$_dl" = "$_low" ] && _ok=1 ;;
-			geosite)
-				if [ -n "$_gl" ]; then
-					_d2="$_dl"
-					while [ -n "$_d2" ]; do
-						printf '%s\n' "$_gl" | grep -qxF -- "$_d2" && { _ok=1; break; }
-						case "$_d2" in
-							*.*) _d2=${_d2#*.} ;;
-							*) break ;;
-						esac
-					done
-				fi
-				;;
 		esac
 		if [ -n "$_ok" ]; then
 			if [ -z "$_best" ] || [ "$_a" -lt "$_best" ]; then _best="$_a"; fi

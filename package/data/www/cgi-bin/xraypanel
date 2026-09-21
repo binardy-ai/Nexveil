@@ -3538,7 +3538,6 @@ page_rules() {
 	fi
 	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="set_new"><label>Новый набор</label><input name="setname" placeholder="например: Германия-YouTube"><p><button>Создать набор</button></p></form>'
 	printf '</div>\n'
-	geo_datalist
 
 	# 3) подобрать правило для домена
 	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
@@ -3549,10 +3548,18 @@ page_rules() {
 	printf '</div><p><button type="button" class="btn rule-find">проверить домен</button> <button type="button" class="btn sec list-show">что в списке</button> <span class="muted" id="rule-find-out"></span></p>'
 	printf '<div id="rule-find-report" class="report"></div></div>\n'
 
-	# 4) готовые списки
-	printf '<div class="card" style="order:4">'
-	geo_block_html
-	printf '</div>\n'
+	# 4) готовые списки — под спойлером и по кнопке: сам разбор файлов со
+	# списками тяжёлый, а на этой странице он был главным тормозом
+	printf '<div class="card" style="order:4"><details class="pick"><summary>Готовые списки доменов и адресов (geosite / geoip)</summary>'
+	_dcnt=$(( $(geo_tags_count geosite 2>/dev/null) + $(geo_tags_count geoip 2>/dev/null) ))
+	if [ "${_dcnt:-0}" -gt 0 ]; then
+		printf '<p class="muted">Названий в подсказке: %s. В поле «Значение» можно вписать название списка — панель подставит префикс сама.</p>' "$(h "$_dcnt")"
+	else
+		printf '<p class="muted">Файлы со списками на роутере есть, названия ещё не собраны. Собрать можно кнопкой ниже — это фоном, пара минут.</p>'
+	fi
+	printf '<form method="post"><input type="hidden" name="action" value="geo_build"><button class="btn sec">собрать названия списков</button></form>'
+	printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="geo_update"><button class="btn sec">обновить списки из интернета</button></form>'
+	printf '</details></div>\n'
 }
 
 page_rule_old() {
