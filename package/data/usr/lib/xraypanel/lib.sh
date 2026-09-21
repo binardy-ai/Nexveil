@@ -1054,26 +1054,178 @@ rule_category_title() { # $1 = категория -> подпись
 	esac
 }
 
-# правила в порядке срабатывания: блок, потом напрямую, потом через прокси
-rule_sections_ordered() {
-	for _cat in block direct proxy; do
-		for _r in $(rule_sections); do
-			[ "$(rule_category "$_r")" = "$_cat" ] && printf '%s\n' "$_r"
-		done
+# --- наборы (категории) 0.62 -------------------------------------------------
+# Набор — это список того, что маршрутизируется вместе: домены, адреса, готовые
+# списки. Правило ссылается на наборы и говорит: кто → какие наборы → через что.
+set_sections() { # разделы-наборы в порядке показа
+	_list=""
+	_i=0
+	for _s in $(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=set$/\1/p'); do
+		_i=$((_i + 1))
+		_o=$(uci -q get "$UCI_APP.$_s.ord" 2>/dev/null)
+		case "$_o" in ''|*[!0-9]*) _o=0 ;; esac
+		_list="$_list$(printf '%06d %06d %s\n' "$_o" "$_i" "$_s")
+"
+	done
+	printf '%s' "$_list" | sort | awk 'NF { print $3 }'
+}
+
+set_name() { # $1 = раздел -> подпись
+	_n=$(uci -q get "$UCI_APP.$1.name" 2>/dev/null)
+	[ -n "$_n" ] || _n="$1"
+	printf '%s' "$_n"
+}
+
+set_section_by_name() { # $1 = подпись -> раздел (или пусто)
+	for _s in $(set_sections); do
+		[ "$(set_name "$_s")" = "$1" ] && { printf '%s' "$_s"; return 0; }
+	done
+	return 1
+}
+
+set_disabled() { # $1 = раздел набора
+	[ "$(uci -q get "$UCI_APP.$1.disabled" 2>/dev/null)" = 1 ]
+}
+
+item_disabled() { # $1 = раздел записи
+	[ "$(uci -q get "$UCI_APP.$1.disabled" 2>/dev/null)" = 1 ]
+}
+
+set_item_sections() { # $1 = раздел набора -> разделы записей
+	_list=""
+	_i=0
+	for _s in $(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=item$/\1/p'); do
+		[ "$(uci -q get "$UCI_APP.$_s.set" 2>/dev/null)" = "$1" ] || continue
+		_i=$((_i + 1))
+		_o=$(uci -q get "$UCI_APP.$_s.ord" 2>/dev/null)
+		case "$_o" in ''|*[!0-9]*) _o=0 ;; esac
+		_list="$_list$(printf '%06d %06d %s\n' "$_o" "$_i" "$_s")
+"
+	done
+	printf '%s' "$_list" | sort | awk 'NF { print $3 }'
+}
+
+set_create() { # $1 = подпись -> имя раздела
+	_i=0
+	while :; do
+		_i=$((_i + 1))
+		_s="set$_i"
+		[ -n "$(uci -q get "$UCI_APP.$_s" 2>/dev/null)" ] || break
+	done
+	uci -q set "$UCI_APP.$_s=set"
+	uci -q set "$UCI_APP.$_s.name=$1"
+	uci -q set "$UCI_APP.$_s.ord=$(( $(set_sections | wc -l | tr -d ' ') * 10 + 10 ))"
+	printf '%s' "$_s"
+}
+
+item_create() { # $1 = набор, $2 = тип, $3 = значение -> имя раздела
+	_i=0
+	while :; do
+		_i=$((_i + 1))
+		_s="it$_i"
+		[ -n "$(uci -q get "$UCI_APP.$_s" 2>/dev/null)" ] || break
+	done
+	uci -q set "$UCI_APP.$_s=item"
+	uci -q set "$UCI_APP.$_s.set=$1"
+	[ -n "$2" ] && uci -q set "$UCI_APP.$_s.type=$2"
+	[ -n "$3" ] && uci -q set "$UCI_APP.$_s.value=$3"
+	uci -q set "$UCI_APP.$_s.ord=$(( $(set_item_sections "$1" | wc -l | tr -d ' ') * 10 + 10 ))"
+	printf '%s' "$_s"
+}
+
+# условия правила: «раздел<TAB>источник<TAB>тип<TAB>значение».
+# У нового правила (со ссылкой на наборы) — по строке на каждую запись набора.
+# Нужно лампочкам: по журналу xray видно, какое правило сработало.
+rule_conditions() {
+	for _r in $(rule_sections); do
+		_parts=$(rule_parts "$_r")
+		_rs=$(printf '%s' "$_parts" | cut -f1)
+		_sets=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
+		if [ -n "$_sets" ]; then
+			for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
+				[ -n "$_st" ] || continue
+				for _it in $(set_item_sections "$_st"); do
+					item_disabled "$_it" && continue
+					_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
+					_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
+					printf '%s\t%s\t%s\t%s\n' "$_r" "$_rs" "$_t" "$_v"
+				done
+			done
+		else
+			printf '%s\t%s\t%s\t%s\n' "$_r" "$_rs" "$(printf '%s' "$_parts" | cut -f2)" "$(printf '%s' "$_parts" | cut -f3)"
+		fi
 	done
 }
 
-# номера порядка приводим к категориям: внутри группы порядок сохраняется,
-# сами группы идут блок → напрямую → прокси. После этого кнопки ↑/↓ двигают
-# правило внутри его же группы (соседние правила всегда из той же группы).
-rule_normalize_order() {
-	_i=0
-	for _r in $(rule_sections_ordered); do
-		_i=$((_i + 1))
-		uci -q set "$UCI_APP.$_r.ord=$((_i * 10))"
+# перенос старых правил (адрес + выход) в новую модель: записи раскладываются
+# по наборам «Прямые» / «Прокси» / «Блок» / «Всё», а из пар «кто + выход»
+# получаются правила-ссылки. Копия настроек сохраняется рядом.
+rules_migrate_v062() {
+	_old=""
+	for _r in $(rule_sections); do
+		[ -n "$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)" ] && continue
+		_old="$_old$_r "
+	done
+	[ -n "$_old" ] || return 0
+	_cf="${XRAYPANEL_CONF_DIR:-/etc/config}/$UCI_APP"
+	_bak="$_cf.bak-v062-$(date +%Y%m%d-%H%M%S)"
+	cp -f "$_cf" "$_bak" 2>/dev/null
+	_ordn=0
+	for _r in $_old; do
+		_parts=$(rule_parts "$_r")
+		_rs=$(printf '%s' "$_parts" | cut -f1)
+		_rt=$(printf '%s' "$_parts" | cut -f2)
+		_rv=$(printf '%s' "$_parts" | cut -f3)
+		_ro=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
+		case "$_ro" in
+			blocked)        _sname="Блок" ;;
+			direct|iface:*) _sname="Прямые" ;;
+			*)              _sname="Прокси" ;;
+		esac
+		[ -n "$_rv" ] || _sname="Всё"
+		_st=$(set_section_by_name "$_sname" 2>/dev/null)
+		[ -n "$_st" ] || _st=$(set_create "$_sname")
+		if [ -n "$_rv" ]; then
+			_dup=0
+			for _it in $(set_item_sections "$_st"); do
+				[ "$(uci -q get "$UCI_APP.$_it.type")" = "$_rt" ] && [ "$(uci -q get "$UCI_APP.$_it.value")" = "$_rv" ] && _dup=1
+			done
+			[ "$_dup" = 1 ] || item_create "$_st" "$_rt" "$_rv" >/dev/null
+		fi
+		_keep=""
+		for _r2 in $(rule_sections); do
+			[ "$_r2" = "$_r" ] && continue
+			_s2=$(uci -q get "$UCI_APP.$_r2.sets" 2>/dev/null)
+			[ -n "$_s2" ] || continue
+			[ "$(uci -q get "$UCI_APP.$_r2.source" 2>/dev/null)" = "$_rs" ] || continue
+			[ "$(uci -q get "$UCI_APP.$_r2.outbound" 2>/dev/null)" = "$_ro" ] || continue
+			_keep="$_r2"
+			break
+		done
+		if [ -n "$_keep" ]; then
+			_s2=$(uci -q get "$UCI_APP.$_keep.sets")
+			case ",$_s2," in
+				*",$_st,"*) ;;
+				*) uci -q set "$UCI_APP.$_keep.sets=$_s2,$_st" ;;
+			esac
+		else
+			_i=0
+			while :; do
+				_i=$((_i + 1))
+				_new="nr$_i"
+				[ -n "$(uci -q get "$UCI_APP.$_new" 2>/dev/null)" ] || break
+			done
+			uci -q set "$UCI_APP.$_new=rule"
+			uci -q set "$UCI_APP.$_new.sets=$_st"
+			[ -n "$_ro" ] && uci -q set "$UCI_APP.$_new.outbound=$_ro"
+			[ -n "$_rs" ] && uci -q set "$UCI_APP.$_new.source=$_rs"
+			_ordn=$((_ordn + 1))
+			uci -q set "$UCI_APP.$_new.ord=$((_ordn * 10))"
+		fi
+		uci -q delete "$UCI_APP.$_r"
 	done
 	uci -q commit "$UCI_APP" >/dev/null 2>&1
-	printf '%s' "$_i"
+	printf '%s' "$_bak"
 }
 
 # Сервер и реверс-мост тоже можно не удалять, а выключать: они остаются в
@@ -1150,14 +1302,11 @@ rule_move() {
 		down) [ "$_pos" -lt "$_n" ] || return 0; _swap=$((_pos + 1)) ;;
 		top)
 			# на самый верх: ставим номер меньше самого маленького и перенумеровываем
-			# (в новой модели — на самый верх своей группы: блок/напрямую/прокси)
 			rule_move_first "$_sec"
-			rule_normalize_order >/dev/null 2>&1
 			return 0
 			;;
 		bottom)
 			rule_move_last "$_sec"
-			rule_normalize_order >/dev/null 2>&1
 			return 0
 			;;
 		*)    return 1 ;;
@@ -1169,9 +1318,6 @@ rule_move() {
 		[ "$_i" = "$_swap" ] && _other="$_r"
 	done
 	[ -n "$_other" ] || return 1
-	# двигаем только внутри своей группы: за её пределы правило не уходит,
-	# иначе оно меняло бы категорию (новая модель 0.62)
-	[ "$(rule_category "$_sec")" = "$(rule_category "$_other")" ] || return 0
 	# перенумеровываем всех и меняем номера двух соседей местами
 	_i=0
 	for _r in $(rule_sections); do
@@ -1799,9 +1945,7 @@ EOF
 		[ -n "$_bo" ] && printf ',\n      {"type": "field", "inboundTag": ["%s"], "domain": ["full:%s"], "outboundTag": "%s"}' "$_bt" "$_bd" "$_bo"
 		printf ',\n      {"type": "field", "inboundTag": ["%s"], "outboundTag": "%s"}' "$_bt" "$_bn"
 	done
-	# правила идут группами: сначала «заблокировать», потом «напрямую»,
-	# потом «через прокси» (внутри группы — свой порядок)
-	for _r in $(rule_sections_ordered); do
+	for _r in $(rule_sections); do
 		# выключенные правила в конфиг не пишем, но в списке панели они видны
 		rule_disabled "$_r" && continue
 		# правило, которое указывает на выключенный сервер, тоже не применяем
@@ -1813,34 +1957,64 @@ EOF
 		case "$_ro" in iface:*) continue ;; esac
 		_parts=$(rule_parts "$_r")
 		_rs=$(jesc "$(printf '%s' "$_parts" | cut -f1)")
-		_rt=$(printf '%s' "$_parts" | cut -f2)
-		_rv=$(printf '%s' "$_parts" | cut -f3)
-		# тип правила превращается в готовую строку для xray:
-		# «geosite» -> geosite:ru, «full» -> full:example.com и так далее
-		_mv=$(jesc "$(rule_matcher_value "$_rt" "$_rv")")
-		# условие «куда идём»
-		case "$_rt" in
-			ip|geoip) [ -n "$_rv" ] && _cond=$(printf '"ip": ["%s"]' "$_mv") ;;
-			domain|full|keyword|regexp|geosite) [ -n "$_rv" ] && _cond=$(printf '"domain": ["%s"]' "$_mv") ;;
-			*)        _cond="" ;;
-		esac
 		# условие «кто идёт»
 		_scond=""
 		[ -n "$_rs" ] && _scond=$(printf '"source": ["%s"]' "$_rs")
-		# правило без условий ничего не значит — пропускаем
-		[ -n "$_cond$_scond" ] || continue
-		if [ -n "$_cond" ] && [ -n "$_scond" ]; then
-			_all="$_scond, $_cond"
+		# собираем цели правила: домены и адреса отдельными списками.
+		# Источники — либо записи наборов (новая модель), либо само значение
+		# правила (старые правила, если перенос ещё не делали).
+		_dom=""; _ip=""
+		_sets=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
+		if [ -n "$_sets" ]; then
+			for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
+				[ -n "$_st" ] || continue
+				set_disabled "$_st" && continue
+				for _it in $(set_item_sections "$_st"); do
+					item_disabled "$_it" && continue
+					_it_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
+					_it_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
+					[ -n "$_it_v" ] || continue
+					_it_mv=$(jesc "$(rule_matcher_value "$_it_t" "$_it_v")")
+					case "$_it_t" in
+						ip|geoip) _ip="$_ip\"$_it_mv\", " ;;
+						*)        _dom="$_dom\"$_it_mv\", " ;;
+					esac
+				done
+			done
 		else
-			_all="$_scond$_cond"
+			_rt=$(printf '%s' "$_parts" | cut -f2)
+			_rv=$(printf '%s' "$_parts" | cut -f3)
+			_mv=$(jesc "$(rule_matcher_value "$_rt" "$_rv")")
+			case "$_rt" in
+				ip|geoip) [ -n "$_rv" ] && _ip="$_ip\"$_mv\", " ;;
+				domain|full|keyword|regexp|geosite) [ -n "$_rv" ] && _dom="$_dom\"$_mv\", " ;;
+			esac
 		fi
-		case "$_ro" in
-			auto)
-				# выход «по пингу»: балансировщик вместо конкретного сервера
-				[ "$_bal_on" = 1 ] && printf ',\n      {"type": "field", %s, "balancerTag": "auto"}' "$_all"
-				;;
-			*)  printf ',\n      {"type": "field", %s, "outboundTag": "%s"}' "$_all" "$_ro" ;;
-		esac
+		_dom=${_dom%, }; _ip=${_ip%, }
+		# домены одним правилом, адреса — другим (так короче и понятнее)
+		if [ -n "$_dom" ]; then
+			_cond=$(printf '"domain": [%s]' "$_dom")
+			if [ -n "$_scond" ]; then _all="$_scond, $_cond"; else _all="$_cond"; fi
+			case "$_ro" in
+				auto) [ "$_bal_on" = 1 ] && printf ',\n      {"type": "field", %s, "balancerTag": "auto"}' "$_all" ;;
+				*)    printf ',\n      {"type": "field", %s, "outboundTag": "%s"}' "$_all" "$_ro" ;;
+			esac
+		fi
+		if [ -n "$_ip" ]; then
+			_cond=$(printf '"ip": [%s]' "$_ip")
+			if [ -n "$_scond" ]; then _all="$_scond, $_cond"; else _all="$_cond"; fi
+			case "$_ro" in
+				auto) [ "$_bal_on" = 1 ] && printf ',\n      {"type": "field", %s, "balancerTag": "auto"}' "$_all" ;;
+				*)    printf ',\n      {"type": "field", %s, "outboundTag": "%s"}' "$_all" "$_ro" ;;
+			esac
+		fi
+		# правило без целей (только «кто») — направляем этого клиента целиком
+		if [ -z "$_dom$_ip" ] && [ -n "$_scond" ]; then
+			case "$_ro" in
+				auto) [ "$_bal_on" = 1 ] && printf ',\n      {"type": "field", %s, "balancerTag": "auto"}' "$_scond" ;;
+				*)    printf ',\n      {"type": "field", %s, "outboundTag": "%s"}' "$_scond" "$_ro" ;;
+			esac
+		fi
 	done
 	# куда направлять остальной перехваченный трафик: сервер, выбранный на
 	# странице «Прокси». Стоит после правил — «частное» всегда важнее общего.
@@ -3241,16 +3415,13 @@ rules_activity() {
 	_rf="$STATE_DIR/rules-activity.list"
 	_af="$STATE_DIR/rules-activity.log"
 	: > "$_rf"
-	for _r in $(rule_sections); do
+	rule_conditions 2>/dev/null | while IFS="$(printf '\t')" read -r _r _s _t _v; do
+		[ -n "$_r" ] || continue
 		rule_disabled "$_r" && continue
-		_parts=$(rule_parts "$_r")
-		_s=$(printf '%s' "$_parts" | cut -f1)
-		_t=$(printf '%s' "$_parts" | cut -f2)
-		_v=$(printf '%s' "$_parts" | cut -f3)
 		_o=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
 		case "$_o" in ''|iface:*) continue ;; esac
-		printf '%s\t%s\t%s\t%s\t%s\n' "$_r" "$_s" "$_t" "$_v" "$_o" >> "$_rf"
-	done
+		printf '%s\t%s\t%s\t%s\t%s\n' "$_r" "$_s" "$_t" "$_v" "$_o"
+	done >> "$_rf"
 	rule_activity > "$_af" 2>/dev/null
 	if [ ! -s "$_af" ] || [ ! -s "$_rf" ]; then
 		rm -f "$_rf" "$_af" 2>/dev/null

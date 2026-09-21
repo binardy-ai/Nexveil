@@ -211,27 +211,30 @@ act_save_rule() {
 	_existed=$(uci -q get "$UCI_APP.$_want" 2>/dev/null)
 	_sec=$(ensure_section rule "$_want")
 	[ -n "$_sec" ] || redirect rules "не удалось создать раздел правила"
-	# категория правила задаёт выход: «напрямую» → direct (или через интерфейс),
-	# «заблокировать» → blocked, «через прокси» → выбранный сервер или по пингу
-	_cat=$(param category)
-	case "$_cat" in
-		direct)
-			_io=$(param iface_out)
-			case "$_io" in ''|-|direct) _out=direct ;; *) _out="iface:$_io" ;; esac
-			;;
-		block) _out=blocked ;;
-		proxy)
-			_out=$(param proxy_out)
-			[ -n "$_out" ] || _out=auto
-			;;
-		*)     _out=$(param outbound) ;;   # старое поле — на случай старых ссылок
-	esac
-	if [ -n "$_cat" ]; then ui_uci set "$UCI_APP.$_sec.category=$_cat"; else ui_uci delete "$UCI_APP.$_sec.category"; fi
-	if [ -n "$_out" ]; then ui_uci set "$UCI_APP.$_sec.outbound=$_out"; else ui_uci delete "$UCI_APP.$_sec.outbound"; fi
-	for _f in source value; do
-		_v=$(param "$_f")
-		if [ -n "$_v" ]; then ui_uci set "$UCI_APP.$_sec.$_f=$_v"; else ui_uci delete "$UCI_APP.$_sec.$_f"; fi
-	done
+	# правило новой модели: кто идёт → какие наборы → через что выходим
+	_src=$(params_all source | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+	_sets=$(params_all set | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+	_out=$(param outbound)
+	[ -n "$_out" ] || _out=auto
+	if [ -n "$_src" ]; then ui_uci set "$UCI_APP.$_sec.source=$_src"; else ui_uci delete "$UCI_APP.$_sec.source"; fi
+	if [ -n "$_sets" ]; then ui_uci set "$UCI_APP.$_sec.sets=$_sets"; else ui_uci delete "$UCI_APP.$_sec.sets"; fi
+	ui_uci set "$UCI_APP.$_sec.outbound=$_out"
+	# поля старой модели у этого правила больше не нужны
+	ui_uci delete "$UCI_APP.$_sec.value"
+	ui_uci delete "$UCI_APP.$_sec.type"
+	ui_uci delete "$UCI_APP.$_sec.category"
+	# и старое «значение» из формы (если пришло) — кладём записью в первый набор
+	_rt=$(param type); _rv=$(param value)
+	if [ -n "$_rv" ] && [ -n "$_sets" ]; then
+		for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
+			[ -n "$_st" ] || continue
+			_split=$(rule_split_value "$_rv")
+			_stt=$(printf '%s' "$_split" | cut -f1); _sv=$(printf '%s' "$_split" | cut -f2)
+			[ -n "$_stt" ] || _stt=$_rt
+			item_create "$_st" "$_stt" "$_sv" >/dev/null
+			break
+		done
+	fi
 	# «куда идём» — панель сама понимает, адрес это или домен
 	# тип выбирается в форме: адрес, домен, точный домен, слово, шаблон или
 	# готовый список (geosite / geoip). Если его не передали — определяем сами.
@@ -271,9 +274,6 @@ act_save_rule() {
 		# а порядок всегда можно поправить кнопками ↑ ↓ ⤒ ⤓
 		rule_move_first "$_sec"
 	fi
-	# приводим порядок к новой модели: правила идут группами
-	# (заблокировать → напрямую → через прокси), внутри группы — свой порядок
-	rule_normalize_order >/dev/null 2>&1
 	if [ -n "$_existed" ]; then pending_note "изменено правило: $_v"; else pending_note "добавлено правило: $_v"; fi
 	[ -n "$_existed" ] && redirect rules "правило сохранено. Осталось нажать «Подтвердить конфиг».$_geo_warn" \
 		|| redirect rules "правило добавлено. Осталось нажать «Подтвердить конфиг».$_geo_warn"
@@ -350,6 +350,98 @@ act_del_rule() {
 	[ -n "$_sec" ] && { ui_uci delete "$UCI_APP.$_sec"; uci commit "$UCI_APP" >/dev/null 2>&1; }
 	[ -n "$_sec" ] && pending_note "удалено правило маршрутизации"
 	redirect rules "правило удалено"
+}
+
+# --- наборы (категории) и их записи ------------------------------------------
+act_set_new() { # создать набор
+	_nm=$(param setname | sed -e 's/^ *//' -e 's/ *$//')
+	[ -n "$_nm" ] || redirect rules "набор без имени не создаю"
+	_old=$(set_section_by_name "$_nm" 2>/dev/null)
+	[ -n "$_old" ] && redirect rules "набор «$_nm» уже есть"
+	set_create "$_nm" >/dev/null
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "создан набор «$_nm»"
+	redirect rules "набор «$_nm» создан — добавьте в него адреса или домены"
+}
+
+act_set_del() { # удалить набор вместе с записями
+	_st=$(param set)
+	[ -n "$_st" ] || redirect rules "набор не выбран"
+	_nm=$(set_name "$_st")
+	_cnt=0
+	for _it in $(set_item_sections "$_st"); do
+		ui_uci delete "$UCI_APP.$_it"
+		_cnt=$((_cnt + 1))
+	done
+	# правило, ссылавшееся на этот набор, чистим от ссылки
+	for _r in $(rule_sections); do
+		_s=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
+		case ",$_s," in
+			*",$_st,"*)
+				_rest=$(printf '%s' "$_s" | tr ',' '\n' | grep -vx -- "$_st" | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+				if [ -n "$_rest" ]; then ui_uci set "$UCI_APP.$_r.sets=$_rest"; else ui_uci delete "$UCI_APP.$_r.sets"; fi
+				;;
+		esac
+	done
+	ui_uci delete "$UCI_APP.$_st"
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "удалён набор «$_nm»"
+	redirect rules "набор «$_nm» удалён (записей: $_cnt)"
+}
+
+act_set_toggle() { # выключить/включить набор целиком
+	_st=$(param set)
+	[ -n "$_st" ] || redirect rules "набор не выбран"
+	if set_disabled "$_st"; then ui_uci delete "$UCI_APP.$_st.disabled"; else ui_uci set "$UCI_APP.$_st.disabled=1"; fi
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "изменён набор «$(set_name "$_st")»"
+	redirect rules "набор «$(set_name "$_st")»: состояние изменено"
+}
+
+act_item_add() { # добавить запись в набор
+	_st=$(param set)
+	[ -n "$_st" ] || redirect rules "сначала выберите набор"
+	_type=$(param type)
+	_val=$(param value)
+	# строк может быть несколько: каждая — отдельная запись
+	_n=0
+	printf '%s\n' "$_val" | tr ',;' '\n' | while IFS= read -r _one; do
+		_one=$(printf '%s' "$_one" | sed -e 's/^ *//' -e 's/ *$//')
+		[ -n "$_one" ] || continue
+		_split=$(rule_split_value "$_one")
+		_stt=$(printf '%s' "$_split" | cut -f1)
+		_svv=$(printf '%s' "$_split" | cut -f2)
+		if [ -z "$_stt" ]; then
+			case "$_type" in
+				''|auto) _stt=$(guess_rule_type "$_one") ;;
+				*)       _stt="$_type" ;;
+			esac
+		fi
+		item_create "$_st" "$_stt" "$_svv" >/dev/null
+	done
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "изменён набор «$(set_name "$_st")»"
+	redirect rules "записи добавлены в набор «$(set_name "$_st")»"
+}
+
+act_item_del() { # убрать запись из набора
+	_it=$(param item)
+	[ -n "$_it" ] || redirect rules "запись не выбрана"
+	_st=$(uci -q get "$UCI_APP.$_it.set" 2>/dev/null)
+	ui_uci delete "$UCI_APP.$_it"
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "изменён набор «$(set_name "$_st")»"
+	redirect rules "запись удалена из набора «$(set_name "$_st")»"
+}
+
+act_item_toggle() { # выключить/включить запись
+	_it=$(param item)
+	[ -n "$_it" ] || redirect rules "запись не выбрана"
+	_st=$(uci -q get "$UCI_APP.$_it.set" 2>/dev/null)
+	if item_disabled "$_it"; then ui_uci delete "$UCI_APP.$_it.disabled"; else ui_uci set "$UCI_APP.$_it.disabled=1"; fi
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "изменён набор «$(set_name "$_st")»"
+	redirect rules "запись: состояние изменено"
 }
 
 # --- импорт сервера из ссылки vless:// --------------------------------------
@@ -1233,6 +1325,12 @@ case "$ACTION" in
 	rule_move)   act_rule_move ;;
 	rule_toggle) act_rule_toggle ;;
 	del_rule)    act_del_rule ;;
+	set_new)     act_set_new ;;
+	set_del)     act_set_del ;;
+	set_toggle)  act_set_toggle ;;
+	item_add)    act_item_add ;;
+	item_del)    act_item_del ;;
+	item_toggle) act_item_toggle ;;
 	import_link) act_import_link ;;
 	set_default) act_set_default ;;
 	enable_service) act_enable_service ;;
@@ -2768,7 +2866,7 @@ geo_block_html() {
 	printf '</details></div>\n'
 }
 
-page_rules() {
+page_rules_old() {
 	# куда уходит всё, что не попало под правила — самый частый вопрос
 	if [ "$(cfg auto_best 0)" = 1 ]; then
 		_rest_txt='Режим <b>глобально</b>: включён автовыбор по лучшему пингу, поэтому весь трафик, который не попал под правила ниже, уходит через балансировщик — то есть через самый быстрый сервер.'
@@ -3031,7 +3129,254 @@ EOF
 	fi
 }
 
-page_rule() {
+# --- страница «Маршруты» в модели 0.62: наборы + правила ---------------------
+rule_source_multi() { # $1 = источники через запятую
+	_cur=" $1 "
+	printf '<select name="source" multiple size="5" style="min-width:230px">'
+	_sub=$(lan_subnet)
+	if [ -n "$_sub" ]; then
+		case "$_cur" in *" $_sub "*) _sel=' selected' ;; *) _sel="" ;; esac
+		printf '<option value="%s"%s>вся локальная сеть (%s)</option>' "$(h "$_sub")" "$_sel" "$(h "$_sub")"
+	fi
+	_rlip=$(uci -q get network.lan.ipaddr 2>/dev/null)
+	case "$_rlip" in
+		''|*[!0-9.]*) ;;
+		*)
+			case "$_cur" in *" $_rlip "*) _sel=' selected' ;; *) _sel="" ;; esac
+			printf '<option value="%s"%s>сам роутер (%s)</option>' "$(h "$_rlip")" "$_sel" "$(h "$_rlip")"
+			;;
+	esac
+	lan_clients_named 2>/dev/null | while IFS="$(printf '\t')" read -r _nm _ip; do
+		[ -n "$_ip" ] || continue
+		case "$_cur" in *" $_ip "*) _sel=' selected' ;; *) _sel="" ;; esac
+		printf '<option value="%s"%s>%s (%s)</option>' "$(h "$_ip")" "$_sel" "$(h "$_nm")" "$(h "$_ip")"
+	done
+	printf '</select>'
+}
+
+rule_sets_multi() { # $1 = наборы через запятую
+	_cur=",$1,"
+	printf '<select name="set" multiple size="5" style="min-width:230px">'
+	for _st in $(set_sections); do
+		case "$_cur" in *",$_st,"*) _sel=' selected' ;; *) _sel="" ;; esac
+		_n=$(set_item_sections "$_st" | wc -l | tr -d ' ')
+		printf '<option value="%s"%s>%s (%s)</option>' "$(h "$_st")" "$_sel" "$(h "$(set_name "$_st")")" "$_n"
+	done
+	printf '</select>'
+}
+
+rule_out_select() { # $1 = текущий выход
+	_cur="$1"
+	printf '<select name="outbound">'
+	printf '<option value="auto"%s>по пингу — самый быстрый сервер</option>' "$([ "$_cur" = auto ] && echo ' selected')"
+	printf '<option value="direct"%s>напрямую (WAN, мимо прокси)</option>' "$([ "$_cur" = direct ] && echo ' selected')"
+	printf '<option value="blocked"%s>заблокировать</option>' "$([ "$_cur" = blocked ] && echo ' selected')"
+	for _s in $(server_sections); do
+		_t=$(server_tag "$_s")
+		server_is_reverse "$_t" && continue
+		printf '<option value="%s"%s>сервер %s</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$_t")"
+	done
+	for _b in $(bridge_sections); do
+		_bt=$(uci -q get "$UCI_APP.$_b.tag" 2>/dev/null)
+		[ -n "$_bt" ] || continue
+		printf '<option value="%s"%s>реверс-мост %s</option>' "$(h "$_bt")" "$([ "$_cur" = "$_bt" ] && echo ' selected')" "$(h "$_bt")"
+	done
+	for _if in $(lan_ifaces); do
+		printf '<option value="iface:%s"%s>через интерфейс %s</option>' "$(h "$_if")" "$([ "$_cur" = "iface:$_if" ] && echo ' selected')" "$(h "$_if")"
+	done
+	printf '</select>'
+}
+
+out_text() { # $1 = выход -> подпись
+	case "$1" in
+		auto)    printf 'по пингу' ;;
+		direct)  printf 'напрямую' ;;
+		blocked) printf 'заблокировать' ;;
+		iface:*) printf 'через интерфейс %s' "${1#iface:}" ;;
+		'')      printf '—' ;;
+		*)       printf '%s' "$1" ;;
+	esac
+}
+
+set_item_type_title() { # $1 = тип
+	case "$1" in
+		ip)      printf 'адрес или сеть' ;;
+		geoip)   printf 'список адресов' ;;
+		domain)  printf 'домен и поддомены' ;;
+		full)    printf 'ровно этот домен' ;;
+		keyword) printf 'слово в имени' ;;
+		regexp)  printf 'шаблон' ;;
+		geosite) printf 'список доменов' ;;
+		'')      printf 'как есть' ;;
+		*)       printf '%s' "$1" ;;
+	esac
+}
+
+page_rules() {
+	# переносим старые правила (значение + выход) в наборы и правила-ссылки
+	_bak=$(rules_migrate_v062 2>/dev/null)
+	if [ -n "$_bak" ]; then
+		printf '<div class="msg">Правила перенесены в новую модель: адреса и домены разложены по наборам, из пар «кто + выход» собраны правила. Копия прежних настроек: <code>%s</code></div>\n' "$(h "$_bak")"
+	fi
+	# куда уходит остальное
+	if [ "$(cfg auto_best 0)" = 1 ]; then
+		_rest_txt='Всё, что не попало ни в один набор, уходит через <b>автовыбор по пингу</b> — то есть через самый быстрый сервер.'
+	elif [ -n "$(cfg default_outbound "")" ]; then
+		_rest_txt="Всё, что не попало ни в один набор, идёт через выход по умолчанию — <b>$(h "$(cfg default_outbound)")</b>."
+	else
+		_rest_txt='Всё, что не попало ни в один набор, идёт <b>напрямую</b>, мимо прокси.'
+	fi
+	printf '<div class="card" style="order:6"><h2>Куда идёт остальное</h2><p>%s</p><p class="muted">Меняется на странице «Прокси» (куда заворачивать) или кнопкой «основной» у сервера. DNS-запросы идут отдельно от этих правил.</p></div>\n' "$_rest_txt"
+
+	# 1) правила
+	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
+	_ract=$(rules_activity 2>/dev/null)
+	printf '<div class="card" style="order:1"><h2>Правила</h2>'
+	printf '<table class="responsive"><tr><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Работает</th><th>Действия</th></tr>'
+	_n=0
+	for _r in $(rule_sections); do
+		_n=$((_n + 1))
+		_ro=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
+		_src=$(uci -q get "$UCI_APP.$_r.source" 2>/dev/null)
+		_sets=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
+		# кто
+		if [ -z "$_src" ]; then
+			_who='<span class="muted">все устройства</span>'
+		else
+			_who=""
+			for _one in $(printf '%s' "$_src" | tr ',' ' '); do
+				_nm=$(printf '%s\n' "$_cnames" | awk -F= -v ip="$_one" '$1 == ip { print $2 }' | head -1)
+				[ -n "$_nm" ] && _who="$_who${_who:+, }$(h "$_nm") ($(h "$_one"))" || _who="$_who${_who:+, }$(h "$_one")"
+			done
+		fi
+		# куда
+		if [ -z "$_sets" ]; then
+			_where='<span class="muted">весь трафик этого клиента</span>'
+		else
+			_where=""
+			for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
+				_cn=$(set_item_sections "$_st" | wc -l | tr -d ' ')
+				_where="$_where${_where:+, }<b>$(h "$(set_name "$_st")")</b> ($_cn)"
+			done
+		fi
+		# выключено?
+		_off=""; _offmark=""
+		rule_disabled "$_r" && { _off=' style="opacity:.55"'; _offmark=' <span class="bad">выключено</span>'; }
+		# лампочка
+		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $4 "\t" $5; exit }')
+		_dotcls="dot"; _tip="нет свежих записей"
+		if [ -n "$_seen" ]; then
+			_age=$(printf '%s' "$_seen" | cut -f1)
+			_out_real=$(printf '%s' "$_seen" | cut -f2)
+			_top=$(printf '%s' "$_seen" | cut -f3)
+			case "$_age" in
+				''|*[!0-9]*) ;;
+				*)
+					if [ "$_age" -lt 30 ]; then _dotcls="dot live"
+					elif [ "$_age" -lt 300 ]; then _dotcls="dot warm"; fi
+					_tip="выход $(out_text "$_out_real"), $(human_age "$_age") назад; за 10 минут: $_top"
+					;;
+			esac
+		fi
+		printf '<tr data-rule="%s"%s><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Работает" title="%s"><span class="%s" id="rule-dot-%s"></span></td><td data-label="Действия">' \
+			"$(h "$_r")" "$_off" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_dotcls" "$(h "$_r")"
+		printf '<span class="acts">'
+		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="top"><button class="btn rule-move top" title="в самое начало">⤒</button></form>' "$(h "$_r")"
+		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="up"><button class="btn rule-move up" title="поднять выше">↑</button></form>' "$(h "$_r")"
+		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="down"><button class="btn rule-move down" title="опустить ниже">↓</button></form>' "$(h "$_r")"
+		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="bottom"><button class="btn rule-move bottom" title="в самый конец">⤓</button></form>' "$(h "$_r")"
+		printf '<a class="btn sec" href="%s?page=rule&amp;sec=%s" title="изменить правило">✎</a>' "$SCRIPT_NAME" "$(h "$_r")"
+		if rule_disabled "$_r"; then
+			printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn start" title="включить правило">▶</button></form>' "$(h "$_r")"
+		else
+			printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn stop" title="выключить правило">⏸</button></form>' "$(h "$_r")"
+		fi
+		printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger" title="удалить правило">✕</button></form>' "$(h "$_r")"
+		printf '</span></td></tr>\n'
+	done
+	if [ "$_n" = 0 ]; then
+		printf '<tr><td colspan="5" class="muted">правил пока нет — добавьте первое ниже</td></tr>'
+	fi
+	printf '</table>'
+	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="save_rule"><div class="row">'
+	printf '<div><label>Кто идёт (можно несколько)</label>'
+	rule_source_multi ""
+	printf '</div>'
+	printf '<div><label>Куда — наборы (можно несколько)</label>'
+	rule_sets_multi ""
+	printf '</div>'
+	printf '<div><label>Через что</label>'
+	rule_out_select auto
+	printf '</div></div>'
+	printf '<p><button>Добавить правило</button> <span class="muted">если «кто» не выбран — правило действует для всех устройств</span></p></form>'
+	apply_form rules
+	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее и решает. Наборы — ниже, там же в них добавляются адреса, домены и готовые списки.</p></div>\n'
+
+	# 2) наборы
+	_cur_set=$(param set)
+	[ -n "$_cur_set" ] || _cur_set=$(set_sections | head -1)
+	printf '<div class="card" style="order:2"><h2>Наборы адресов и доменов</h2>'
+	if [ -z "$(set_sections)" ]; then
+		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
+	else
+		printf '<div class="names-row">'
+		for _st in $(set_sections); do
+			_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
+			if [ "$_st" = "$_cur_set" ]; then _cls="btn"; else _cls="btn sec"; fi
+			printf '<a class="%s" href="%s?page=rules&amp;set=%s">%s (%s)</a>' "$_cls" "$SCRIPT_NAME" "$(h "$_st")" "$(h "$(set_name "$_st")")" "$_cnt"
+			if set_disabled "$_st"; then printf '<span class="bad">выключен</span>'; fi
+		done
+		printf '</div>'
+		if [ -n "$_cur_set" ]; then
+			printf '<h3>%s</h3>' "$(h "$(set_name "$_cur_set")")"
+			printf '<table class="responsive"><tr><th>Что</th><th>Значение</th><th>Действия</th></tr>'
+			_ic=0
+			for _it in $(set_item_sections "$_cur_set"); do
+				_ic=$((_ic + 1))
+				_it_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
+				_it_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
+				_offi=""; item_disabled "$_it" && _offi=' style="opacity:.55"'
+				printf '<tr%s><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
+					"$_offi" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
+				printf '<form method="post"><input type="hidden" name="action" value="item_toggle"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn sec" title="включить или выключить запись">%s</button></form>' \
+					"$(h "$_cur_set")" "$(h "$_it")" "$(item_disabled "$_it" && echo '▶' || echo '⏸')"
+				printf '<form method="post"><input type="hidden" name="action" value="item_del"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn danger" title="удалить запись">✕</button></form>' \
+					"$(h "$_cur_set")" "$(h "$_it")"
+				printf '</span></td></tr>\n'
+			done
+			if [ "$_ic" = 0 ]; then printf '<tr><td colspan="3" class="muted">в наборе пусто</td></tr>'; fi
+			printf '</table>'
+			printf '<form method="post" style="margin-top:8px"><input type="hidden" name="action" value="item_add"><input type="hidden" name="set" value="%s"><div class="row">' "$(h "$_cur_set")"
+			printf '<div><label>Что добавляем</label>'
+			rule_type_select domain
+			printf '</div>'
+			printf '<div><label>Значение (можно несколько, каждое с новой строки)</label><textarea name="value" rows="3" placeholder="youtube.com, 8.8.8.8, geosite:youtube"></textarea></div>'
+			printf '</div><p><button>Добавить в «%s»</button></p></form>' "$(h "$(set_name "$_cur_set")")"
+			printf '<p>'
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_toggle"><input type="hidden" name="set" value="%s"><button class="btn sec">%s набор</button></form>' "$(h "$_cur_set")" "$(set_disabled "$_cur_set" && echo 'включить' || echo 'выключить')"
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_del"><input type="hidden" name="set" value="%s"><button class="btn danger">удалить набор</button></form>' "$(h "$_cur_set")"
+			printf '</p>'
+		fi
+	fi
+	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="set_new"><label>Новый набор</label><input name="setname" placeholder="например: Германия-YouTube"><p><button>Создать набор</button></p></form>'
+	printf '</div>\n'
+	geo_datalist
+
+	# 3) подобрать правило для домена
+	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
+	printf '<p class="muted">Впишите домен — панель покажет, в какие наборы он попадает и какое правило сработает.</p>'
+	printf '<form method="post"><input type="hidden" name="action" value="rule_find"><div class="row">'
+	printf '<div><label>Домен</label><input name="rule_find_name" placeholder="youtube.com" autocomplete="off"></div>'
+	printf '<div><label>Или что входит в список</label><input name="list_find_name" placeholder="vk, rutube, youtube" autocomplete="off"></div>'
+	printf '</div><p><button>Проверить</button></p></form></div>\n'
+
+	# 4) готовые списки
+	printf '<div class="card" style="order:4">'
+	geo_block_html
+	printf '</div>\n'
+}
+
+page_rule_old() {
 	_sec=$(param sec)
 	_ro=$(uci -q get "$UCI_APP.$_sec.outbound")
 	_cat=$(rule_category "$_sec")
@@ -3070,6 +3415,30 @@ page_rule() {
 	printf '<p><button>Сохранить правило</button></p></form>'
 	geo_datalist
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить правило</button></form>' "$(h "$_sec")"
+	printf '</div>\n'
+}
+
+page_rule() { # изменение правила (модель 0.62: кто → наборы → через что)
+	_sec=$(param sec)
+	_ro=$(uci -q get "$UCI_APP.$_sec.outbound" 2>/dev/null)
+	_src=$(uci -q get "$UCI_APP.$_sec.source" 2>/dev/null)
+	_sets=$(uci -q get "$UCI_APP.$_sec.sets" 2>/dev/null)
+	printf '<div class="card"><h2>%s</h2><form method="post"><input type="hidden" name="action" value="save_rule">' \
+		"$([ -n "$_sec" ] && echo "Правило $_sec" || echo "Новое правило")"
+	[ -n "$_sec" ] && printf '<input type="hidden" name="sec" value="%s">' "$(h "$_sec")"
+	printf '<div class="row">'
+	printf '<div><label>Кто идёт (можно несколько)</label>'
+	rule_source_multi "$_src"
+	printf '</div>'
+	printf '<div><label>Куда — наборы (можно несколько)</label>'
+	rule_sets_multi "$_sets"
+	printf '</div>'
+	printf '<div><label>Через что</label>'
+	rule_out_select "$_ro"
+	printf '</div></div>'
+	printf '<p><button>Сохранить правило</button></p></form>'
+	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить правило</button></form>' "$(h "$_sec")"
+	printf '<p class="muted">Если «кто» не выбран — правило для всех устройств. Если наборы не выбраны — правило просто направляет выбранных клиентов целиком, без разбора адресов.</p>'
 	printf '</div>\n'
 }
 
