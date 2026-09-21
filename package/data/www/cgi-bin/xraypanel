@@ -1581,6 +1581,21 @@ page_footer() {
 		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
 		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
+	/* переключение наборов адресов: подменяем только блок наборов */
+	document.addEventListener('click', function (ev) {
+		var a = ev.target && ev.target.closest ? ev.target.closest('[data-set-pick]') : null;
+		if (!a) return;
+		ev.preventDefault();
+		var id = a.getAttribute('data-set-pick');
+		fetch(location.pathname + '?page=rules&set=' + encodeURIComponent(id) + '&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (html) {
+				var doc = new DOMParser().parseFromString(html, 'text/html');
+				var fresh = doc.querySelector('#sets-card'), cur = document.querySelector('#sets-card');
+				if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+			})
+			.catch(function () { location.href = a.getAttribute('href'); });
+	});
 	document.addEventListener('click', function (ev) {
 		var b = ev.target && ev.target.closest ? ev.target.closest('button,input[type=submit]') : null;
 		if (b) lastBtn = b;
@@ -3454,21 +3469,32 @@ page_rules() {
 		for _st in $(set_sections); do
 			_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
 			if [ "$_st" = "$_cur_set" ]; then _cls="btn"; else _cls="btn sec"; fi
-			printf '<a class="%s" href="%s?page=rules&amp;set=%s">%s (%s)</a>' "$_cls" "$SCRIPT_NAME" "$(h "$_st")" "$(h "$(set_name "$_st")")" "$_cnt"
+			printf '<a class="%s set-pick" data-set-pick="%s" href="%s?page=rules&amp;set=%s">%s (%s)</a>' "$_cls" "$(h "$_st")" "$SCRIPT_NAME" "$(h "$_st")" "$(h "$(set_name "$_st")")" "$_cnt"
 			if set_disabled "$_st"; then printf '<span class="bad">выключен</span>'; fi
 		done
 		printf '</div>'
 		if [ -n "$_cur_set" ]; then
 			printf '<h3>%s</h3>' "$(h "$(set_name "$_cur_set")")"
-			printf '<table class="responsive"><tr><th>Что</th><th>Значение</th><th>Действия</th></tr>'
+			printf '<table class="responsive"><tr><th>Работает</th><th>Что</th><th>Значение</th><th>Действия</th></tr>'
 			_ic=0
 			for _it in $(set_item_sections "$_cur_set"); do
 				_ic=$((_ic + 1))
 				_it_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
 				_it_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
 				_offi=""; item_disabled "$_it" && _offi=' style="opacity:.55"'
-				printf '<tr%s><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
-					"$_offi" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
+				# лампочка: срабатывала ли эта запись (по журналу xray)
+				_hit=$(set_item_hit "$_it")
+				_icls="dot"; _itip="нет свежих записей"
+				case "$_hit" in
+					''|*[!0-9]*) ;;
+					*)
+						if [ "$_hit" -lt 30 ]; then _icls="dot live"
+						elif [ "$_hit" -lt 300 ]; then _icls="dot warm"; fi
+						_itip="последний раз $(human_age "$_hit") назад"
+						;;
+				esac
+				printf '<tr%s><td data-label="Работает" title="%s"><span class="%s" id="item-dot-%s"></span></td><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
+					"$_offi" "$(h "$_itip")" "$_icls" "$(h "$_it")" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
 				printf '<form method="post"><input type="hidden" name="action" value="item_toggle"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn sec" title="включить или выключить запись">%s</button></form>' \
 					"$(h "$_cur_set")" "$(h "$_it")" "$(item_disabled "$_it" && echo '▶' || echo '⏸')"
 				printf '<form method="post"><input type="hidden" name="action" value="item_del"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn danger" title="удалить запись">✕</button></form>' \

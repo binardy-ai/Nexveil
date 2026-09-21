@@ -1105,6 +1105,83 @@ set_item_sections() { # $1 = раздел набора -> разделы зап�
 	printf '%s' "$_list" | sort | awk 'NF { print $3 }'
 }
 
+recent_dests() { # «имя<TAB>сколько секунд назад» — что недавно шло через xray
+	_log="$(cfg log_dir "/var/log")/xray-access.log"
+	[ -f "$_log" ] || return 0
+	_now=$(date +%s 2>/dev/null)
+	[ -n "$_now" ] || _now=0
+	# адреса переводим в имена по карте dnsmasq — иначе в журнале почти всегда
+	# только IP, и записи-домены в наборах никогда бы не «загорались»
+	tail -n 400 "$_log" 2>/dev/null | LC_ALL=C awk -v now="$_now" -v mapf="$DNS_LOG_MAP" '
+		BEGIN {
+			while ((getline ln < mapf) > 0) {
+				split(ln, mf, "\t")
+				if (mf[1] != "" && mf[2] != "") byname[mf[1]] = mf[2]
+			}
+			close(mapf)
+		}
+		/ accepted / {
+			split($1, d, "/"); split($2, t, ":")
+			ep = mktime(d[1] " " d[2] " " d[3] " " t[1] " " t[2] " " t[3])
+			if (ep <= 0) next
+			age = now - ep
+			if (age < 0) age = 0
+			dst = ""
+			for (i = 1; i <= NF; i++) if ($i == "accepted") dst = $(i + 1)
+			sub(/^(tcp|udp):/, "", dst)
+			sub(/:[0-9]+$/, "", dst)
+			if (dst == "" || dst == "reverse") next
+			if (dst in byname) dst = byname[dst]
+			if (!(dst in best) || age < best[dst]) best[dst] = age
+		}
+		END { for (d in best) printf "%s\t%d\n", d, best[d] }
+	'
+}
+
+set_item_hit() { # $1 = раздел записи -> сколько секунд назад сработала (пусто)
+	_t=$(uci -q get "$UCI_APP.$1.type" 2>/dev/null)
+	_v=$(uci -q get "$UCI_APP.$1.value" 2>/dev/null)
+	[ -n "$_v" ] || return 0
+	_low=$(printf '%s' "$_v" | tr 'A-Z' 'a-z')
+	_gl=""
+	if [ "$_t" = geosite ]; then
+		_gl=$(geo_list_domains "$_v" 20000 2>/dev/null | cut -f1 | tr 'A-Z' 'a-z')
+	fi
+	_best=""
+	while IFS="$(printf '\t')" read -r _d _a; do
+		[ -n "$_d" ] || continue
+		case "$_a" in ''|*[!0-9]*) continue ;; esac
+		_dl=$(printf '%s' "$_d" | tr 'A-Z' 'a-z')
+		_ok=""
+		case "$_t" in
+			full)    [ "$_dl" = "$_low" ] && _ok=1 ;;
+			domain)  [ "$_dl" = "$_low" ] && _ok=1
+			         case "$_dl" in *".$_low") _ok=1 ;; esac ;;
+			keyword) case "$_dl" in *"$_low"*) _ok=1 ;; esac ;;
+			regexp)  printf '%s\n' "$_dl" | grep -Eq -- "$_low" 2>/dev/null && _ok=1 ;;
+			ip|geoip) [ "$_dl" = "$_low" ] && _ok=1 ;;
+			geosite)
+				if [ -n "$_gl" ]; then
+					_d2="$_dl"
+					while [ -n "$_d2" ]; do
+						printf '%s\n' "$_gl" | grep -qxF -- "$_d2" && { _ok=1; break; }
+						case "$_d2" in
+							*.*) _d2=${_d2#*.} ;;
+							*) break ;;
+						esac
+					done
+				fi
+				;;
+		esac
+		if [ -n "$_ok" ]; then
+			if [ -z "$_best" ] || [ "$_a" -lt "$_best" ]; then _best="$_a"; fi
+		fi
+	done <<EOL
+$(recent_dests)
+EOL
+	printf '%s' "$_best"
+}
+
 set_create() { # $1 = подпись -> имя раздела
 	_i=0
 	while :; do
