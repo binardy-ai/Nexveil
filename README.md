@@ -43,6 +43,17 @@
 
     cd /tmp && tar tzf xraypanel_0.61.17_all.ipk
 
+## Скачать готовую сборку
+
+Готовые сборки лежат в разделе **Releases**: у каждой версии свой файл и готовые
+команды установки.
+
+- все версии: <https://github.com/Petr700/xraypanel/releases>
+- версия 0.61.17, файл `xraypanel_0.61.17_all.ipk`:
+  <https://github.com/Petr700/xraypanel/releases/download/v0.61.17/xraypanel_0.61.17_all.ipk>
+
+Репозиторий приватный, поэтому для скачивания нужно быть залогиненным в GitHub.
+
 ## Сборка из исходников
 
     ./build.sh
