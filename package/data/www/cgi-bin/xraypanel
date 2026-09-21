@@ -211,7 +211,24 @@ act_save_rule() {
 	_existed=$(uci -q get "$UCI_APP.$_want" 2>/dev/null)
 	_sec=$(ensure_section rule "$_want")
 	[ -n "$_sec" ] || redirect rules "не удалось создать раздел правила"
-	for _f in source value outbound; do
+	# категория правила задаёт выход: «напрямую» → direct (или через интерфейс),
+	# «заблокировать» → blocked, «через прокси» → выбранный сервер или по пингу
+	_cat=$(param category)
+	case "$_cat" in
+		direct)
+			_io=$(param iface_out)
+			case "$_io" in ''|-|direct) _out=direct ;; *) _out="iface:$_io" ;; esac
+			;;
+		block) _out=blocked ;;
+		proxy)
+			_out=$(param proxy_out)
+			[ -n "$_out" ] || _out=auto
+			;;
+		*)     _out=$(param outbound) ;;   # старое поле — на случай старых ссылок
+	esac
+	if [ -n "$_cat" ]; then ui_uci set "$UCI_APP.$_sec.category=$_cat"; else ui_uci delete "$UCI_APP.$_sec.category"; fi
+	if [ -n "$_out" ]; then ui_uci set "$UCI_APP.$_sec.outbound=$_out"; else ui_uci delete "$UCI_APP.$_sec.outbound"; fi
+	for _f in source value; do
 		_v=$(param "$_f")
 		if [ -n "$_v" ]; then ui_uci set "$UCI_APP.$_sec.$_f=$_v"; else ui_uci delete "$UCI_APP.$_sec.$_f"; fi
 	done
@@ -254,6 +271,9 @@ act_save_rule() {
 		# а порядок всегда можно поправить кнопками ↑ ↓ ⤒ ⤓
 		rule_move_first "$_sec"
 	fi
+	# приводим порядок к новой модели: правила идут группами
+	# (заблокировать → напрямую → через прокси), внутри группы — свой порядок
+	rule_normalize_order >/dev/null 2>&1
 	if [ -n "$_existed" ]; then pending_note "изменено правило: $_v"; else pending_note "добавлено правило: $_v"; fi
 	[ -n "$_existed" ] && redirect rules "правило сохранено. Осталось нажать «Подтвердить конфиг».$_geo_warn" \
 		|| redirect rules "правило добавлено. Осталось нажать «Подтвердить конфиг».$_geo_warn"
@@ -1336,7 +1356,7 @@ EOF
 	theme_style
 	# Компактные строки настроек: подпись слева, поле одного размера, подсказка
 	# справа в одну строку (что не влезло — во всплывающей подсказке).
-	printf '<style>.opt{display:grid;grid-template-columns:200px 230px 1fr;gap:6px 12px;align-items:center;margin:5px 0}.opt>label{margin:0;font-size:13px}.opt .opt-f input,.opt .opt-f select{width:100%%;box-sizing:border-box}.opt .opt-f details{width:100%%}.opt-h{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}</style>\n'
+	printf '<style>.opt{display:grid;grid-template-columns:200px 230px 1fr;gap:6px 12px;align-items:center;margin:5px 0}.opt>label{margin:0;font-size:13px}.opt .opt-f input,.opt .opt-f select{width:100%%;box-sizing:border-box}.opt .opt-f details{width:100%%}.opt-h{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}tr.cat-row td{background:var(--th-bg);font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.03em}table.responsive tr.cat-row td{display:block;text-align:left}</style>\n'
 	# плашки доменов в отчёте «подобрать правило»: наведение подсвечивает,
 	# клик копирует название; цвета чередуются
 	printf '<style>.dom{display:inline-block;cursor:pointer;padding:1px 6px;margin:2px 4px 2px 0;border-radius:6px;border:1px solid transparent}.dom-a{background:rgba(37,99,235,.12)}.dom-b{background:rgba(16,185,129,.14)}.dom:hover{background:#2563eb;color:#fff;border-color:#2563eb}</style>\n'
@@ -1571,10 +1591,24 @@ page_footer() {
 			.then(function (d) {
 				var body = row ? row.parentNode : null;
 				if (!body || !d || !d.order) return;
-				d.order.forEach(function (sec) {
-					var r2 = body.querySelector('tr[data-rule="' + sec + '"]');
-					if (r2) body.appendChild(r2);
-				});
+				/* правила живут группами (блок / напрямую / прокси): расставляем
+				   строки внутри своей группы, заголовки групп не двигаем */
+				var heads = document.querySelectorAll('tr.cat-row');
+				if (heads.length) {
+					Array.prototype.forEach.call(heads, function (h) {
+						var hcat = h.getAttribute('data-cat');
+						var ref = h;
+						d.order.forEach(function (sec) {
+							var r2 = document.querySelector('tr[data-rule="' + sec + '"][data-cat="' + hcat + '"]');
+							if (r2) { ref.parentNode.insertBefore(r2, ref.nextSibling); ref = r2; }
+						});
+					});
+				} else {
+					d.order.forEach(function (sec) {
+						var r2 = body.querySelector('tr[data-rule="' + sec + '"]');
+						if (r2) body.appendChild(r2);
+					});
+				}
 				var n = document.getElementById('rule-moved');
 				if (n) n.style.display = '';
 			})
@@ -2579,6 +2613,56 @@ geo_datalist() {
 }
 
 # устройство: подключённые сейчас + вся локальная сеть (руками вводить не надо)
+rule_category_select() { # $1 = текущая категория (direct|proxy|block)
+	_cur="$1"
+	[ -n "$_cur" ] || _cur=proxy
+	printf '<select name="category" id="rule-cat">'
+	for _pair in \
+		"direct|Напрямую — мимо прокси" \
+		"proxy|Через прокси — в тоннель" \
+		"block|Заблокировать"
+	do
+		_k=${_pair%%|*}; _v=${_pair#*|}
+		printf '<option value="%s"%s>%s</option>' "$_k" "$([ "$_cur" = "$_k" ] && echo ' selected')" "$_v"
+	done
+	printf '</select>'
+}
+
+# для категории «через прокси»: какой именно выход использовать
+rule_proxy_select() { # $1 = текущий выход (auto или тег сервера)
+	_cur="$1"
+	printf '<select name="proxy_out">'
+	printf '<option value="auto"%s>по пингу — самый быстрый сервер</option>' "$([ "$_cur" = auto ] && echo ' selected')"
+	for _s in $(server_sections); do
+		_t=$(server_tag "$_s")
+		server_is_reverse "$_t" && continue
+		printf '<option value="%s"%s>%s</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$_t")"
+	done
+	case "$_cur" in
+		''|auto|direct|blocked) ;;
+		*)
+			# выход, которого нет среди серверов (например выключенный) — не теряем
+			_known=0
+			for _s in $(server_sections); do
+				[ "$(server_tag "$_s")" = "$_cur" ] && _known=1
+			done
+			[ "$_known" = 1 ] || printf '<option value="%s" selected>%s (текущий, не из списка)</option>' "$(h "$_cur")" "$(h "$_cur")"
+			;;
+	esac
+	printf '</select>'
+}
+
+# для категории «напрямую»: можно выпустить мимо прокси или через интерфейс
+rule_iface_select() { # $1 = текущий интерфейс (пусто — просто мимо прокси)
+	_cur="$1"
+	printf '<select name="iface_out">'
+	printf '<option value=""%s>просто напрямую</option>' "$([ -z "$_cur" ] && echo ' selected')"
+	for _if in $(lan_ifaces); do
+		printf '<option value="%s"%s>через интерфейс %s</option>' "$(h "$_if")" "$([ "$_cur" = "$_if" ] && echo ' selected')" "$(h "$_if")"
+	done
+	printf '</select>'
+}
+
 rule_source_select() { # $1 = текущее значение
 	_cur="$1"
 	_sub=$(lan_subnet)
@@ -2714,7 +2798,14 @@ EOF
 	# что из правил сейчас работает — по журналу xray (кто, куда, через какой выход)
 	_ract=$(rules_activity 2>/dev/null)
 	_seen_lines=""
+	# правила показываем тремя группами — как в PassWall/HomeProxy:
+	# сперва «Заблокировать», затем «Напрямую», затем «Через прокси»
+	for _cat in block direct proxy; do
+	_cat_n=0
 	for _r in $(rule_sections); do
+		[ "$(rule_category "$_r")" = "$_cat" ] || continue
+		_cat_n=$((_cat_n + 1))
+		[ "$_cat_n" = 1 ] && printf '<tr class="cat-row" data-cat="%s"><td colspan="5">%s</td></tr>\n' "$_cat" "$(h "$(rule_category_title "$_cat")")"
 		_parts=$(rule_parts "$_r")
 		_rs=$(printf '%s' "$_parts" | cut -f1)
 		_rv=$(printf '%s' "$_parts" | cut -f3)
@@ -2782,8 +2873,8 @@ EOF
 		fi
 		# в колонке «Работает» оставляем только лампочку: она мигает, когда по
 		# правилу недавно шёл трафик (подробности — в подсказке при наведении)
-		printf '<tr data-rule="%s"%s><td data-label="Устройство">%s</td><td data-label="Куда идём">%s%s</td><td data-label="Через что">%s</td><td data-label="Работает" title="%s"><span class="%s" id="rule-dot-%s"></span></td><td data-label="Действия">' \
-			"$(h "$_r")" "$_off" "$(h "$_src_txt")" "$(h "$_rv")" "$_offmark" "$(h "$_out_txt")" \
+		printf '<tr data-rule="%s" data-cat="%s"%s><td data-label="Устройство">%s</td><td data-label="Куда идём">%s%s</td><td data-label="Через что">%s</td><td data-label="Работает" title="%s"><span class="%s" id="rule-dot-%s"></span></td><td data-label="Действия">' \
+			"$(h "$_r")" "$_cat" "$_off" "$(h "$_src_txt")" "$(h "$_rv")" "$_offmark" "$(h "$_out_txt")" \
 			"$(h "${_seenfull:-}")" "$_dotcls" "$(h "$_r")"
 		if rule_disabled "$_r"; then
 			_ticon="▶"; _tcls="start"; _ttitle="включить правило"
@@ -2801,7 +2892,8 @@ EOF
 		printf '</span>'
 		printf '</td></tr>\n'
 	done
-	printf '</table><p class="muted">Правила проверяются сверху вниз: первое подходящее и решает, куда идёт трафик. Поэтому «частное» правило ставьте выше общего — кнопки ↑ и ↓ меняют порядок. Кнопка «выключить» не удаляет правило: оно остаётся в списке (серым), но из конфига уходит — удобно проверять по одному.</p></div>\n'
+	done
+	printf '</table><p class="muted">Правила собраны в три группы и проверяются так: сперва <b>Заблокировать</b>, затем <b>Напрямую</b>, затем <b>Через прокси</b>; внутри каждой группы — сверху вниз. Первое подходящее правило и решает, куда пойдёт трафик. Кнопки ↑ и ↓ двигают правило внутри его группы, ⤒ и ⤓ — в начало или конец группы. Кнопка «выключить» не удаляет правило: оно остаётся в списке (серым), но из конфига уходит.</p></div>\n'
 	# что именно попало в лампочки: служебный трафик панель отсекает, и об этом
 	# честно пишем — иначе кажется, что лампочки «не работают»
 	if [ "$(cfg lamp_filter 1)" = 1 ]; then
@@ -2887,19 +2979,16 @@ EOF
 		printf '<option value="%s"></option>' "$(h "$_c")"
 	done
 	printf '</datalist><p class="muted" id="geo-hint" style="display:none">Название списка выбирается из подсказки — начните печатать, например <code>yo</code> или <code>ru</code>. <button type="button" class="btn sec geo-check">проверить название</button> <span id="geo-check-out"></span></p></div>'
-	# 3) через что выходим
-	printf '<div><label>Через что выходим</label><select name="outbound">'
-	printf '<option value="auto">по пингу — самый быстрый сервер</option>'
-	printf '<option value="direct">direct — напрямую (мимо прокси)</option><option value="blocked">blocked — заблокировать</option>'
-	for _s in $(server_sections); do
-		_t=$(server_tag "$_s")
-		server_is_reverse "$_t" && continue
-		printf '<option value="%s">%s</option>' "$(h "$_t")" "$(h "$_t")"
-	done
-	for _if in $(lan_ifaces); do
-		printf '<option value="iface:%s">через интерфейс %s (мимо прокси)</option>' "$(h "$_if")" "$(h "$_if")"
-	done
-	printf '</select></div></div>'
+	# 3) категория: напрямую / через прокси / заблокировать (модель 0.62)
+	printf '<div><label>Категория</label>'
+	rule_category_select proxy
+	printf '</div>'
+	printf '<div><label>Если «через прокси» — какой выход</label>'
+	rule_proxy_select auto
+	printf '</div>'
+	printf '<div><label>Если «напрямую» — через интерфейс (необязательно)</label>'
+	rule_iface_select ""
+	printf '</div></div>'
 	printf '<p><button>Добавить правило</button></p></form>'
 	printf '<p class="muted">Заполнять нужно не всё: только устройство — «этот клиент идёт туда, куда сказано ниже по умолчанию»; только «куда идём» — правило для всех; и то и другое — «этот клиент на этот адрес». Тип выбирается рядом: панель сама подставит нужный префикс (domain:, full:, geosite: и так далее). «Через интерфейс» — это уже не прокси, а маршрутизация ядра (как в pbr).</p>'
 	# кнопка подтверждения конфига прямо здесь, чтобы не бегать на «Статус»
@@ -2945,6 +3034,9 @@ EOF
 page_rule() {
 	_sec=$(param sec)
 	_ro=$(uci -q get "$UCI_APP.$_sec.outbound")
+	_cat=$(rule_category "$_sec")
+	# в каком интерфейсе выпускать, если правило «через интерфейс»
+	case "$_ro" in iface:*) _rif=${_ro#iface:} ;; *) _rif="" ;; esac
 	# «кто идёт» и «куда идём» — в одном правиле; старое правило с типом
 	# source панель тоже разбирает
 	_parts=$(rule_parts "$_sec")
@@ -2966,23 +3058,15 @@ page_rule() {
 		printf '<option value="%s"></option>' "$(h "$_c")"
 	done
 	printf '</datalist><p class="muted" id="geo-hint" style="display:none">Название списка выбирается из подсказки — начните печатать, например <code>yo</code> или <code>ru</code>. <button type="button" class="btn sec geo-check">проверить название</button> <span id="geo-check-out"></span></p></div>'
-	printf '<div><label>Через что выходим</label><select name="outbound">'
-	_allowed=" direct blocked "
-	printf '<option value="auto" %s>по пингу — самый быстрый сервер</option>' "$([ "$_ro" = auto ] && echo selected)"
-	_allowed="$_allowed""auto "
-	printf '<option value="direct" %s>direct — напрямую</option>' "$([ "$_ro" = direct ] && echo selected)"
-	printf '<option value="blocked" %s>blocked — заблокировать</option>' "$([ "$_ro" = blocked ] && echo selected)"
-	for _s in $(server_sections); do
-		_t=$(server_tag "$_s")
-		server_is_reverse "$_t" && continue
-		_allowed="$_allowed$_t "
-		printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$_ro" = "$_t" ] && echo selected)" "$(h "$_t")"
-	done
-	case "$_allowed" in
-		*" $_ro "*) ;;
-		*) [ -n "$_ro" ] && printf '<option value="%s" selected>%s (текущий, не из списка)</option>' "$(h "$_ro")" "$(h "$_ro")" ;;
-	esac
-	printf '</select></div></div>'
+	printf '<div><label>Категория</label>'
+	rule_category_select "$_cat"
+	printf '</div>'
+	printf '<div><label>Если «через прокси» — какой выход</label>'
+	rule_proxy_select "$_ro"
+	printf '</div>'
+	printf '<div><label>Если «напрямую» — через интерфейс (необязательно)</label>'
+	rule_iface_select "$_rif"
+	printf '</div></div>'
 	printf '<p><button>Сохранить правило</button></p></form>'
 	geo_datalist
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить правило</button></form>' "$(h "$_sec")"

@@ -1029,6 +1029,53 @@ rule_disabled() { # $1 = раздел правила
 	[ "$(uci -q get "$UCI_APP.$1.disabled" 2>/dev/null)" = 1 ]
 }
 
+# --- категории правил (0.62): напрямую / через прокси / заблокировать -------
+# Новая модель: у каждого правила есть категория, и все правила собираются
+# группами: сперва «заблокировать», затем «напрямую», затем «через прокси».
+# У старых правил поля нет — выводим категорию из выхода, поэтому текущие
+# настройки раскладываются по группам сами, без ручного переноса.
+rule_category() { # $1 = раздел правила -> direct | proxy | block
+	_c=$(uci -q get "$UCI_APP.$1.category" 2>/dev/null)
+	case "$_c" in
+		direct|proxy|block) printf '%s' "$_c"; return 0 ;;
+	esac
+	case "$(uci -q get "$UCI_APP.$1.outbound" 2>/dev/null)" in
+		blocked)        printf 'block' ;;
+		direct|iface:*) printf 'direct' ;;
+		*)              printf 'proxy' ;;
+	esac
+}
+
+rule_category_title() { # $1 = категория -> подпись
+	case "$1" in
+		direct) printf 'Напрямую' ;;
+		block)  printf 'Заблокировать' ;;
+		*)      printf 'Через прокси' ;;
+	esac
+}
+
+# правила в порядке срабатывания: блок, потом напрямую, потом через прокси
+rule_sections_ordered() {
+	for _cat in block direct proxy; do
+		for _r in $(rule_sections); do
+			[ "$(rule_category "$_r")" = "$_cat" ] && printf '%s\n' "$_r"
+		done
+	done
+}
+
+# номера порядка приводим к категориям: внутри группы порядок сохраняется,
+# сами группы идут блок → напрямую → прокси. После этого кнопки ↑/↓ двигают
+# правило внутри его же группы (соседние правила всегда из той же группы).
+rule_normalize_order() {
+	_i=0
+	for _r in $(rule_sections_ordered); do
+		_i=$((_i + 1))
+		uci -q set "$UCI_APP.$_r.ord=$((_i * 10))"
+	done
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_i"
+}
+
 # Сервер и реверс-мост тоже можно не удалять, а выключать: они остаются в
 # списке панели, но в конфиг xray не попадают
 server_disabled() { # $1 = раздел сервера
@@ -1103,12 +1150,15 @@ rule_move() {
 		down) [ "$_pos" -lt "$_n" ] || return 0; _swap=$((_pos + 1)) ;;
 		top)
 			# на самый верх: ставим номер меньше самого маленького и перенумеровываем
+			# (в новой модели — на самый верх своей группы: блок/напрямую/прокси)
 			rule_move_first "$_sec"
-			return $?
+			rule_normalize_order >/dev/null 2>&1
+			return 0
 			;;
 		bottom)
 			rule_move_last "$_sec"
-			return $?
+			rule_normalize_order >/dev/null 2>&1
+			return 0
 			;;
 		*)    return 1 ;;
 	esac
@@ -1119,6 +1169,9 @@ rule_move() {
 		[ "$_i" = "$_swap" ] && _other="$_r"
 	done
 	[ -n "$_other" ] || return 1
+	# двигаем только внутри своей группы: за её пределы правило не уходит,
+	# иначе оно меняло бы категорию (новая модель 0.62)
+	[ "$(rule_category "$_sec")" = "$(rule_category "$_other")" ] || return 0
 	# перенумеровываем всех и меняем номера двух соседей местами
 	_i=0
 	for _r in $(rule_sections); do
@@ -1746,7 +1799,9 @@ EOF
 		[ -n "$_bo" ] && printf ',\n      {"type": "field", "inboundTag": ["%s"], "domain": ["full:%s"], "outboundTag": "%s"}' "$_bt" "$_bd" "$_bo"
 		printf ',\n      {"type": "field", "inboundTag": ["%s"], "outboundTag": "%s"}' "$_bt" "$_bn"
 	done
-	for _r in $(rule_sections); do
+	# правила идут группами: сначала «заблокировать», потом «напрямую»,
+	# потом «через прокси» (внутри группы — свой порядок)
+	for _r in $(rule_sections_ordered); do
 		# выключенные правила в конфиг не пишем, но в списке панели они видны
 		rule_disabled "$_r" && continue
 		# правило, которое указывает на выключенный сервер, тоже не применяем
