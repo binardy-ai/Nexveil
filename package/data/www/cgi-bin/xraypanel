@@ -140,7 +140,7 @@ respond_now() { # respond_now "страница" "сообщение"
 			printf '{"ok":true,"msg":"%s","target":"%s","html":"%s"}\n' \
 				"$(jesc "$2")" "$(jesc "$_AJAX_TARGET")" "$(jesc "$_AJAX_HTML")"
 		else
-			printf '{"ok":true,"msg":"%s"}\n' "$(jesc "$2")"
+			printf '{"ok":true,"msg":"%s","go":"%s"}\n' "$(jesc "$2")" "$(jesc "$1")"
 		fi
 		# не выходим: действие ещё должно доработать (включение правил, перезапуск)
 		return 0
@@ -1011,12 +1011,10 @@ act_rule_find() {
 			_nameslow=$(printf '%s' "$_names" | tr 'A-Z' 'a-z')
 			# какие правила подходят: идём сверху вниз, как это делает xray
 			_hit=""; _hitline=""; _hitgeo=""
-			for _r in $(rule_sections); do
+			# разбираем правила по наборам: каждое правило — это «кто → наборы → выход»
+			while IFS="$(printf '\t')" read -r _r _s _t _v; do
+				[ -n "$_r" ] || continue
 				rule_disabled "$_r" && continue
-				_parts=$(rule_parts "$_r")
-				_s=$(printf '%s' "$_parts" | cut -f1)
-				_t=$(printf '%s' "$_parts" | cut -f2)
-				_v=$(printf '%s' "$_parts" | cut -f3)
 				_o=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
 				_vl=$(printf '%s' "$_v" | tr 'A-Z' 'a-z')
 				_ok=""
@@ -1026,9 +1024,15 @@ act_rule_find() {
 					         case "$_d" in *".$_vl") _ok=1 ;; esac ;;
 					keyword) case "$_d" in *"$_vl"*) _ok=1 ;; esac ;;
 					geosite) case " $_nameslow " in *" $_vl "*) _ok=1; _hitgeo=1 ;; esac ;;
+					'')      _ok=1 ;;   # правило без условий ловит всё
 				esac
 				if [ -n "$_ok" ]; then
-					_line="$_r — $( [ -n "$_s" ] && printf 'устройство %s, ' "$_s" )$(rule_matcher_value "$_t" "$_v") → ${_o:-не задан}"
+					_sets=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
+					_snames=""
+					for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
+						_snames="${_snames}${_snames:+, }$(set_name "$_st")"
+					done
+					_line="$_r — $( [ -n "$_s" ] && printf 'устройство %s, ' "$_s" )$( [ -n "$_snames" ] && printf 'набор «%s», ' "$_snames" )$( [ -n "$_t" ] && rule_matcher_value "$_t" "$_v" ) → ${_o:-не задан}"
 					if [ -z "$_hit" ]; then
 						_hit="$_r"; _hitline="${_line#$_r — }"
 						[ "$_t" = geosite ] && _hitgeo=1
@@ -1038,7 +1042,9 @@ act_rule_find() {
    перекрыто: $_line"
 					fi
 				fi
-			done
+			done <<EOL
+$(rule_conditions)
+EOL
 			# собираем отчёт
 			_out="Домен: $_d"
 			if [ "${_slow:-0}" = 1 ]; then
@@ -1111,6 +1117,8 @@ act_rule_find() {
 			;;
 	esac
 	if [ "$(param ajax)" = 1 ]; then
+		# в тихом режиме отдаём только текст результата: страница показывает
+		# его под полем, перезагрузка не нужна
 		printf 'Content-Type: text/plain; charset=utf-8\n\n%s' "$_out"
 		exit 0
 	fi
@@ -1564,9 +1572,14 @@ page_footer() {
    JSON-ом: сообщение для показа и, если нужно, готовый HTML блока, который
    страница подменяет на месте. */
 (function () {
+	/* Всё, что можно сделать без перезагрузки страницы. Не в списке только
+	   то, что обязано идти обычным путём: скачивание и загрузка файлов. */
 	var QUIET = ['rule_toggle','del_rule','item_add','item_del','item_toggle','set_new','set_del','set_toggle',
 		'traffic_reset','traffic_reset_one','dnslog_on','dnslog_off','dnslog_repair',
-		'trans_on','trans_keep','trans_off'];
+		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','srv_toggle','set_default',
+		'save_bridge','del_bridge','bridge_toggle','dedup','import_link','sub_save','sub_del','sub_update',
+		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
+		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
 	document.addEventListener('click', function (ev) {
 		var b = ev.target && ev.target.closest ? ev.target.closest('button,input[type=submit]') : null;
@@ -1619,6 +1632,14 @@ page_footer() {
 				}
 				if (d && d.msg) toast(d.msg);
 				if (window.__panelRepaint) window.__panelRepaint();
+				/* если действие относится к другой странице (сохранил сервер,
+				   правило, настройки) — переходим туда. Это переход, а не
+				   перезагрузка текущей страницы. */
+				var curPage = new URLSearchParams(location.search).get('page') || '';
+				if (d && d.go && d.go !== curPage) {
+					location.href = location.pathname + '?page=' + encodeURIComponent(d.go);
+					return;
+				}
 				/* обновляем блоки страницы на месте — без перезагрузки.
 				   Кнопки внутри новых блоков работают: обработчики здесь
 				   делегированные, то есть висят на всём документе. */
@@ -3475,10 +3496,11 @@ page_rules() {
 	# 3) подобрать правило для домена
 	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
 	printf '<p class="muted">Впишите домен — панель покажет, в какие наборы он попадает и какое правило сработает.</p>'
-	printf '<form method="post"><input type="hidden" name="action" value="rule_find"><div class="row">'
-	printf '<div><label>Домен</label><input name="rule_find_name" placeholder="youtube.com" autocomplete="off"></div>'
-	printf '<div><label>Или что входит в список</label><input name="list_find_name" placeholder="vk, rutube, youtube" autocomplete="off"></div>'
-	printf '</div><p><button>Проверить</button></p></form></div>\n'
+	printf '<div class="row">'
+	printf '<div><label>Домен — какое правило его поймает</label><input name="rule_find_name" placeholder="youtube.com" autocomplete="off"></div>'
+	printf '<div><label>Или что входит в готовый список</label><input name="list_find_name" placeholder="vk, rutube, youtube" autocomplete="off"></div>'
+	printf '</div><p><button type="button" class="btn rule-find">проверить домен</button> <button type="button" class="btn sec list-show">что в списке</button> <span class="muted" id="rule-find-out"></span></p>'
+	printf '<div id="rule-find-report" class="report"></div></div>\n'
 
 	# 4) готовые списки
 	printf '<div class="card" style="order:4">'
