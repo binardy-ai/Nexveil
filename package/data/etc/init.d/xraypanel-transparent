@@ -1,0 +1,37 @@
+#!/bin/sh /etc/rc.common
+# Автозапуск правил прозрачного режима после перезагрузки роутера.
+START=99
+STOP=10
+
+start() {
+	[ "$(uci -q get xraypanel.settings.transparent)" = 1 ] || return 0
+	# Ждём xray в фоне: правила нельзя ставить раньше, чем поднимется служба —
+	# иначе трафик завернётся в порт, который никто не слушает, и у клиентов
+	# пропадёт интернет. Ждём не в самом загрузчике, а отдельным процессом,
+	# чтобы не задерживать загрузку роутера.
+	(
+		_i=0
+		while [ "$_i" -lt 30 ]; do
+			pgrep -x xray >/dev/null 2>&1 && break
+			_i=$((_i + 1))
+			sleep 2
+		done
+		if pgrep -x xray >/dev/null 2>&1; then
+			if /usr/lib/xraypanel/transparent.sh restore >/dev/null 2>&1; then
+				printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "загрузка: правила прозрачного режима восстановлены" >> /etc/xraypanel/transparent.log 2>/dev/null
+			else
+				printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "загрузка: правила восстановить не удалось — смотрите журнал выше" >> /etc/xraypanel/transparent.log 2>/dev/null
+			fi
+		else
+			printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "загрузка: xray не поднялся — правила прозрачного режима не поставлены" >> /etc/xraypanel/transparent.log 2>/dev/null
+		fi
+	) &
+	return 0
+}
+
+stop() {
+	# штатное выключение роутера: помечаем, чтобы в панели не осталась строка
+	# «трафик идёт как обычно» — на самом деле правила вернутся при загрузке
+	XRAYPANEL_OFF_REASON=shutdown /usr/lib/xraypanel/transparent.sh off >/dev/null 2>&1
+	return 0
+}

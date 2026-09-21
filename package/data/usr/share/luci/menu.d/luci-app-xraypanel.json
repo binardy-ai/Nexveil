@@ -1,0 +1,13 @@
+{
+	"admin/services/xraypanel": {
+		"title": "Xray-панель",
+		"order": 60,
+		"action": {
+			"type": "view",
+			"path": "xraypanel/panel"
+		},
+		"depends": {
+			"acl": [ "luci-app-xraypanel" ]
+		}
+	}
+}

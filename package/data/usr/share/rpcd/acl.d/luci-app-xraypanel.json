@@ -1,0 +1,9 @@
+{
+	"luci-app-xraypanel": {
+		"description": "Ссылка на панель Xray",
+		"read": {
+			"uci": [ "luci" ]
+		},
+		"write": {}
+	}
+}

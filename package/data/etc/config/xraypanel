@@ -1,0 +1,46 @@
+
+config settings 'settings'
+	option config_path '/etc/xray/config.json'
+	option service 'xray'
+	option xray_bin ''
+	option socks_port '10808'
+	option api_port '62789'
+	option socks_udp '1'
+	option password ''
+	option default_outbound ''
+	option log_dir '/var/log'
+# автовыбор сервера по лучшему пингу (балансировщик xray leastPing):
+#	option auto_best '1'
+#	option probe_url 'https://www.gstatic.com/generate_204'
+
+# прозрачный режим (весь трафик роутера/сети идёт через xray):
+#	option transparent '1'
+#	option transparent_port '12345'
+#	option transparent_scope 'lan'      # lan | router | both | list
+#	option transparent_clients '192.168.11.50, 192.168.11.60'
+#	option transparent_iface 'br-lan'
+#	option transparent_out ''           # тег сервера; пусто = по правилам панели
+
+# Пример сервера (скопируй и заполни своими данными):
+#config server 'main'
+#	option tag 'server-main'
+#	option address 'example.com'
+#	option port '443'
+#	option uuid 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+#	option flow 'xtls-rprx-vision'
+#	option sni 'example.com'
+#	option publickey 'REALITY_PUBLIC_KEY'
+#	option shortid 'abcd'
+#	option fingerprint 'chrome'
+
+# Пример реверс-моста (обратный туннель к серверу-порталу):
+#config bridge 'lucy'
+#	option tag 'router-lucy'
+#	option domain 'router-lucy.reverse.xui'
+#	option outbound 'server-main'
+
+# Пример правила маршрутизации:
+#config rule 'lan'
+#	option type 'ip'
+#	option value '192.168.0.0/16'
+#	option outbound 'direct'

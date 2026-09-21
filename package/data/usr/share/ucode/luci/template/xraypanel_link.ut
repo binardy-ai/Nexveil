@@ -1,0 +1,23 @@
+{#
+ Ссылка на панель Xray. Страница добавлена пакетом xraypanel,
+ чтобы адрес панели всегда можно было найти из самого роутера.
+#}
+
+{% include('header') %}
+
+<%
+let host = http.getenv('HTTP_HOST') ?? '';
+let path = '/cgi-bin/xraypanel';
+let full = host != '' ? ('http://' + host + path) : path;
+%>
+
+<div class="cbi-map">
+	<h2 name="content">Xray-панель</h2>
+	<div class="cbi-map-descr">
+		<p>Адрес панели: <code>{{ full }}</code></p>
+		<p><a class="cbi-button cbi-button-apply" href="{{ path }}">Открыть панель</a></p>
+		<p>Страница добавлена пакетом xraypanel: адрес панели можно подсмотреть здесь, даже если ссылка потерялась.</p>
+	</div>
+</div>
+
+{% include('footer') %}

@@ -1,0 +1,15 @@
+<%
+local host = http.getenv("HTTP_HOST") or ""
+local path = "/cgi-bin/xraypanel"
+local full = (host ~= "") and ("http://" .. host .. path) or path
+%>
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xray-панель</title></head>
+<body style="font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px;background:#f4f5f7;color:#1b1f27">
+<h2 style="margin-top:0">Панель Xray</h2>
+<p>Адрес панели: <code style="background:#0f172a;color:#e2e8f0;padding:3px 6px;border-radius:6px"><%=full%></code></p>
+<p><a href="<%=path%>" style="display:inline-block;padding:8px 16px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none">Открыть панель</a></p>
+<p style="color:#6b7280">Страница добавлена пакетом xraypanel: чтобы адрес панели всегда можно было найти из самого роутера.</p>
+</body></html>

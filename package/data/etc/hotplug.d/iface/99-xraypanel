@@ -1,0 +1,45 @@
+#!/bin/sh
+# Когда интерфейс поднимается (это происходит и при загрузке роутера, и когда
+# провайдер переподключается), заново применяем:
+#   * маршруты через интерфейс (правила «через интерфейс …») — они живут в ядре
+#     и при переподключении WAN теряются или остаются со старым шлюзом;
+#   * правила прозрачного режима — если режим включён и xray работает.
+# Без этого после перезагрузки часть настроек «не срабатывала», хотя в панели
+# всё было на месте.
+
+# (никаких exit: hotplug-call подключает эти файлы через «.», и выход прервал бы
+#  обработку остальных скриптов)
+if [ "$ACTION" = "ifup" ]; then
+	STATE="/etc/xraypanel"
+	# интерфейсов много и событий тоже — не чаще одной попытки в 10 секунд
+	_now=$(date +%s 2>/dev/null)
+	_last=$(cat "$STATE/hotplug.last" 2>/dev/null)
+	case "$_last" in ''|*[!0-9]*) _last=0 ;; esac
+	case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
+	if [ -d "$STATE" ] && { [ "$_now" = 0 ] || [ $((_now - _last)) -ge 10 ]; }; then
+		[ "$_now" != 0 ] && date +%s > "$STATE/hotplug.last" 2>/dev/null
+		(
+			# даём сети устояться: маршрут по умолчанию появляется не сразу
+			sleep 4
+			. /usr/lib/xraypanel/lib.sh 2>/dev/null
+			iface_routes_apply >/dev/null 2>&1
+			if [ "$(uci -q get xraypanel.settings.transparent 2>/dev/null)" = 1 ]; then
+				_i=0
+				while [ "$_i" -lt 10 ]; do
+					pgrep -x xray >/dev/null 2>&1 && break
+					_i=$((_i + 1))
+					sleep 2
+				done
+				if pgrep -x xray >/dev/null 2>&1; then
+					if /usr/lib/xraypanel/transparent.sh restore >/dev/null 2>&1; then
+						printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "сеть поднялась: правила и маршруты применены заново" >> "$STATE/transparent.log" 2>/dev/null
+					else
+						printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "сеть поднялась, но правила прозрачного режима восстановить не удалось — смотрите журнал выше" >> "$STATE/transparent.log" 2>/dev/null
+					fi
+				else
+					printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "сеть поднялась, но xray не работает — правила прозрачного режима не ставил" >> "$STATE/transparent.log" 2>/dev/null
+				fi
+			fi
+		) &
+	fi
+fi

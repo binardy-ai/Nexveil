@@ -1,0 +1,14 @@
+Package: xraypanel
+Version: 0.61.17
+Depends: uhttpd
+Source: local
+SourceName: xraypanel
+License: MIT
+Section: net
+Architecture: all
+Installed-Size: 165
+Maintainer: local
+Description: Веб-панель управления xray для OpenWrt/ImmortalWrt.
+ Умеет: серверы (VLESS/Reality), реверс-мосты (обратные туннели),
+ правила маршрутизации, проверку задержки серверов и выбор основного,
+ применение конфига с проверкой и откатом.

@@ -1,0 +1,95 @@
+#!/bin/sh
+mkdir -p /etc/xraypanel
+
+# настройки по умолчанию, если их ещё нет
+if ! uci -q get xraypanel.settings >/dev/null 2>&1; then
+	uci -q add xraypanel settings >/dev/null 2>&1
+	uci -q set xraypanel.settings.config_path='/etc/xray/config.json'
+	uci -q set xraypanel.settings.service='xray'
+	uci -q set xraypanel.settings.socks_port='10808'
+	uci -q set xraypanel.settings.api_port='62789'
+		uci -q set xraypanel.settings.socks_udp='1'
+		uci -q set xraypanel.settings.transparent='0'
+		uci -q set xraypanel.settings.transparent_port='12345'
+		uci -q set xraypanel.settings.transparent_scope='lan'
+		uci commit xraypanel >/dev/null 2>&1
+	fi
+
+chmod 755 /www/cgi-bin/xraypanel 2>/dev/null
+chmod 755 /usr/lib/xraypanel/transparent.sh 2>/dev/null
+chmod 755 /usr/lib/xraypanel/transparent-enable.sh 2>/dev/null
+chmod 755 /usr/lib/xraypanel/transparent-disable.sh 2>/dev/null
+chmod 755 /etc/init.d/xraypanel-transparent 2>/dev/null
+[ -x /etc/init.d/xraypanel-transparent ] && /etc/init.d/xraypanel-transparent enable >/dev/null 2>&1
+
+# подсказка с адресом панели в баннере при входе по SSH/консоли
+if [ -f /etc/banner ] && ! grep -q "cgi-bin/xraypanel" /etc/banner 2>/dev/null; then
+	printf '\n Панель Xray: http://<адрес роутера>/cgi-bin/xraypanel\n' >> /etc/banner 2>/dev/null
+fi
+
+# чтобы LuCI сразу увидел новый пункт меню
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.* 2>/dev/null
+[ -x /etc/init.d/rpcd ] && /etc/init.d/rpcd reload >/dev/null 2>&1
+
+# CGI-скрипт uhttpd читает заново при каждом запросе, перезапуск не нужен.
+# Перезапуск веб-сервера обрывает HTTP-запрос установки, и браузер показывает
+# "XHR request aborted by browser". Поэтому здесь его нет.
+# Исключение — если в uhttpd отключён cgi_prefix.
+if [ -x /etc/init.d/uhttpd ] && uci -q get uhttpd.main >/dev/null 2>&1; then
+	if [ -z "$(uci -q get uhttpd.main.cgi_prefix)" ]; then
+		uci -q set uhttpd.main.cgi_prefix='/cgi-bin'
+		uci commit uhttpd >/dev/null 2>&1
+		/etc/init.d/uhttpd reload >/dev/null 2>&1
+	fi
+fi
+
+echo "=============================================="
+echo " xraypanel установлен"
+echo " Панель:   http://<IP роутера>/cgi-bin/xraypanel"
+echo " Настройки: /etc/config/xraypanel"
+echo " Конфиг xray: /etc/xray/config.json"
+echo "=============================================="
+
+# панель без xray бесполезна: если ядра нет — пробуем поставить пакет
+# xray-core. Делаем это в фоне с небольшой задержкой, чтобы не мешать
+# текущей установке (opkg держит блокировку, пока мы здесь).
+# xray — обязательная часть панели, но устанавливать его поверх чужой
+# настройки нельзя. Поэтому: есть xray — не трогаем; нет — доставляем.
+_xray=""
+for _p in /usr/bin/xray /usr/sbin/xray /opt/bin/xray /usr/share/xray/xray; do
+	[ -x "$_p" ] && { _xray="$_p"; break; }
+done
+if [ -z "$_xray" ] && command -v xray >/dev/null 2>&1; then
+	_xray=$(command -v xray)
+fi
+
+# в каталоге конфига мог лежать конфиг другой программы — сделаем копию
+if [ -f /etc/xray/config.json ] && ! grep -q '"local-access"' /etc/xray/config.json 2>/dev/null; then
+	_cp="/etc/xray/config.json.bak-$(date +%Y%m%d-%H%M%S)"
+	if cp -f /etc/xray/config.json "$_cp" 2>/dev/null; then
+		echo
+		echo "В /etc/xray/config.json уже был конфиг другой программы."
+		echo "Копия сохранена: $_cp (вернуть — просто скопировать файл обратно)."
+	fi
+fi
+
+if [ -n "$_xray" ]; then
+	echo
+	echo "xray уже установлен: $_xray — ничего не устанавливаю, панель будет работать с ним."
+else
+	echo
+	echo "xray не установлен — установщик поставит пакет xray-core сам."
+	echo "Работа идёт в фоне, журнал: /etc/xraypanel/install.log"
+fi
+
+# фоновая подготовка: доустановка xray (если нет), автозапуск службы,
+# сборка конфига панели и запуск. Делается после установки, чтобы не мешать
+# текущему opkg (он держит блокировку, пока выполняется этот скрипт).
+if [ -x /usr/lib/xraypanel/install-xray.sh ]; then
+	if command -v setsid >/dev/null 2>&1; then
+		setsid /usr/lib/xraypanel/install-xray.sh </dev/null >/dev/null 2>&1 &
+	else
+		sh /usr/lib/xraypanel/install-xray.sh </dev/null >/dev/null 2>&1 &
+	fi
+fi
+exit 0
