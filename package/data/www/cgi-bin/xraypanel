@@ -1643,9 +1643,11 @@ page_footer() {
 			}).catch(function () {});
 		}
 		document.addEventListener('pointerdown', function (ev) {
-			var h = ev.target && ev.target.closest ? ev.target.closest('[data-drag-handle]') : null;
-			if (!h) return;
-			row = h.closest('tr[data-rule]');
+			var t = ev.target;
+			if (!t || !t.closest) return;
+			/* тянем, зажав правило в любом месте, кроме кнопок и полей */
+			if (t.closest('button, a, input, select, textarea, form')) return;
+			row = t.closest('tr[data-rule]');
 			if (!row) return;
 			body = row.parentNode;
 			ev.preventDefault();
@@ -3551,8 +3553,14 @@ page_rules() {
 					;;
 			esac
 		fi
-		printf '<tr data-rule="%s" class="%s"><td class="drag-cell"><span class="drag-handle" data-drag-handle title="потяните, чтобы переставить правило">⠿</span></td><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
-			"$(h "$_r")" "${_rowcls# }" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_acttxt"
+		# у сработавшего правила выход подсвечиваем так же, как в «Реверсе»
+		if [ -n "$_rowcls" ]; then
+			_outcell="<span class=\"tagmark active\">$(h "$(out_text "$_ro")")</span>"
+		else
+			_outcell="$(h "$(out_text "$_ro")")"
+		fi
+		printf '<tr data-rule="%s" class="%s"><td class="drag-cell"><span class="drag-handle" data-drag-handle title="зажмите правило на секунду и потяните">⠿</span></td><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
+			"$(h "$_r")" "${_rowcls# }" "$_who" "$_where" "$_offmark" "$_outcell" "$(h "$_tip")" "$_acttxt"
 		printf '<span class="acts">'
 		printf '<a class="btn sec" href="%s?page=rule&amp;sec=%s" title="изменить правило">✎</a>' "$SCRIPT_NAME" "$(h "$_r")"
 		if rule_disabled "$_r"; then
@@ -3921,9 +3929,20 @@ EOF
 	# страницы. Все три живут в одной форме с настройками: какая нажата, та и
 	# сработает (значение кнопки отдаётся вместо скрытого поля action).
 	printf '<h3 style="order:-2">Управление</h3><p style="order:-2">'
-	printf '<button name="action" value="trans_on">Сохранить и включить с автооткатом</button> '
-	printf '<button name="action" value="trans_keep">Подтвердить (оставить правила)</button> '
-	printf '<button name="action" value="trans_off" class="btn danger">Снять правила и выключить</button>'
+	# Одна кнопка-переключатель: пока прокси выключен — «включить прокси»
+	# (обычный вид), когда включён — «можно и выключить» (как «конфиг применён»).
+	# Рядом кнопка подтверждения: до включения обычная, после включения красная
+	# (как «применить конфиг»), после подтверждения — обычная синяя.
+	if [ "$_st" = "on" ]; then
+		printf '<button name="action" value="trans_off" class="btn apply-btn done" title="снять правила перехвата и вернуть обычный интернет">можно и выключить</button> '
+	else
+		printf '<button name="action" value="trans_on" title="завернуть трафик в xray (с автооткатом через 5 минут)">включить прокси</button> '
+	fi
+	if [ "$_st" = "on" ] && [ ! -f "$_kf" ]; then
+		printf '<button name="action" value="trans_keep" class="btn apply-btn pending" title="оставить правила насовсем">подтвердить</button>'
+	else
+		printf '<button name="action" value="trans_keep" title="оставить правила насовсем">подтвердить</button>'
+	fi
 	printf '</p>\n'
 	printf '<div id="t-keepbox"%s><div class="msg">Правила включены «на пробу»: через <span id="t-left">%s</span> сек они снимутся сами. Если всё работает — нажмите «Подтвердить (оставить правила)».</div></div>' "$_kbstyle" "${_left:-0}"
 	printf '<p class="muted">Автооткат — защита от потери доступа: если через 5 минут не нажать «Подтвердить», правила снимутся сами и интернет вернётся как было.</p>'

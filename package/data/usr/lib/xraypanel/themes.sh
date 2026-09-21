@@ -110,6 +110,10 @@ code{display:inline;padding:1px 5px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:var(--gap)}
 tr.row-ok{background:var(--row-ok)}
 tr.row-bad{background:var(--row-bad)}
+/* активный выход в таблицах (серверы, реверс, правила): подсвечиваем как
+   в «Реверсе» — зелёным и жирным */
+.tagmark.active{color:var(--ok);font-weight:700}
+.tagmark.bad{color:var(--bad);font-weight:600}
 /* галочки в раскрывающемся списке интерфейсов */
 details.pick{margin:4px 0}
 details.pick>summary{cursor:pointer;font-size:13px;color:var(--muted);padding:4px 0}
