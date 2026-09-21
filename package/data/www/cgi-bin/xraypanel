@@ -378,6 +378,20 @@ act_del_rule() {
 }
 
 # --- наборы (категории) и их записи ------------------------------------------
+act_set_pick() { # запомнить, какой набор открыт (чтобы не сбрасывался)
+	_st=$(param set)
+	case "$_st" in
+		'') ui_uci delete "$UCI_APP.settings.rules_set" ;;
+		*)  ui_uci set "$UCI_APP.settings.rules_set=$_st" ;;
+	esac
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	if [ "$(param ajax)" = 1 ]; then
+		printf 'Content-Type: application/json; charset=utf-8\n\n{"ok":true}\n'
+		exit 0
+	fi
+	redirect rules "набор выбран"
+}
+
 act_set_new() { # создать набор
 	_nm=$(param setname | sed -e 's/^ *//' -e 's/ *$//')
 	[ -n "$_nm" ] || redirect rules "набор без имени не создаю"
@@ -1359,6 +1373,7 @@ case "$ACTION" in
 	rule_toggle) act_rule_toggle ;;
 	del_rule)    act_del_rule ;;
 	set_new)     act_set_new ;;
+	set_pick)    act_set_pick ;;
 	set_del)     act_set_del ;;
 	set_toggle)  act_set_toggle ;;
 	item_add)    act_item_add ;;
@@ -1594,12 +1609,25 @@ page_footer() {
 		if (!a) return;
 		ev.preventDefault();
 		var id = a.getAttribute('data-set-pick');
+		/* выбранный набор запоминаем в адресе страницы: после перезагрузки
+		   останется тот же набор, а не самый левый */
+		if (history.replaceState) {
+			history.replaceState(null, '', location.pathname + '?page=rules&set=' + encodeURIComponent(id));
+		}
 		fetch(location.pathname + '?page=rules&set=' + encodeURIComponent(id) + '&t=' + Date.now(), { cache: 'no-store' })
 			.then(function (r) { return r.text(); })
 			.then(function (html) {
 				var doc = new DOMParser().parseFromString(html, 'text/html');
 				var fresh = doc.querySelector('#sets-card'), cur = document.querySelector('#sets-card');
 				if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+				/* выбор запоминаем на сервере — иначе он терялся при переходе
+				   на другую вкладку и обратно */
+				fetch(location.pathname + '?page=rules', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+					body: new URLSearchParams({ action: 'set_pick', set: id, ajax: '1' }),
+					cache: 'no-store'
+				}).catch(function () {});
 			})
 			.catch(function () { location.href = a.getAttribute('href'); });
 	});
@@ -3399,7 +3427,7 @@ page_rules() {
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
 	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
-	printf '<table class="responsive"><tr><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Работает</th><th>Действия</th></tr>'
+	printf '<table class="responsive"><tr><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
 	_n=0
 	for _r in $(rule_sections); do
 		_n=$((_n + 1))
@@ -3432,6 +3460,7 @@ page_rules() {
 		# лампочка
 		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $4 "\t" $5; exit }')
 		_dotcls="dot"; _tip="нет свежих записей"
+		_acttxt='<span class="muted">нет свежих записей</span>'
 		if [ -n "$_seen" ]; then
 			_age=$(printf '%s' "$_seen" | cut -f1)
 			_out_real=$(printf '%s' "$_seen" | cut -f2)
@@ -3442,11 +3471,12 @@ page_rules() {
 					if [ "$_age" -lt 30 ]; then _dotcls="dot live"
 					elif [ "$_age" -lt 300 ]; then _dotcls="dot warm"; fi
 					_tip="выход $(out_text "$_out_real"), $(human_age "$_age") назад; за 10 минут: $_top"
+					_acttxt="<span class=\"ok\">$(h "$(out_text "$_out_real")")</span> <span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
 					;;
 			esac
 		fi
-		printf '<tr data-rule="%s"%s><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Работает" title="%s"><span class="%s" id="rule-dot-%s"></span></td><td data-label="Действия">' \
-			"$(h "$_r")" "$_off" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_dotcls" "$(h "$_r")"
+		printf '<tr data-rule="%s"%s><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
+			"$(h "$_r")" "$_off" "$_who" "$_where" "$_offmark" "$(h "$(out_text "$_ro")")" "$(h "$_tip")" "$_acttxt"
 		printf '<span class="acts">'
 		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="top"><button class="btn rule-move top" title="в самое начало">⤒</button></form>' "$(h "$_r")"
 		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="up"><button class="btn rule-move up" title="поднять выше">↑</button></form>' "$(h "$_r")"
@@ -3481,7 +3511,14 @@ page_rules() {
 
 	# 2) наборы
 	_cur_set=$(param set)
-	[ -n "$_cur_set" ] || _cur_set=$(set_sections | head -1)
+	# набор, открытый в прошлый раз, помним в настройках: так он не сбрасывается
+	# ни при перезагрузке страницы, ни при переходе на другую вкладку и обратно
+	[ -n "$_cur_set" ] || _cur_set=$(cfg rules_set "")
+	_known=0
+	for _s in $(set_sections); do
+		[ "$_s" = "$_cur_set" ] && _known=1
+	done
+	[ "$_known" = 1 ] || _cur_set=$(set_sections | head -1)
 	printf '<div class="card" style="order:2" id="sets-card"><h2>Наборы адресов и доменов</h2>'
 	if [ -z "$(set_sections)" ]; then
 		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
@@ -3496,26 +3533,15 @@ page_rules() {
 		printf '</div>'
 		if [ -n "$_cur_set" ]; then
 			printf '<h3>%s</h3>' "$(h "$(set_name "$_cur_set")")"
-			printf '<table class="responsive"><tr><th>Работает</th><th>Что</th><th>Значение</th><th>Действия</th></tr>'
+			printf '<table class="responsive"><tr><th>Что</th><th>Значение</th><th>Действия</th></tr>'
 			_ic=0
 			for _it in $(set_item_sections "$_cur_set"); do
 				_ic=$((_ic + 1))
 				_it_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
 				_it_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
 				_offi=""; item_disabled "$_it" && _offi=' style="opacity:.55"'
-				# лампочка: срабатывала ли эта запись (по журналу xray)
-				_hit=$(set_item_hit "$_it")
-				_icls="dot"; _itip="нет свежих записей"
-				case "$_hit" in
-					''|*[!0-9]*) ;;
-					*)
-						if [ "$_hit" -lt 30 ]; then _icls="dot live"
-						elif [ "$_hit" -lt 300 ]; then _icls="dot warm"; fi
-						_itip="последний раз $(human_age "$_hit") назад"
-						;;
-				esac
-				printf '<tr%s><td data-label="Работает" title="%s"><span class="%s" id="item-dot-%s"></span></td><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
-					"$_offi" "$(h "$_itip")" "$_icls" "$(h "$_it")" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
+				printf '<tr%s><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
+					"$_offi" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
 				printf '<form method="post"><input type="hidden" name="action" value="item_toggle"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn sec" title="включить или выключить запись">%s</button></form>' \
 					"$(h "$_cur_set")" "$(h "$_it")" "$(item_disabled "$_it" && echo '▶' || echo '⏸')"
 				printf '<form method="post"><input type="hidden" name="action" value="item_del"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn danger" title="удалить запись">✕</button></form>' \
