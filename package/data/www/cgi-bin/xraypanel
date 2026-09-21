@@ -378,6 +378,39 @@ act_del_rule() {
 }
 
 # --- наборы (категории) и их записи ------------------------------------------
+act_save_rules_all() { # сохранить все правила из таблицы и применить конфиг
+	for _r in $(rule_sections); do
+		_src=$(params_all "src_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+		_sets=$(params_all "sets_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+		_out=$(param "out_$_r")
+		if [ -n "$_src" ]; then ui_uci set "$UCI_APP.$_r.source=$_src"; else ui_uci delete "$UCI_APP.$_r.source"; fi
+		if [ -n "$_sets" ]; then ui_uci set "$UCI_APP.$_r.sets=$_sets"; else ui_uci delete "$UCI_APP.$_r.sets"; fi
+		[ -n "$_out" ] && ui_uci set "$UCI_APP.$_r.outbound=$_out"
+	done
+	for _k in $(param newrows | tr ',' ' '); do
+		[ -n "$_k" ] || continue
+		_src=$(params_all "src_$_k" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+		_sets=$(params_all "sets_$_k" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+		_out=$(param "out_$_k")
+		[ -n "$_out" ] || _out=auto
+		# пустую строку (ничего не выбрано) не сохраняем
+		if [ -z "$_src$_sets" ] && [ "$_out" = auto ]; then continue; fi
+		_new=$(rule_new_name)
+		uci -q set "$UCI_APP.$_new=rule"
+		[ -n "$_src" ] && uci -q set "$UCI_APP.$_new.source=$_src"
+		[ -n "$_sets" ] && uci -q set "$UCI_APP.$_new.sets=$_sets"
+		uci -q set "$UCI_APP.$_new.outbound=$_out"
+		_maxo=$(uci -q get "$UCI_APP.$_new.ord" 2>/dev/null); case "$_maxo" in ''|*[!0-9]*) _maxo=0 ;; esac
+		uci -q set "$UCI_APP.$_new.ord=$((_maxo + 9990))"
+	done
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_clear
+	pending_note "правила сохранены"
+	respond_now rules "правила сохранены, конфиг применяется — страница обновится сама"
+	bg_apply
+	exit 0
+}
+
 act_rule_reorder() { # новый порядок правил (перетаскиванием)
 	_o=$(param order)
 	[ -n "$_o" ] || redirect rules "новый порядок не пришёл"
@@ -1387,6 +1420,7 @@ case "$ACTION" in
 	set_new)     act_set_new ;;
 	set_pick)    act_set_pick ;;
 	rule_reorder) act_rule_reorder ;;
+	save_rules_all) act_save_rules_all ;;
 	set_del)     act_set_del ;;
 	set_toggle)  act_set_toggle ;;
 	item_add)    act_item_add ;;
@@ -1616,6 +1650,35 @@ page_footer() {
 		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
 		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
+
+	/* кнопка «добавить правило»: вставляем новую строку прямо в таблицу */
+	document.addEventListener('click', function (ev) {
+		var b = ev.target && ev.target.closest ? ev.target.closest('button.add-rule') : null;
+		if (!b) return;
+		ev.preventDefault();
+		var tbl = document.getElementById('rules-table');
+		if (!tbl) return;
+		var rows = tbl.querySelectorAll('tr[data-rule]');
+		if (!rows.length) { toast('сначала добавьте хотя бы одну строку вручную не получится — создайте правило'); return; }
+		var nr = 'new' + String(Date.now()).slice(-6);
+		var copy = rows[rows.length - 1].cloneNode(true);
+		copy.setAttribute('data-rule', nr);
+		copy.className = '';
+		Array.prototype.forEach.call(copy.querySelectorAll('input,select'), function (el) {
+			var n = el.getAttribute('name') || '';
+			if (/^(src_|sets_|out_)/.test(n)) el.setAttribute('name', n.replace(/^([a-z]+_).*$/, '$1' + nr));
+			if (el.type === 'checkbox') el.checked = false;
+			if (el.tagName === 'SELECT') el.value = 'auto';
+			if (el.tagName === 'INPUT' && el.type === 'checkbox' && el.style.display === 'none') el.checked = true;
+		});
+		Array.prototype.forEach.call(copy.querySelectorAll('.dd summary'), function (sm) { sm.textContent = 'не выбрано'; });
+		var acts = copy.querySelector('.acts');
+		if (acts) acts.innerHTML = '<span class="muted">новая строка — сохранится кнопкой «сохранить конфиг»</span>';
+		tbl.appendChild(copy);
+		var hidden = document.getElementById('newrows');
+		if (hidden) hidden.value = hidden.value ? hidden.value + ',' + nr : nr;
+		toast('строка добавлена — выберите наборы и нажмите «сохранить конфиг»');
+	});
 	/* Перетаскивание правил: держим ручку «⠿» секунду — строка «поднимается»,
 	   дальше тянем на нужное место. Порядок сохраняется тихо. */
 	(function () {
@@ -3435,9 +3498,10 @@ rule_sets_multi() { # $1 = наборы через запятую
 	printf '</select>'
 }
 
-rule_out_select() { # $1 = текущий выход
+rule_out_select() { # $1 = текущий выход, $2 = имя поля (по умолчанию outbound)
 	_cur="$1"
-	printf '<select name="outbound">'
+	_nm="${2:-outbound}"
+	printf '<select name="%s">' "$_nm"
 	printf '<option value="auto"%s>по пингу — самый быстрый сервер</option>' "$([ "$_cur" = auto ] && echo ' selected')"
 	printf '<option value="direct"%s>напрямую (WAN, мимо прокси)</option>' "$([ "$_cur" = direct ] && echo ' selected')"
 	printf '<option value="blocked"%s>заблокировать</option>' "$([ "$_cur" = blocked ] && echo ' selected')"
@@ -3482,6 +3546,61 @@ set_item_type_title() { # $1 = тип
 	esac
 }
 
+
+# выпадающий список с галочками: кто идёт (клиенты, вся сеть, роутер)
+rule_who_pick() { # $1 = текущие источники через запятую, $2 = имя полей
+	_cur=" $1 "
+	_nm="$2"
+	_sel=""
+	_sub=$(lan_subnet)
+	printf '<details class="dd"><summary>'
+	case "$_cur" in *" $_sub "*) _sel="вся локальная сеть";; esac
+	_rlip=$(uci -q get network.lan.ipaddr 2>/dev/null)
+	case "$_cur" in *" $_rlip "*) _sel="${_sel:+$_sel, }сам роутер";; esac
+	_cn=0
+	lan_clients_named 2>/dev/null | while IFS="$(printf '\t')" read -r _nm2 _ip; do
+		[ -n "$_ip" ] || continue
+		case "$_cur" in *" $_ip "*) printf '%s, ' "$_nm2";; esac
+	done > /tmp/.whosel.$$ 2>/dev/null
+	_w=$(cat /tmp/.whosel.$$ 2>/dev/null | sed -e 's/, $//')
+	rm -f /tmp/.whosel.$$ 2>/dev/null
+	[ -n "$_w" ] && _sel="${_sel:+$_sel, }$_w"
+	printf '%s</summary>' "$(h "${_sel:-все устройства}")"
+	printf '<label class="chk"><input type="checkbox" name="%s" value="" checked style="display:none">' "$_nm"
+	if [ -n "$_sub" ]; then
+		case "$_cur" in *" $_sub "*) _c=checked;; *) _c="";; esac
+		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> вся локальная сеть (%s)</label>' "$_nm" "$(h "$_sub")" "$_c" "$(h "$_sub")"
+	fi
+	if [ -n "$_rlip" ]; then
+		case "$_cur" in *" $_rlip "*) _c=checked;; *) _c="";; esac
+		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> сам роутер (%s)</label>' "$_nm" "$(h "$_rlip")" "$_c" "$(h "$_rlip")"
+	fi
+	lan_clients_named 2>/dev/null | while IFS="$(printf '\t')" read -r _nm2 _ip; do
+		[ -n "$_ip" ] || continue
+		case "$_cur" in *" $_ip "*) _c=checked;; *) _c="";; esac
+		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_ip")" "$_c" "$(h "$_nm2")" "$(h "$_ip")"
+	done
+	printf '</details>'
+}
+
+# выпадающий список с галочками: какие наборы
+rule_sets_pick() { # $1 = текущие наборы через запятую, $2 = имя полей
+	_cur=",$1,"
+	_nm="$2"
+	printf '<details class="dd"><summary>'
+	_txt=""
+	for _st in $(set_sections); do
+		case "$_cur" in *",$_st,"*) _txt="${_txt:+$_txt, }$(set_name "$_st")";; esac
+	done
+	printf '%s</summary>' "$(h "${_txt:-выбрать наборы}")"
+	for _st in $(set_sections); do
+		case "$_cur" in *",$_st,"*) _c=checked;; *) _c="";; esac
+		_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
+		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> %s (%s)</label>' "$_nm" "$(h "$_st")" "$_c" "$(h "$(set_name "$_st")")" "$_cnt"
+	done
+	printf '</details>'
+}
+
 page_rules() {
 	# переносим старые правила (значение + выход) в наборы и правила-ссылки
 	_bak=$(rules_migrate_v062 2>/dev/null)
@@ -3498,71 +3617,46 @@ page_rules() {
 	fi
 	printf '<div class="card" style="order:6"><h2>Куда идёт остальное</h2><p>%s</p><p class="muted">Меняется на странице «Прокси» (куда заворачивать) или кнопкой «основной» у сервера. DNS-запросы идут отдельно от этих правил.</p></div>\n' "$_rest_txt"
 
-	# 1) правила
+	# 1) правила — правятся прямо в таблице, сохраняются одной кнопкой
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
 	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
-	printf '<table class="responsive"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
-	_n=0
+	printf '<form method="post" id="rules-form"><input type="hidden" name="action" value="save_rules_all"><input type="hidden" name="newrows" id="newrows" value="">'
+	printf '<table class="responsive" id="rules-table"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
 	for _r in $(rule_sections); do
-		_n=$((_n + 1))
 		_ro=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
 		_src=$(uci -q get "$UCI_APP.$_r.source" 2>/dev/null)
 		_sets=$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)
-		# кто
-		if [ -z "$_src" ]; then
-			_who='<span class="muted">все устройства</span>'
-		else
-			_who=""
-			for _one in $(printf '%s' "$_src" | tr ',' ' '); do
-				_nm=$(printf '%s\n' "$_cnames" | awk -F= -v ip="$_one" '$1 == ip { print $2 }' | head -1)
-				[ -n "$_nm" ] && _who="$_who${_who:+, }$(h "$_nm") ($(h "$_one"))" || _who="$_who${_who:+, }$(h "$_one")"
-			done
-		fi
-		# куда
-		if [ -z "$_sets" ]; then
-			_where='<span class="muted">весь трафик этого клиента</span>'
-		else
-			_where=""
-			for _st in $(printf '%s' "$_sets" | tr ',' ' '); do
-				_cn=$(set_item_sections "$_st" | wc -l | tr -d ' ')
-				_where="$_where${_where:+, }<b>$(h "$(set_name "$_st")")</b> ($_cn)"
-			done
-		fi
-		# выключено?
-		_off=""; _offmark=""
-		rule_disabled "$_r" && { _off=' style="opacity:.55"'; _offmark=' <span class="bad">выключено</span>'; }
-		# лампочка
+		_off=""
+		rule_disabled "$_r" && _off=' style="opacity:.55"'
+		# активность: время и подсветка, как в клиентах
 		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $4 "\t" $5; exit }')
-		_dotcls="dot"; _tip="нет свежих записей"; _rowcls=""
-		_acttxt='<span class="muted">—</span>'
+		_rowcls=""; _tip="нет свежих записей"; _acttxt='<span class="muted">—</span>'; _outcls=""
 		if [ -n "$_seen" ]; then
 			_age=$(printf '%s' "$_seen" | cut -f1)
-			_out_real=$(printf '%s' "$_seen" | cut -f2)
 			_top=$(printf '%s' "$_seen" | cut -f3)
 			case "$_age" in
 				''|*[!0-9]*) ;;
 				*)
-					if [ "$_age" -lt 30 ]; then _dotcls="dot live"
-					elif [ "$_age" -lt 300 ]; then _dotcls="dot warm"; fi
-					_tip="выход $(out_text "$_out_real"), $(human_age "$_age") назад; за 10 минут: $_top"
-					# активный выход виден в столбце «Через что» — здесь только
-					# время, а сама строка подсвечивается как в реверсе
+					_tip="за 10 минут: $_top"
 					_acttxt="<span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
-					[ "$_age" -lt 300 ] && _rowcls=" row-ok"
+					if [ "$_age" -lt 300 ]; then _rowcls=' row-ok'; _outcls=' class="tagmark active"'; fi
 					;;
 			esac
 		fi
-		# у сработавшего правила выход подсвечиваем так же, как в «Реверсе»
-		if [ -n "$_rowcls" ]; then
-			_outcell="<span class=\"tagmark active\">$(h "$(out_text "$_ro")")</span>"
-		else
-			_outcell="$(h "$(out_text "$_ro")")"
-		fi
-		printf '<tr data-rule="%s" class="%s"><td class="drag-cell"><span class="drag-handle" data-drag-handle title="зажмите правило на секунду и потяните">⠿</span></td><td data-label="Кто идёт">%s</td><td data-label="Куда">%s%s</td><td data-label="Через что">%s</td><td data-label="Активность" title="%s">%s</td><td data-label="Действия">' \
-			"$(h "$_r")" "${_rowcls# }" "$_who" "$_where" "$_offmark" "$_outcell" "$(h "$_tip")" "$_acttxt"
-		printf '<span class="acts">'
-		printf '<a class="btn sec" href="%s?page=rule&amp;sec=%s" title="изменить правило">✎</a>' "$SCRIPT_NAME" "$(h "$_r")"
+		printf '<tr data-rule="%s" class="%s">' "$(h "$_r")" "${_rowcls# }"
+		printf '<td class="drag-cell"><span class="drag-handle" data-drag-handle title="зажмите правило на секунду и потяните">⠿</span></td>'
+		printf '<td data-label="Кто идёт">'
+		rule_who_pick "$_src" "src_$_r"
+		printf '</td>'
+		printf '<td data-label="Куда">'
+		rule_sets_pick "$_sets" "sets_$_r"
+		printf '</td>'
+		printf '<td data-label="Через что">'
+		rule_out_select "$_ro" "out_$_r"
+		printf '</td>'
+		printf '<td data-label="Активность" title="%s">%s</td>' "$(h "$_tip")" "$_acttxt"
+		printf '<td data-label="Действия"><span class="acts">'
 		if rule_disabled "$_r"; then
 			printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn start" title="включить правило">▶</button></form>' "$(h "$_r")"
 		else
@@ -3571,24 +3665,9 @@ page_rules() {
 		printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger" title="удалить правило">✕</button></form>' "$(h "$_r")"
 		printf '</span></td></tr>\n'
 	done
-	if [ "$_n" = 0 ]; then
-		printf '<tr><td colspan="5" class="muted">правил пока нет — добавьте первое ниже</td></tr>'
-	fi
 	printf '</table>'
-	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="save_rule"><div class="row">'
-	printf '<div><label>Кто идёт (можно несколько)</label>'
-	rule_source_multi ""
-	printf '</div>'
-	printf '<div><label>Куда — наборы (можно несколько)</label>'
-	rule_sets_multi ""
-	printf '</div>'
-	printf '<div><label>Через что</label>'
-	rule_out_select auto
-	printf '</div></div>'
-	printf '<p><button>Добавить правило</button> <span class="muted">если «кто» не выбран — правило действует для всех устройств</span></p></form>'
-	apply_form rules
-	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее и решает. Наборы — ниже, там же в них добавляются адреса, домены и готовые списки.</p></div>\n'
-
+	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button class="btn">сохранить конфиг</button> <span class="muted">эта кнопка сохраняет правила и применяет конфиг</span></p></form>'
+	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее решает, куда пойдёт трафик. Строку можно утащить на другое место — зажмите её на секунду. Наборы адресов — в блоке ниже.</p></div>\n'
 	# 2) наборы
 	_cur_set=$(param set)
 	# набор, открытый в прошлый раз, помним в настройках: так он не сбрасывается
