@@ -1651,6 +1651,14 @@ page_footer() {
 		'panel_install','panel_dirs'];
 	var lastBtn = null;
 
+	/* любое открытое выпадающее меню закрываем по щелчку вне него */
+	document.addEventListener('click', function (ev) {
+		var inDd = ev.target && ev.target.closest ? ev.target.closest('details.dd') : null;
+		document.querySelectorAll('details.dd[open]').forEach(function (d) {
+			if (d !== inDd) d.removeAttribute('open');
+		});
+	}, true);
+
 	/* кнопка «добавить правило»: вставляем новую строку прямо в таблицу */
 	document.addEventListener('click', function (ev) {
 		var b = ev.target && ev.target.closest ? ev.target.closest('button.add-rule') : null;
@@ -3566,7 +3574,6 @@ rule_who_pick() { # $1 = текущие источники через запят
 	rm -f /tmp/.whosel.$$ 2>/dev/null
 	[ -n "$_w" ] && _sel="${_sel:+$_sel, }$_w"
 	printf '%s</summary><div class="dd-body">' "$(h "${_sel:-все устройства}")"
-	printf '<label class="chk"><input type="checkbox" name="%s" value="" checked style="display:none">' "$_nm"
 	if [ -n "$_sub" ]; then
 		case "$_cur" in *" $_sub "*) _c=checked;; *) _c="";; esac
 		printf '<label class="chk"><input type="checkbox" name="%s" value="%s" %s> вся локальная сеть (%s)</label>' "$_nm" "$(h "$_sub")" "$_c" "$(h "$_sub")"
