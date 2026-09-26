@@ -86,6 +86,9 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 `example.com` — это примеры из документации, ваши данные на картинках не
 попадают. Панель на снимках открыта в окне 1280 px — так её видно на компьютере.
 
+Все снимки лежат в папке [`docs/screenshots`](https://github.com/Petr700/xraypanel/tree/main/docs/screenshots)
+— если картинки не показываются прямо в README, откройте файл оттуда.
+
 **Реверс (мосты)** — слева светлая тема «В стиле Windows XP», справа тёмная:
 
 ![Реверс, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-winxp.png) ![Реверс, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-dark.png)
