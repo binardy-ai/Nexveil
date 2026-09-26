@@ -162,7 +162,7 @@ config_text_matches() { # 0 = совпадает
 	_conf=$(xray_config)
 	[ -f "$_conf" ] || return 1
 	_t="${_conf}.check.$$"
-	printf '%s\n' "$1" | sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' > "$_t.a" 2>/dev/null
+	printf '%s\n' "$1" | sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' -e '/^\(head\|sed\|awk\|grep\|cat\|sort\|tr\|cut\|wc\|ls\|expr\|sh\|ash\|jesc\): /d' > "$_t.a" 2>/dev/null
 	sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$_conf" > "$_t.b" 2>/dev/null
 	_res=1
 	cmp -s "$_t.a" "$_t.b" && _res=0
@@ -177,7 +177,11 @@ config_diff_lines() {
 	_conf=$(xray_config)
 	[ -f "$_conf" ] || { echo "файла конфига на роутере нет"; return 0; }
 	_t="${_conf}.check.$$"
-	printf '%s\n' "$1" | sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' > "$_t.a" 2>/dev/null
+	# заодно выбрасываем строки, которые не могут быть конфигом, а являются
+	# сообщениями самих утилит (например «head: standard output: Broken pipe»):
+	# раньше такая строка попадала в текст конфига — и панель каждый раз считала,
+	# что настройки отличаются от файла на роутере, и просила применить конфиг
+	printf '%s\n' "$1" | sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' -e '/^\(head\|sed\|awk\|grep\|cat\|sort\|tr\|cut\|wc\|ls\|expr\|sh\|ash\|jesc\): /d' > "$_t.a" 2>/dev/null
 	sed -e 's/[[:space:]]*$//' -e '/^[[:space:]]*$/d' "$_conf" > "$_t.b" 2>/dev/null
 	# сравниваем построчно без опоры на формат вывода diff: он на разных
 	# сборках busybox бывает разным, и список различий оставался пустым
@@ -375,7 +379,10 @@ serv_done() { # $1 = значение; 0 — уже есть в списке и�
 # быть несколько (через запятую, точку с запятой или пробел).
 dns_resolver_list() {
 	printf '%s' "$(cfg dns_resolvers "$(cfg dns_resolver "1.1.1.1")")" |
-		tr -s ',;' '  ' | tr -s ' ' '\n' | awk 'NF { print }' | head -n 4
+		# ограничиваем вывод самим awk, а не через head: если head закрывает
+		# трубу раньше, его сообщение «Broken pipe» попадало в текст конфига,
+		# панель считала конфиг изменённым и просила применить его снова
+		tr -s ',;' '  ' | tr -s ' ' '\n' | awk 'NF { print; if (++n >= 4) exit }'
 }
 
 # Порты входов DNS-туннеля: базовый порт + по одному на каждый резолвер.
@@ -2250,7 +2257,9 @@ gen_config() {
 	_dnsport=$(cfg dns_port 5353)
 	# резолверов может быть несколько: первый считается основным (для входа,
 	# который используется при заворачивании клиентов прямо в xray)
-	_dnsres=$(dns_resolver_list | head -1)
+	# первый резолвер: sed читает поток до конца, поэтому никто не получит
+	# «Broken pipe» (с head это сообщение попадало в собранный конфиг)
+	_dnsres=$(dns_resolver_list | sed -n 1p)
 	# страховка: если в настройке несколько адресов через пробел — берём первый
 	_dnsres=${_dnsres%% *}
 	[ -n "$_dnsres" ] || _dnsres="1.1.1.1"
