@@ -3218,6 +3218,19 @@ window.__toast = function (msg, bad) {
 					var up = row.querySelector('.ct-up'), dn = row.querySelector('.ct-dn');
 					if (up) up.textContent = c.up;
 					if (dn) dn.textContent = c.dn;
+					/* DNS клиента (порт 53) — отдельной припиской: в основном
+					   счётчике только TCP */
+					var dnss = row.querySelector('.ct-dns');
+					if (c.dns && c.dns !== '0 Б') {
+						if (!dnss) {
+							dnss = document.createElement('span');
+							dnss.className = 'ct-dns';
+							if (dn && dn.parentNode) dn.parentNode.insertBefore(dnss, dn.nextSibling);
+						}
+						dnss.textContent = ' DNS ' + c.dns;
+					} else if (dnss) {
+						dnss.textContent = '';
+					}
 					/* через какой выход идёт трафик этого клиента — живое обновление */
 					var ex = row.querySelector('.ct-exit-cell');
 					if (ex) {
@@ -3664,8 +3677,9 @@ page_state() { # состояние в JSON — для тихого обновл
 	printf ',"clients":['
 	if [ "$_need_clients" = 1 ]; then
 	_first=1
-	_cex=$(client_exits 120 2>/dev/null)
-	_ctr2=$(client_traffic_cached 2>/dev/null)
+		_cex=$(client_exits 120 2>/dev/null)
+		_ctr2=$(client_traffic_cached 2>/dev/null)
+		_cdns2=$(client_dns_traffic 2>/dev/null)
 	# берём всех: и тех, у кого есть счётчики трафика, и тех, кого видно в журнале
 	_cips=$( { printf '%s\n' "$_ctr2" | awk 'NF { print $1 }'
 		printf '%s\n' "$_cex" | awk -F'\t' 'NF { print $1 }' ; } | LC_ALL=C sort -u )
@@ -3680,9 +3694,10 @@ page_state() { # состояние в JSON — для тихого обновл
 		_cxdst=${_cxrest2%%	*}; _cxother=${_cxrest2#*	}
 		[ "$_cxother" = "$_cxdst" ] && _cxother=""
 		[ -n "$_cx" ] || { _cxtag=""; _cxage=""; _cxdst=""; }
-		printf '{"ip":"%s","up":"%s","dn":"%s","tag":"%s","age":"%s","dest":"%s","others":"%s"}' \
+		_dnsb=$(printf '%s\n' "$_cdns2" | awk -F'\t' -v t="$_cip" '$1 == t { print $2; exit }')
+		printf '{"ip":"%s","up":"%s","dn":"%s","tag":"%s","age":"%s","dest":"%s","others":"%s","dns":"%s"}' \
 			"$(jesc "$_cip")" "$(jesc "$(human_bytes "${_cup:-0}")")" "$(jesc "$(human_bytes "${_cdn:-0}")")" \
-			"$(jesc "${_cxtag}")" "$(jesc "${_cxage}")" "$(jesc "${_cxdst}")" "$(jesc "${_cxother:-}")"
+			"$(jesc "${_cxtag}")" "$(jesc "${_cxage}")" "$(jesc "${_cxdst}")" "$(jesc "${_cxother:-}")" "$(jesc "$(human_bytes "${_dnsb:-0}")")"
 	done
 	fi
 	# какие правила работают — чтобы лампочки на «Маршрутах» обновлялись живьём
@@ -5497,6 +5512,7 @@ EOF
 			printf '<p class="muted">Режим включён: <span class="ok">зелёные</span> — эти клиенты завёрнуты в туннель, <span class="muted">серые</span> — не в списке (идут как обычно). Чтобы поменять выбор, нажмите «можно и выключить».</p>'
 			printf '<table class="responsive"><tr><th>имя</th><th>адрес</th><th>MAC</th><th>трафик ↑/↓</th><th>идёт через</th><th></th></tr>'
 		fi
+		_cdns_all=$(client_dns_traffic 2>/dev/null)
 		printf '%s' "$_list" | while IFS='|' read -r _ip _host _mac; do
 			[ -n "$_ip" ] || continue
 			_ck=""
@@ -5531,6 +5547,11 @@ EOF
 			else
 				_cxhtml='<span class="muted">нет свежих записей</span>'
 			fi
+			# DNS клиента (запросы на 53-й порт): отдельной припиской, потому что
+			# в основном счётчике трафика — только TCP
+			_cdns=$(printf '%s\n' "$_cdns_all" | awk -F'\t' -v t="$_ip" '$1 == t { print $2; exit }')
+			_cdns_html=""
+			[ -n "$_cdns" ] && _cdns_html=" <span class=\"ct-dns\" title=\"запросы DNS клиента (порт 53) с момента включения перехвата; ответы в этой цепочке не считаются\">DNS $(h "$(human_bytes "$_cdns")")</span>"
 			if [ "$_acting" = 0 ]; then
 				_ckcell="<td><input type=\"checkbox\" name=\"client\" value=\"$(h "$_ip")\" style=\"width:auto\" $_ck></td>"
 			else
@@ -5544,11 +5565,14 @@ EOF
 					*)  case ",$_pc," in *",$_ip,"*) _rcls=' class="ok"' ;; *) _rcls=' class="muted"' ;; esac ;;
 				esac
 			fi
-			printf '<tr data-client="%s">%s<td%s>%s</td><td%s>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span></td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">сброс</button></td></tr>\n' \
+			# DNS у клиента считаем отдельно: в счётчике трафика — только TCP
+			# (UDP/443 намеренно блокируется, чтобы трафик не уходил в обход прокси)
+			printf '<tr data-client="%s">%s<td%s>%s</td><td%s>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span>%s</td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">сброс</button></td></tr>\n' \
 				"$(h "$_ip")" "$_ckcell" "$_rcls" "$(h "$_host")" "$_rcls" "$(h "$_ip")" "$(h "$_mac")" \
-				"$(h "$(human_bytes "${_cup:-0}")")" "$(h "$(human_bytes "${_cdn:-0}")")" "$_cxhtml" "$(h "$_ip")"
+				"$(h "$(human_bytes "${_cup:-0}")")" "$(h "$(human_bytes "${_cdn:-0}")")" "$_cdns_html" "$_cxhtml" "$(h "$_ip")"
 		done
 		printf '</table><p class="muted">Список — постоянные аренды DHCP и текущие выданные адреса. «Трафик» — сколько устройство отдало и получило через туннель; «сброс» обнуляет счётчик у этого клиента. Есть и общая кнопка — обнуляет всем.</p>'
+		printf '<p class="muted">Считается только <b>TCP</b> — тот трафик, который заворачивается в туннель. UDP (в том числе HTTP/3 на 443-м порту) панель намеренно блокирует, чтобы трафик не уходил мимо прокси; DNS-запросы клиента (порт 53) идут отдельным путём и показаны в столбце «трафик» как «DNS …».</p>'
 		printf '<p><button type="button" class="btn sec traffic-reset-all">сбросить трафик у всех</button></p>'
 		printf '<script>(function(){function post(d){return fetch(location.pathname+location.search,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams(d),cache:"no-store"})}function zero(r){var u=r.querySelector(".ct-up"),n=r.querySelector(".ct-dn");if(u)u.textContent="0 Б";if(n)n.textContent="0 Б"}document.querySelectorAll("button.traffic-reset").forEach(function(b){b.addEventListener("click",function(){var ip=b.getAttribute("data-ip");b.disabled=true;post({action:"traffic_reset_one",ip:ip}).then(function(){var r=document.querySelector("tr[data-client=\\""+ip+"\\"]");if(r)zero(r)}).catch(function(){}).then(function(){b.disabled=false})})});var a=document.querySelector("button.traffic-reset-all");if(a)a.addEventListener("click",function(){a.disabled=true;post({action:"traffic_reset"}).then(function(){document.querySelectorAll("tr[data-client]").forEach(zero)}).catch(function(){}).then(function(){a.disabled=false})})})()</script>\n'
 		[ "$_sel_show" = 1 ] || printf '</details>\n'
