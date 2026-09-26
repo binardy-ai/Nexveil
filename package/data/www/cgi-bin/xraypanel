@@ -12,6 +12,8 @@
 . /usr/lib/xraypanel/themes.sh 2>/dev/null
 # если файла тем нет (старый пакет) — работаем без оформления
 command -v theme_style >/dev/null 2>&1 || { theme_name() { printf 'classic'; }; theme_style() { :; }; }
+# язык интерфейса: строки берутся из /usr/lib/xraypanel/lang/<язык>.sh
+lang_load 2>/dev/null
 
 METHOD="${REQUEST_METHOD:-GET}"
 SCRIPT_NAME="${SCRIPT_NAME:-/cgi-bin/xraypanel}"
@@ -1837,6 +1839,11 @@ case "$ACTION" in
 		case " ${THEME_LIST:-classic} " in
 			*" $_v "*) ui_uci set "$UCI_APP.settings.theme=$_v" ;;
 		esac
+		# язык панели: авто (по языку браузера), русский или English
+		_v=$(param lang)
+		case "$_v" in
+			auto|ru|en) ui_uci set "$UCI_APP.settings.lang=$_v" ;;
+		esac
 		uci commit "$UCI_APP" >/dev/null 2>&1
 		redirect "" "настройки сохранены" ;;
 esac
@@ -1853,7 +1860,7 @@ Cache-Control: no-store, no-cache, must-revalidate
 Pragma: no-cache
 
 <!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
+<html lang="$PANEL_LANG"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xraypanel</title>
 <style>
@@ -1874,14 +1881,14 @@ EOF
 </style></head><body class="t-$_th">
 <header><b>xraypanel</b>
 <nav>
-<a href="$SCRIPT_NAME?page=" class="$([ "$(param page)" = "" ] && echo on)">Статус</a>
-<a href="$SCRIPT_NAME?page=servers" class="$([ "$(param page)" = servers ] && echo on)">Серверы</a>
-<a href="$SCRIPT_NAME?page=bridges" class="$([ "$(param page)" = bridges ] && echo on)">Реверс</a>
-<a href="$SCRIPT_NAME?page=transparent" class="$([ "$(param page)" = transparent ] && echo on)">Прокси</a>
-<a href="$SCRIPT_NAME?page=rules" class="$([ "$(param page)" = rules ] && echo on)">Маршруты</a>
-<a href="$SCRIPT_NAME?page=config" class="$([ "$(param page)" = config ] && echo on)">Конфиг</a>
-<a href="$SCRIPT_NAME?page=settings" class="$([ "$(param page)" = settings ] && echo on)">Настройки</a>
-<a href="$SCRIPT_NAME?page=backup" class="$([ "$(param page)" = backup ] && echo on)">Бэкап</a>
+<a href="$SCRIPT_NAME?page=" class="$([ "$(param page)" = "" ] && echo on)">$T_status_2</a>
+<a href="$SCRIPT_NAME?page=servers" class="$([ "$(param page)" = servers ] && echo on)">$T_servers</a>
+<a href="$SCRIPT_NAME?page=bridges" class="$([ "$(param page)" = bridges ] && echo on)">$T_reverse</a>
+<a href="$SCRIPT_NAME?page=transparent" class="$([ "$(param page)" = transparent ] && echo on)">$T_proxy</a>
+<a href="$SCRIPT_NAME?page=rules" class="$([ "$(param page)" = rules ] && echo on)">$T_routes</a>
+<a href="$SCRIPT_NAME?page=config" class="$([ "$(param page)" = config ] && echo on)">$T_config</a>
+<a href="$SCRIPT_NAME?page=settings" class="$([ "$(param page)" = settings ] && echo on)">$T_settings</a>
+<a href="$SCRIPT_NAME?page=backup" class="$([ "$(param page)" = backup ] && echo on)">$T_backup</a>
 </nav>
 EOF
 	# кнопка применения конфига — отдельно, справа в шапке (только когда есть
@@ -1913,9 +1920,9 @@ apply_form() {
 	# Надпись на кнопке: пока есть неприменённые изменения — «применить конфиг»
 	# красным, а после применения — «конфиг применён» зелёным.
 	if config_dirty || [ -n "$(pending_list 1 2>/dev/null)" ]; then
-		_lbl="применить конфиг"; _cls="btn apply-btn pending"
+		_lbl="$T_apply_config"; _cls="btn apply-btn pending"
 	else
-		_lbl="конфиг применён"; _cls="btn apply-btn done"
+		_lbl="$T_config_applied"; _cls="btn apply-btn done"
 	fi
 	printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><input type="hidden" name="back" value="%s"><button class="%s">%s</button></form>' "$(h "$1")" "$_cls" "$_lbl"
 }
@@ -1953,8 +1960,8 @@ page_footer() {
 	# Звук кнопок: имя звука и громкость отдаём странице маленьким скриптом.
 	# Своих звуковых файлов в пакете нет — звук синтезирует сам браузер, поэтому
 	# он не занимает места и не тянет загрузку.
-	printf '<script>window.__xpSound="%s";window.__xpVolume="%s";</script>\n' \
-		"$(h "$(cfg sound click)")" "$(h "$(cfg volume mid)")"
+	printf '<script>window.__xpSound="%s";window.__xpVolume="%s";window.__xpLbl={apply:"%s",done:"%s"};</script>\n' \
+		"$(h "$(cfg sound click)")" "$(h "$(cfg volume mid)")" "$(h "$T_apply_config")" "$(h "$T_config_applied")"
 	cat <<'EOF'
 <script>
 /* Всплывающее сообщение внизу экрана: ничего не сдвигает на странице и само
@@ -2291,9 +2298,11 @@ window.__toast = function (msg, bad) {
 	   раньше их было две (в шапке и в карточке правил), и они расходились —
 	   одна оставалась красной после применения или не краснела после правок. */
 	window.setApplyButtons = function (ok) {
+		/* надписи на кнопках берём из языка панели (см. window.__xpLbl) */
+		var L = window.__xpLbl || { apply: 'применить конфиг', done: 'конфиг применён' };
 		Array.prototype.forEach.call(document.querySelectorAll('button.apply-btn'), function (b) {
 			b.disabled = false;
-			b.textContent = ok ? 'конфиг применён' : 'применить конфиг';
+			b.textContent = ok ? L.done : L.apply;
 			b.className = b.className.replace(/\b(done|pending)\b/g, '').replace(/\s+/g, ' ').trim() + (ok ? ' done' : ' pending');
 		});
 		var hdr = document.querySelector('.apply-hdr');
@@ -3772,26 +3781,26 @@ page_status() {
 		*)       _sc="bad"; _st="служба не найдена" ;;
 	esac
 	cat <<EOF
-<div class="card"><h2>Состояние</h2>
+<div class="card"><h2>$T_status</h2>
 <table>
-<tr><th>Адрес панели</th><td>$( [ -n "$_paddr" ] && printf '<a href="%s">%s</a>' "$_paddr" "$_paddr" || echo '<span class="muted">открыта локально</span>' )</td></tr>
-<tr><th>Версия панели</th><td><code>$(h "$(panel_version)")</code></td></tr>
-<tr><th>Служба</th><td class="$_sc svcstate">$_st</td></tr>
-<tr><th>Бинарник xray</th><td><code>$(h "$(xray_bin)")</code> $([ -x "$(xray_bin)" ] && "$(xray_bin)" version 2>/dev/null | head -1 || echo '<span class="bad">не найден</span>')</td></tr>
-<tr><th>Файл конфига</th><td><code>$(h "$(xray_config)")</code></td></tr>
-<tr><th>SOCKS / API</th><td>$(cfg socks_port 10808) / $(cfg api_port 62789)</td></tr>
-<tr><th>Выход по умолчанию</th><td>$( [ -n "$(cfg default_outbound "")" ] && h "$(cfg default_outbound "")" || echo '<span class="muted">не выбран (такой трафик идёт напрямую)</span>')</td></tr>
-<tr><th>Сейчас в работе (по журналу)</th><td>$( _a=$(active_outbound); [ -n "$_a" ] && h "$_a" || echo '<span class="muted">пока нечего показать</span>' )</td></tr>
-<tr><th>Автозапуск службы</th><td>$( if svc_enabled; then echo '<span class="ok">включён</span>'; else echo '<span class="bad">выключен — после перезагрузки xray не поднимется</span>'; fi )</td></tr>
-<tr><th>Часовой пояс журнала</th><td>$( h "$(tz_state)" )</td></tr>
+<tr><th>$T_panel_address</th><td>$( [ -n "$_paddr" ] && printf '<a href="%s">%s</a>' "$_paddr" "$_paddr" || echo '<span class="muted">открыта локально</span>' )</td></tr>
+<tr><th>$T_panel_version</th><td><code>$(h "$(panel_version)")</code></td></tr>
+<tr><th>$T_service</th><td class="$_sc svcstate">$_st</td></tr>
+<tr><th>$T_xray_binary</th><td><code>$(h "$(xray_bin)")</code> $([ -x "$(xray_bin)" ] && "$(xray_bin)" version 2>/dev/null | head -1 || echo '<span class="bad">не найден</span>')</td></tr>
+<tr><th>$T_config_file</th><td><code>$(h "$(xray_config)")</code></td></tr>
+<tr><th>$T_socks_api</th><td>$(cfg socks_port 10808) / $(cfg api_port 62789)</td></tr>
+<tr><th>$T_default_outbound</th><td>$( [ -n "$(cfg default_outbound "")" ] && h "$(cfg default_outbound "")" || echo '<span class="muted">не выбран (такой трафик идёт напрямую)</span>')</td></tr>
+<tr><th>$T_currently_in_use_from_the_lo</th><td>$( _a=$(active_outbound); [ -n "$_a" ] && h "$_a" || echo '<span class="muted">пока нечего показать</span>' )</td></tr>
+<tr><th>$T_service_autostart</th><td>$( if svc_enabled; then echo '<span class="ok">включён</span>'; else echo '<span class="bad">выключен — после перезагрузки xray не поднимется</span>'; fi )</td></tr>
+<tr><th>$T_log_time_zone</th><td>$( h "$(tz_state)" )</td></tr>
 </table>
 <p class="muted">Это куда идёт трафик, который не попал ни под одно правило: клиенты SOCKS-входа панели (10808), прозрачный режим в варианте «по правилам панели» и всё остальное без явного маршрута. Реверс-мосты и правила маршрутизации его не используют. Если включён автовыбор по пингу, эта настройка не участвует.</p>
-<form method="post"><input type="hidden" name="action" value="enable_service"><button>Включить автозапуск xray</button></form>
-<form method="post" style="margin-top:8px"><input type="hidden" name="action" value="fix_tz"><button class="btn sec">Выставить журналу время роутера</button></form>
+<form method="post"><input type="hidden" name="action" value="enable_service"><button>$T_enable_xray_autostart</button></form>
+<form method="post" style="margin-top:8px"><input type="hidden" name="action" value="fix_tz"><button class="btn sec">$T_set_log_time_to_router_time</button></form>
 <p>
-<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><button>Применить конфиг</button></form>
-<form method="post" style="display:inline"><input type="hidden" name="action" value="restart"><button class="btn sec">Перезапустить xray</button></form>
-<form method="post" style="display:inline"><input type="hidden" name="action" value="rollback"><button class="btn danger">Откат конфига</button></form>
+<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><button>$T_apply_config</button></form>
+<form method="post" style="display:inline"><input type="hidden" name="action" value="restart"><button class="btn sec">$T_restart_xray</button></form>
+<form method="post" style="display:inline"><input type="hidden" name="action" value="rollback"><button class="btn danger">$T_roll_back_config</button></form>
 </p></div>
 <p class="muted">«Применить конфиг» — собрать конфиг xray из настроек панели, проверить его и перезапустить службу. «Откат конфига» — вернуть прежний конфиг из единственной копии, которую панель сохраняет перед применением.</p>
 EOF
@@ -3802,7 +3811,7 @@ EOF
 	update_card_html
 	printf '</div>\n'
 	# смена версии панели: понижение или повышение без ssh
-	printf '<div class="card"><h2>Смена версии панели</h2>'
+	printf '<div class="card"><h2>'"$T_change_panel_version"'</h2>'
 	printf '<p class="muted">Можно поставить другую версию панели, не заходя по ssh: положите файл <b>.ipk</b> на роутер (например в <code>/tmp</code>) или загрузите его кнопкой ниже. Настройки, серверы и правила при этом не трогаются — меняется только сама панель, xray не перезапускается.</p>'
 	_pk=$(panel_ipk_list 2>/dev/null)
 	if [ -n "$_pk" ]; then
@@ -3820,13 +3829,13 @@ EOF
 					"$(h "$_pf")" "$(h "$(basename "$_pf")")" "$(h "$_pv")" "$(h "$(human_bytes "${_psz:-0}")")"
 			fi
 		done
-		printf '</select> <button class="btn">поставить выбранный</button></form>'
+		printf '</select> <button class="btn">'"$T_install_selected"'</button></form>'
 		printf '<p class="muted">Проверяются папки: <code>%s</code>. Их можно поменять командой <code>uci set xraypanel.settings.panel_ipk_dirs=\"/tmp /etc/xraypanel/versions\"</code>.</p></details>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	else
 		printf '<p class="muted">Пакетов не нашлось. Проверенные папки: <code>%s</code>. Загрузите файл — он попадёт в <code>/etc/xraypanel/versions</code> и появится здесь.</p>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	fi
-	printf '<form method="post" enctype="multipart/form-data" style="margin-top:8px"><input type="hidden" name="action" value="panel_upload"><label>Загрузить пакет .ipk с компьютера</label><input type="file" name="ipk" accept=".ipk"><p><button>Загрузить</button></p></form>'
-	printf '<form method="post" style="margin-top:8px"><label>Папки, где искать пакеты (через пробел)</label><input name="panel_ipk_dirs" value="%s"><p><button class="btn sec">сохранить папки</button></p></form>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
+	printf '<form method="post" enctype="multipart/form-data" style="margin-top:8px"><input type="hidden" name="action" value="panel_upload"><label>Загрузить пакет .ipk с компьютера</label><input type="file" name="ipk" accept=".ipk"><p><button>'"$T_upload"'</button></p></form>'
+	printf '<form method="post" style="margin-top:8px"><label>Папки, где искать пакеты (через пробел)</label><input name="panel_ipk_dirs" value="%s"><p><button class="btn sec">'"$T_save_folders"'</button></p></form>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	_pip=$(cfg panel_prev_ipk "")
 	if [ -n "$_pip" ] && [ -f "$_pip" ]; then
 		printf '<form method="post"><input type="hidden" name="action" value="panel_install"><input type="hidden" name="file" value="%s"><button class="btn sec">вернуть прежнюю версию (%s)</button></form>' \
@@ -3840,12 +3849,12 @@ EOF
 		elif [ -n "$_prc" ]; then
 			printf '<p class="bad">Установка не прошла (код %s) — панель осталась прежней. Что ответил установщик, видно ниже.</p>' "$(h "$_prc")"
 		fi
-		printf '<details class="pick"><summary>журнал установки</summary><pre>%s</pre></details>' "$(printf '%s' "$_plog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_installation_log"'</summary><pre>%s</pre></details>' "$(printf '%s' "$_plog" | h_in)"
 	fi
 	printf '<p class="muted">Перед установкой панель запоминает пакет, который стоял до этого, — на него возвращает кнопка «вернуть прежнюю версию». Если новая версия не откроется совсем, спасают только ssh и <code>opkg install --force-reinstall /tmp/<файл>.ipk</code>.</p>'
 	printf '</div>\n'
 	if ! xray_present; then
-		printf '<div class="card"><h2 class="bad">xray не установлен</h2>'
+		printf '<div class="card"><h2 class="bad">'"$T_xray_is_not_installed"'</h2>'
 		printf '<p>Панель — это только управление, а самого ядра xray на роутере нет, поэтому ничего работать не будет. Установщик панели ставит его сам — что получилось, видно ниже в журнале.</p>'
 		printf '<p>Нажмите «Применить конфиг»: если xray ещё не установлен, панель поставит пакет <code>xray-core</code> из репозитория, включит автозапуск и поднимет службу. Роутеру нужен доступ в интернет.</p>'
 		_ilog=$(tail -n 10 "$STATE_DIR/install.log" 2>/dev/null)
@@ -3853,12 +3862,12 @@ EOF
 		printf '<p class="muted">Если из репозитория не получится — поставьте вручную: <code>opkg update &amp;&amp; opkg install xray-core</code>, затем «Применить конфиг».</p></div>'
 	fi
 	if [ -z "$(cfg password "")" ]; then
-		printf '<div class="card"><h2 class="bad">Панель без пароля</h2>'
+		printf '<div class="card"><h2 class="bad">'"$T_panel_without_a_password"'</h2>'
 		printf '<p>Сейчас панель открыта всем, у кого есть доступ к роутеру по сети, а работает она от имени root: может менять конфиг, перезапускать службы и ставить пакеты. Поставьте пароль на странице «Настройки» — после этого панель спросит логин <code>admin</code> и этот пароль.</p></div>'
 	fi
 	_slog="$STATE_DIR/service.log"
 	if [ -f "$_slog" ]; then
-		printf '<div class="card"><h2>Последний перезапуск xray</h2><pre>%s</pre>\n<p class="muted">Если тут ошибка — xray не поднялся, проверьте конфиг кнопкой «Откат конфига».</p></div>\n' "$(tail -n 15 "$_slog" | h_in)"
+		printf '<div class="card"><h2>'"$T_last_xray_restart"'</h2><pre>%s</pre>\n<p class="muted">Если тут ошибка — xray не поднялся, проверьте конфиг кнопкой «Откат конфига».</p></div>\n' "$(tail -n 15 "$_slog" | h_in)"
 	fi
 }
 
@@ -3866,7 +3875,7 @@ EOF
 # обновления — страница «Серверы» перерисовывает её без перезагрузки
 servers_table_html() {
 	_actv=$(effective_outbound)
-	printf '<table class="responsive"><tr><th>Имя</th><th>Тег</th><th>Адрес</th><th title="время реального запроса через сервер — именно по нему работает автовыбор «по лучшему пингу»">Проверка (прокси)</th><th title="пинг сети до сервера, без учёта его канала">Пинг (сеть)</th><th></th></tr>'
+	printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_tag"'</th><th>'"$T_address"'</th><th title="время реального запроса через сервер — именно по нему работает автовыбор «по лучшему пингу»">'"$T_check_proxy"'</th><th title="пинг сети до сервера, без учёта его канала">'"$T_ping_network"'</th><th></th></tr>'
 	for _s in $(server_sections); do
 		_tag=$(server_tag "$_s")
 		_style=""; _mark=""
@@ -3892,7 +3901,7 @@ servers_table_html() {
 			if [ -n "$_def_tag" ] && [ "$_tag" = "$_def_tag" ]; then
 				_btn_def='<span class="tagmark active" title="этот сервер — выход по умолчанию: сюда идёт трафик без своего правила">основной</span>'
 			else
-				_btn_def=$(printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_default"><input type="hidden" name="tag" value="%s"><button class="btn sec" title="весь трафик без своего правила пойдёт через этот сервер (автовыбор по пингу будет выключен)">сделать основным</button></form>' "$(h "$_tag")")
+				_btn_def=$(printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_default"><input type="hidden" name="tag" value="%s"><button class="btn sec" title="весь трафик без своего правила пойдёт через этот сервер (автовыбор по пингу будет выключен)">'"$T_make_default"'</button></form>' "$(h "$_tag")")
 			fi
 		fi
 		_res=$(url_test_saved "$_tag")
@@ -3948,7 +3957,7 @@ servers_table_html() {
 		_addrhp="$(h "$(uci -q get "$UCI_APP.$_s.address")"):$(h "$(uci -q get "$UCI_APP.$_s.port")")"
 		# длинные значения (имя, тег, адрес) держим в одной строке: хвост
 		# обрезается, полный текст виден при наведении мышки
-		printf '<tr data-tag="%s"%s><td data-label="Имя"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Тег"><span class="%s" title="%s"%s>%s</span></td><td data-label="Адрес"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Проверка"><span class="%s"%s>%s</span>%s</td><td data-label="Пинг">%s</td><td data-label="Действия"><a class="btn sec" href="%s?page=server&amp;sec=%s">изменить</a> <button type="button" class="btn sec urltest-one" data-tag="%s">проверить</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> %s</td></tr>\n' \
+		printf '<tr data-tag="%s"%s><td data-label="Имя"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Тег"><span class="%s" title="%s"%s>%s</span></td><td data-label="Адрес"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Проверка"><span class="%s"%s>%s</span>%s</td><td data-label="Пинг">%s</td><td data-label="Действия"><a class="btn sec" href="%s?page=server&amp;sec=%s">изменить</a> <button type="button" class="btn sec urltest-one" data-tag="%s">'"$T_check"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> %s</td></tr>\n' \
 			"$(h "$_tag")" "$_style" "$_rev" "$(h "$_tag")" "$(h "$_s")" "$_offmark" \
 			"$_tagcls" "$(h "$_tag")" "$_rev" "$(h "$_tag")" \
 			"$_rev" "$_addrhp" "$_addrhp" "$_ep" \
@@ -3965,20 +3974,20 @@ servers_table_html() {
 		_llg=$(tail -n 12 "$STATE_DIR/last-test.log" 2>/dev/null)
 		if [ -n "$_llg" ]; then
 			[ -n "$_lwhy" ] && printf '<p class="muted">Последняя проверка: <b>%s</b>.</p>' "$(h "$_lwhy")"
-			printf '<details class="pick"><summary>журнал последней проверки (подробно)</summary><pre>%s</pre></details>\n' "$(printf '%s' "$_llg" | h_in)"
+			printf '<details class="pick"><summary>'"$T_last_check_log_detailed"'</summary><pre>%s</pre></details>\n' "$(printf '%s' "$_llg" | h_in)"
 		fi
 	fi
 }
 
 page_servers() {
 	cat <<EOF
-<div class="card"><h2>Серверы</h2>
+<div class="card"><h2>$T_servers</h2>
 <p class="muted">«Проверка» — это не пинг, а скачивание тестового адреса через сервер: видно, работает ли узел на самом деле. Адрес и порт проверки задаются в «Настройках», там же можно включить периодическую проверку.</p>
 <div id="servers-box">
 EOF
 	servers_table_html
 	printf '</div>\n'
-	printf '<p><button type="button" class="btn sec urltest-all">проверить все</button> <button type="button" class="btn sec ping-all">замерить пинг</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="dedup"><button class="btn sec">убрать дубли</button></form> <a class="btn sec" href="%s?page=server">добавить сервер вручную</a> ' "$SCRIPT_NAME"
+	printf '<p><button type="button" class="btn sec urltest-all">'"$T_check_all"'</button> <button type="button" class="btn sec ping-all">'"$T_measure_ping"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="dedup"><button class="btn sec">'"$T_remove_duplicates"'</button></form> <a class="btn sec" href="%s?page=server">добавить сервер вручную</a> ' "$SCRIPT_NAME"
 	apply_form servers
 	printf '</p>\n'
 	printf '<p class="muted">Проверка одного узла занимает несколько секунд (панель поднимает отдельный xray и качает через него тестовую страницу). «Проверить все» идёт в фоне: результаты появляются в таблице сами, страница не перезагружается.</p></div>\n'
@@ -3986,16 +3995,16 @@ EOF
 	printf '<p class="muted">Серверы, занятые реверс-мостами (они работают как выход для моста), показаны <b style="color:#2563eb">жирным синим</b> — имя, тег и адрес.</p>\n'
 	printf '<p class="muted">Столбец «Пинг» заполняется по кнопке <b>«замерить пинг»</b> (замер идёт при открытии страницы по этой кнопке, чтобы обычная загрузка не тормозила). Столбец «Проверка» — это не пинг, а скачивание тестового адреса через сервер.</p>\n'
 	# подписки: список узлов по ссылке
-	printf '<div class="card"><h2>Подписки</h2>'
+	printf '<div class="card"><h2>'"$T_subscriptions"'</h2>'
 	printf '<p class="muted">Подписка — это ссылка, по которой сервер отдаёт список узлов. Панель скачивает его и сама создаёт серверы; при обновлении узлы этой подписки заменяются свежими (ваши личные серверы не трогаются).</p>'
 	_subs=$(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=sub$/\1/p')
 	if [ -n "$_subs" ]; then
-		printf '<table class="responsive"><tr><th>Имя</th><th>Адрес</th><th>Узлов</th><th>Обновлено</th><th></th></tr>'
+		printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_address"'</th><th>'"$T_nodes"'</th><th>'"$T_updated"'</th><th></th></tr>'
 		for _s in $_subs; do
 			_su=$(uci -q get "$UCI_APP.$_s.url")
 			_sc=$(uci -q get "$UCI_APP.$_s.count")
 			_st=$(uci -q get "$UCI_APP.$_s.updated")
-			printf '<tr data-sub="%s"><td data-label="Имя">%s</td><td data-label="Адрес" class="url"><span class="muted">%s</span></td><td data-label="Узлов"><span class="sub-count">%s</span></td><td data-label="Обновлено"><span class="sub-updated">%s</span></td><td data-label="Действия"><button type="button" class="btn sec sub-update" data-sub="%s">обновить</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><button class="btn danger">удалить</button></form></td></tr>\n' \
+			printf '<tr data-sub="%s"><td data-label="Имя">%s</td><td data-label="Адрес" class="url"><span class="muted">%s</span></td><td data-label="Узлов"><span class="sub-count">%s</span></td><td data-label="Обновлено"><span class="sub-updated">%s</span></td><td data-label="Действия"><button type="button" class="btn sec sub-update" data-sub="%s">'"$T_update"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' \
 				"$(h "$_s")" "$(h "$_s")" "$(h "$_su")" "$(h "${_sc:-—}")" "$(h "${_st:-ещё не обновлялась}")" "$(h "$_s")" "$(h "$_s")"
 		done
 		printf '</table>'
@@ -4004,14 +4013,14 @@ EOF
 	printf '<div><label>Имя подписки (латиницей)</label><input name="sec" placeholder="sub1"></div>'
 	printf '<div><label>Адрес подписки</label><input name="url" placeholder="https://..."></div>'
 	printf '<div><label>User-Agent (некоторые серверы требуют свой)</label><input name="ua" value="v2rayNG/1.8.5"></div>'
-	printf '</div><p><button>Добавить и обновить</button></p></form>'
+	printf '</div><p><button>'"$T_add_and_update"'</button></p></form>'
 	printf '<p class="muted">Некоторые подписки отдают узлы только определённым клиентам — тогда помогает поле User-Agent (например <code>v2rayNG/1.8.5</code> или <code>Clash</code>).</p></div>\n'
 	cat <<EOF
-<div class="card"><h2>Добавить из ссылки</h2>
+<div class="card"><h2>$T_add_from_link</h2>
 <form method="post"><input type="hidden" name="action" value="import_link">
 <label>Ссылка vless:// (Reality)</label>
 <input name="link" placeholder="vless://uuid@server:443?security=reality&amp;pbk=...&amp;sid=...&amp;sni=...&amp;flow=xtls-rprx-vision#имя">
-<p><button>Добавить сервер из ссылки</button></p></form>
+<p><button>$T_add_server_from_link</button></p></form>
 <p class="muted">Из ссылки берутся адрес, порт, UUID, flow, SNI, публичный ключ, short ID и отпечаток. Название после # становится именем сервера. Реверс ссылкой не передаётся — он настраивается в разделе «Реверс».</p></div>
 EOF
 }
@@ -4093,10 +4102,10 @@ page_server() {
 	printf '<div class="f-wg"><label>Адрес клиента (например 10.0.0.2/32)</label><input name="wg_address" value="%s"></div>' "$(h "$_wga")"
 	printf '<div class="f-wg"><label>Куда направлять (allowedIPs)</label><input name="wg_allowed" value="%s" placeholder="0.0.0.0/0"></div>' "$(h "$_wgl")"
 	printf '<div class="f-wg"><label>MTU</label><input name="mtu" value="%s" placeholder="1420"></div>' "$(h "$_mtu")"
-	printf '</div><p><button>Сохранить</button></p></form>'
+	printf '</div><p><button>'"$T_save"'</button></p></form>'
 	# показываем только поля выбранного протокола
 	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
-	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить сервер</button></form>' "$(h "$_sec")"
+	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_server"'</button></form>' "$(h "$_sec")"
 	[ -n "$_sec" ] && printf ' <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s">%s</button></form>' \
 		"$(h "$_sec")" "$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo start || echo stop)" \
 		"$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo 'Включить сервер' || echo 'Выключить сервер (не удалять)')"
@@ -4111,7 +4120,7 @@ page_bridges() {
 	_binver=$("$(xray_bin)" version 2>/dev/null | head -1)
 	[ -n "$_binver" ] || _binver="не найден"
 	_style=$(reverse_style 2>/dev/null)
-	printf '<div class="card"><h2>Какие реверсы умеет ваша сборка</h2>'
+	printf '<div class="card"><h2>'"$T_which_reverse_modes_your_bui"'</h2>'
 	case "$_cap" in
 		both)
 			printf '<p>Установленный xray: <b>%s</b>. Он понимает <b>оба</b> способа реверса — и старый (по домену), и новый (VLESS Reverse Proxy). Значит, мосты обоих видов могут работать одновременно.</p>' "$(h "$_binver")"
@@ -4128,9 +4137,9 @@ page_bridges() {
 	printf '<div class="row"><div><label>Сменить общий способ</label><select name="style">'
 	printf '<option value="legacy"%s%s>старый — по домену (нужна сборка xray до 26.4.18)</option>' "$([ "$_style" = legacy ] && echo ' selected')" "$([ "$_cap" != both ] && echo ' disabled')"
 	printf '<option value="new"%s%s>новый — VLESS Reverse Proxy по тегу (сборка 25.9.11+)</option>' "$([ "$_style" = new ] && echo ' selected')" "$([ "$_cap" = none ] && echo ' disabled')"
-	printf '</select></div></div><p><button class="btn sec">сохранить способ</button> <span class="muted">после этого нажмите «применить конфиг»</span></p></form>'
-	printf '<details class="pick"><summary>Кратко: какой реверс с какой сборкой работает</summary>'
-	printf '<table><tr><th>Способ</th><th>Что это</th><th>Какие сборки xray понимают</th></tr>'
+	printf '</select></div></div><p><button class="btn sec">'"$T_save_mode"'</button> <span class="muted">после этого нажмите «применить конфиг»</span></p></form>'
+	printf '<details class="pick"><summary>'"$T_short_which_reverse_works_wi"'</summary>'
+	printf '<table><tr><th>'"$T_mode"'</th><th>'"$T_what_it_is"'</th><th>'"$T_which_xray_builds_support_it"'</th></tr>'
 	printf '<tr><td>старый</td><td>по домену, <code>reverse.bridges</code></td><td>до 26.4.18: 24.12.31, 26.4.17 и подобные. В 26.4.25 его уже нет</td></tr>'
 	printf '<tr><td>новый</td><td>VLESS Reverse Proxy по тегу, <code>"reverse": {"tag": …}</code> у выхода моста</td><td>25.9.11 и новее: 26.4.25, 26.9.9 и подобные</td></tr>'
 	printf '</table>'
@@ -4140,9 +4149,9 @@ page_bridges() {
 	printf '<p class="muted">Способ у отдельного моста задаётся в его форме, поле «Способ реверса»; «как у роутера» — значит берётся общий способ, выбранный выше.</p>'
 	printf '</details></div>'
 	cat <<EOF
-<div class="card"><h2>Реверс-мосты</h2>
+<div class="card"><h2>$T_reverse_bridges</h2>
 <p class="muted">Мост — это обратный туннель: роутер сам подключается к серверу-порталу, и через него к тебе «заходят» сервисы роутера (LuCI, SSH и т.п.).</p>
-<table class="responsive"><tr><th>Имя</th><th>Тег моста</th><th>Способ</th><th>Домен</th><th>Выход (сервер)</th><th title="время ответа выходного сервера (живой замер при открытии страницы)">Отклик</th><th>Состояние</th><th></th></tr>
+<table class="responsive"><tr><th>$T_name</th><th>$T_bridge_tag</th><th>$T_mode</th><th>$T_domain</th><th>$T_outbound_server</th><th title="время ответа выходного сервера (живой замер при открытии страницы)">$T_response</th><th>$T_status</th><th></th></tr>
 EOF
 	for _b in $(bridge_sections); do
 		_bt=$(uci -q get "$UCI_APP.$_b.tag")
@@ -4186,26 +4195,26 @@ EOF
 			"$_bcls" "$(h "$_bt")" "$(h "$_bt")" "$_bstxt" \
 			"$(h "$_bdom")" "$(h "$_bdom")" "$(h "$_bout")" "$(h "$_bout")" \
 			"$_bms" "$(h "$_bstate")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
-		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">удалить</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
+		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
 	done
 	printf '</table><p class="muted">Работающие мосты — зелёным, отвалившиеся — красным. Причина написана в столбце «Состояние»: панель сначала смотрит, есть ли у роутера живое соединение с сервером моста, а если не видно — насколько свежие записи моста в журнале xray.</p>\n<p><a class="btn sec" href="%s?page=bridge">добавить мост</a> ' "$SCRIPT_NAME"
 	apply_form bridges
 	printf '</p></div>\n'
 	printf '<p class="muted">Кнопка ⏸ выключает мост, не удаляя его: он остаётся в списке серым, но в конфиг не попадает — туннель не поднимается, пока его не включат обратно.</p>\n'
 	# диагностика: видно, что именно видит проверка
-	printf '<div class="card"><h2>Проверка: что видит панель</h2><pre>'
+	printf '<div class="card"><h2>'"$T_check_what_the_panel_sees"'</h2><pre>'
 	for _b in $(bridge_sections); do
 		bridge_debug "$(uci -q get "$UCI_APP.$_b.tag")" "$(uci -q get "$UCI_APP.$_b.outbound")" | h_in
 		printf '\n'
 	done
 	printf '</pre><p class="muted">Если тут написано «таблица соединений: НЕТ» или пусто в «есть команды» — пришлите этот текст, я скажу, что установить.</p></div>\n'
 	cat <<EOF
-<div class="card"><h2>Как заполнять</h2>
+<div class="card"><h2>$T_how_to_fill_in</h2>
 <table>
-<tr><th>Тег моста</th><td>имя моста, оно должно совпадать с тем, что прописано на сервере-портале (в старом конфиге было <code>router-lucy</code>)</td></tr>
-<tr><th>Способ реверса</th><td><b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.25); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.</td></tr>
-<tr><th>Домен</th><td>домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>) — нужен только старому способу</td></tr>
-<tr><th>Выход</th><td>тег сервера, через который роутер подключается к порталу; чтобы ходить напрямую, укажите <code>direct</code></td></tr>
+<tr><th>$T_bridge_tag</th><td>имя моста, оно должно совпадать с тем, что прописано на сервере-портале (в старом конфиге было <code>router-lucy</code>)</td></tr>
+<tr><th>$T_reverse_mode</th><td><b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.25); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.</td></tr>
+<tr><th>$T_domain</th><td>домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>) — нужен только старому способу</td></tr>
+<tr><th>$T_outbound</th><td>тег сервера, через который роутер подключается к порталу; чтобы ходить напрямую, укажите <code>direct</code></td></tr>
 </table></div>
 EOF
 }
@@ -4263,8 +4272,8 @@ page_bridge() {
 	printf '</div>'
 	printf '<p class="muted">«Выход» — через какой сервер роутер подключается к порталу. «Куда выпускать трафик из туннеля» — куда уходит трафик клиента, который пришёл по реверсу: <b>домашняя сеть и интернет</b> — доступны и роутер с локальными устройствами, и выход в интернет через домашний канал; <b>только интернет</b> — домашняя сеть закрыта, клиент увидит внешний адрес роутера; <code>blocked</code> — не выпускать никуда; либо выбранный сервер.</p>'
 	printf '<p class="muted">В списке выходов видны все серверы с их адресами — выбирайте из списка, вручную тег писать не нужно. «Выключен» рядом с сервером означает, что он не попадёт в конфиг, пока его не включат на странице «Серверы».</p>'
-	printf '<p><button>Сохранить мост</button></p></form>'
-	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить мост</button></form>' "$(h "$_sec")"
+	printf '<p><button>'"$T_save_bridge"'</button></p></form>'
+	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_bridge"'</button></form>' "$(h "$_sec")"
 	[ -n "$_sec" ] && printf ' <form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s">%s</button></form>' \
 		"$(h "$_sec")" "$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo start || echo stop)" \
 		"$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo 'Включить мост' || echo 'Выключить мост (не удалять)')"
@@ -4395,16 +4404,16 @@ geo_block_html() {
 	_if=$(geo_files geoip)
 	# блок большой, поэтому прячем его под спойлер: на странице видно только
 	# заголовок, содержимое открывается по нажатию
-	printf '<div class="card" style="order:4"><details class="pick"><summary>Готовые списки (гео) — файлы со списками и обновление из интернета</summary>'
+	printf '<div class="card" style="order:4"><details class="pick"><summary>'"$T_geo_lists_files_and_updates_"'</summary>'
 	if [ -z "$_sf$_if" ]; then
 		printf '<p class="bad">Файлов со списками (geosite.dat, geoip.dat) на роутере нет — правила с готовыми списками работать не будут.</p>'
 		printf '<p class="muted">Их ставят пакеты v2ray-geosite и v2ray-geoip. Кнопка ниже поставит их в фоне.</p>'
-		printf '<form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">поставить пакеты со списками</button></form>'
+		printf '<form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">'"$T_install_list_packages"'</button></form>'
 		printf '</details></div>\n'
 		return 0
 	fi
 	printf '<p class="muted">Названия для «списка доменов» и «списка адресов» панель берёт из файлов самого роутера — значит, список точно совпадает с тем, что умеет ваш xray.</p>'
-	printf '<table><tr><th>Файл</th><th>Что внутри</th><th>Размер</th><th>Изменён</th><th>Названий</th></tr>'
+	printf '<table><tr><th>'"$T_file"'</th><th>'"$T_contains"'</th><th>'"$T_size"'</th><th>'"$T_modified"'</th><th>'"$T_names"'</th></tr>'
 	printf '%s\n%s\n' "$_sf" "$_if" | while IFS="$(printf '\t')" read -r _f _n; do
 		[ -n "$_f" ] || continue
 		# сколько названий дал именно этот файл при последнем сборе
@@ -4422,7 +4431,7 @@ geo_block_html() {
 		printf '<p class="bad">Файлов со списками адресов не нашлось (обычно это пакет v2ray-geoip).</p>'
 	fi
 	if [ -z "$_sf" ] || [ -z "$_if" ]; then
-		printf '<p><form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">поставить пакеты со списками</button></form></p>'
+		printf '<p><form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">'"$T_install_list_packages"'</button></form></p>'
 	fi
 	_ng=$(geo_tags_count geosite); _ni=$(geo_tags_count geoip)
 	if geo_cache_ready; then
@@ -4439,19 +4448,19 @@ geo_block_html() {
 		if ! geo_cache_fresh; then
 			printf '<p class="muted">Набор файлов изменился после сбора — нажмите «собрать названия заново», чтобы список совпадал с файлами.</p>'
 		fi
-		printf '<p><button type="button" class="btn sec geo-build">собрать названия заново</button> <span class="muted" id="geo-note"></span></p>'
+		printf '<p><button type="button" class="btn sec geo-build">'"$T_rebuild_names"'</button> <span class="muted" id="geo-note"></span></p>'
 		_glog="$STATE_DIR/geo-tags.log"
 		if [ -f "$_glog" ]; then
-			printf '<details class="pick"><summary>Журнал сбора названий</summary><pre>%s</pre></details>' "$(tail -n 20 "$_glog" | h_in)"
+			printf '<details class="pick"><summary>'"$T_name_collection_log"'</summary><pre>%s</pre></details>' "$(tail -n 20 "$_glog" | h_in)"
 		fi
 	else
 		printf '<p class="muted">Названия списков ещё не собраны. Это разово и занимает до пары минут — панель делает это в фоне, страницу держать открытой не нужно.</p>'
-		printf '<p><button type="button" class="btn geo-build">собрать названия списков</button> <span class="muted" id="geo-note"></span></p>'
+		printf '<p><button type="button" class="btn geo-build">'"$T_collect_list_names"'</button> <span class="muted" id="geo-note"></span></p>'
 		# если сбор уже пробовали — показываем, что он писал: по этому видно,
 		# почему названия не появились
 		_glog="$STATE_DIR/geo-tags.log"
 		if [ -f "$_glog" ]; then
-			printf '<details class="pick"><summary>Журнал сбора названий</summary><pre>%s</pre></details>' "$(tail -n 15 "$_glog" | h_in)"
+			printf '<details class="pick"><summary>'"$T_name_collection_log"'</summary><pre>%s</pre></details>' "$(tail -n 15 "$_glog" | h_in)"
 		fi
 	fi
 	# обновление списков из интернета (как в PassWall)
@@ -4462,10 +4471,10 @@ geo_block_html() {
 	printf '<option value="v2fly">v2fly — официальные (домены 2 МБ, адреса 22 МБ)</option>'
 	printf '<option value="russia">runetfreedom — российские списки (файлы большие: домены ~70 МБ)</option>'
 	printf '</select></div></div>'
-	printf '<p><button type="button" class="btn geo-update">обновить списки из интернета</button> <span class="muted" id="geo-upd-note"></span></p>'
+	printf '<p><button type="button" class="btn geo-update">'"$T_update_lists_from_the_intern"'</button> <span class="muted" id="geo-upd-note"></span></p>'
 	_gulog="$STATE_DIR/geo-update.log"
 	if [ -f "$_gulog" ]; then
-		printf '<details class="pick"><summary>Журнал обновления списков</summary><pre>%s</pre></details>' "$(tail -n 25 "$_gulog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_list_update_log"'</summary><pre>%s</pre></details>' "$(tail -n 25 "$_gulog" | h_in)"
 	fi
 	printf '</details></div>\n'
 }
@@ -4611,7 +4620,7 @@ page_rules() {
 	# 1) правила — правятся прямо в таблице, сохраняются одной кнопкой
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
-	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
+	printf '<div class="card" style="order:1" id="rules-card"><h2>'"$T_rules"'</h2>'
 	# Честность лампочек: панель узнаёт, какое правило поймало трафик, по именам
 	# сайтов из журнала запросов dnsmasq. Если имён нет, условия правил проверить
 	# нечем — и лампочки начинают показывать не те строки. Об этом надо сказать
@@ -4619,11 +4628,11 @@ page_rules() {
 	case "$(dns_names_state)" in
 		off)
 			printf '<p class="bad">Запись запросов DNS выключена, поэтому панель не знает имён сайтов: лампочки могут показывать не то правило. '
-			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_on"><button class="btn sec">включить запись запросов DNS</button></form></p>'
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_on"><button class="btn sec">'"$T_enable_dns_query_logging"'</button></form></p>'
 			;;
 		silent)
 			printf '<p class="bad">dnsmasq перестал писать в системный журнал роутера (так бывает после сбоя журнала). Из-за этого панель не знает имён сайтов, и лампочки могут показывать не то правило. Перезапускаю dnsmasq сам — имена вернутся через несколько минут. '
-			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_repair"><button class="btn sec">починить сейчас</button></form></p>'
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_repair"><button class="btn sec">'"$T_fix_now"'</button></form></p>'
 			dns_try_repair
 			;;
 		nolog)
@@ -4631,7 +4640,7 @@ page_rules() {
 			;;
 	esac
 	printf '<div id="rules-form"><input type="hidden" name="newrows" id="newrows" value="">'
-	printf '<table class="responsive" id="rules-table"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
+	printf '<table class="responsive" id="rules-table"><tr><th></th><th>'"$T_who_goes"'</th><th>'"$T_where_sets"'</th><th>'"$T_through_what"'</th><th>'"$T_activity"'</th><th>'"$T_actions"'</th></tr>'
 	for _r in $(rule_sections); do
 		_ro=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
 		_src=$(uci -q get "$UCI_APP.$_r.source" 2>/dev/null)
@@ -4704,11 +4713,11 @@ page_rules() {
 	# неприменённые изменения — красная «применить конфиг», после применения —
 	# зелёная «конфиг применён»
 	if config_dirty || [ -n "$(pending_list 1 2>/dev/null)" ]; then
-		_albl="применить конфиг"; _acls="btn apply-btn pending"
+		_albl="$T_apply_config"; _acls="btn apply-btn pending"
 	else
-		_albl="конфиг применён"; _acls="btn apply-btn done"
+		_albl="$T_config_applied"; _acls="btn apply-btn done"
 	fi
-	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button type="button" class="%s rules-apply">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></div>' "$_acls" "$_albl"
+	printf '<p><button type="button" class="btn sec add-rule">'"$T_add_rule"'</button> <button type="button" class="%s rules-apply">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></div>' "$_acls" "$_albl"
 	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее решает, куда пойдёт трафик. Строку можно утащить на другое место — зажмите её на секунду. Наборы адресов — в блоке ниже.</p></div>\n'
 	# карточки страницы: правила собраны выше, наборы и готовые списки —
 	# отдельными функциями. Наборы вынесены, чтобы страница могла перерисовать
@@ -4737,18 +4746,18 @@ sets_card_html() {
 	printf '<div class="newset">'
 	printf '<form method="post"><input type="hidden" name="action" value="set_new">'
 	printf '<div><label>Новый набор</label><input name="setname" placeholder="например: Прямые"></div>'
-	printf '<button>Создать набор</button></form>'
+	printf '<button>'"$T_create_set"'</button></form>'
 	if [ -n "$_cur_set" ]; then
 		printf '<form method="post"><input type="hidden" name="action" value="set_rename"><input type="hidden" name="set" value="%s">' "$(h "$_cur_set")"
 		printf '<div><label>Переименовать «%s»</label><input name="newname" value="%s"></div>' "$(h "$(set_name "$_cur_set")")" "$(h "$(set_name "$_cur_set")")"
-		printf '<button class="btn sec">Переименовать</button></form>'
+		printf '<button class="btn sec">'"$T_rename"'</button></form>'
 		printf '<form method="post"><input type="hidden" name="action" value="set_toggle"><input type="hidden" name="set" value="%s"><button class="btn %s">%s набор</button></form>' \
 			"$(h "$_cur_set")" "$(set_disabled "$_cur_set" && echo 'start' || echo 'stop')" "$(set_disabled "$_cur_set" && echo 'включить' || echo 'выключить')"
-		printf '<form method="post"><input type="hidden" name="action" value="set_del"><input type="hidden" name="set" value="%s"><button class="btn danger">удалить набор</button></form>' "$(h "$_cur_set")"
-		printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec" title="разобрать готовые списки этого набора: по разобранному списку лампочка в наборе загорается точно так же, как в правиле">разобрать списки набора</button></form>'
+		printf '<form method="post"><input type="hidden" name="action" value="set_del"><input type="hidden" name="set" value="%s"><button class="btn danger">'"$T_delete_set"'</button></form>' "$(h "$_cur_set")"
+		printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec" title="разобрать готовые списки этого набора: по разобранному списку лампочка в наборе загорается точно так же, как в правиле">'"$T_parse_set_lists"'</button></form>'
 	fi
 	printf '</div>'
-	printf '<h2>Наборы адресов и доменов</h2><details class="pick" open><summary>показать наборы и их содержимое</summary>'
+	printf '<h2>'"$T_address_and_domain_sets"'</h2><details class="pick" open><summary>'"$T_show_sets_and_their_content"'</summary>'
 	if [ -z "$(set_sections)" ]; then
 		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
 	else
@@ -4762,7 +4771,7 @@ sets_card_html() {
 		printf '</div>'
 		if [ -n "$_cur_set" ]; then
 			printf '<h3>%s</h3>' "$(h "$(set_name "$_cur_set")")"
-			printf '<table class="responsive"><tr><th>Что</th><th>Значение</th><th>Действия</th></tr>'
+			printf '<table class="responsive"><tr><th>'"$T_what"'</th><th>'"$T_value"'</th><th>'"$T_actions"'</th></tr>'
 			_ic=0
 			# подсветка сработавших записей: считается один раз на набор
 			_iact=$(set_items_activity "$_cur_set" "$_ract" 2>/dev/null)
@@ -4832,7 +4841,7 @@ sets_card_html() {
 				[ -f "$STATE_DIR/geo-item.running" ] || bg_run "$GEO_ITEM_ENV sh '$GEO_ITEM'" "$STATE_DIR/geo-item.log"
 			fi
 			# сохранение правок записей: тише, без перезагрузки страницы
-			printf '<p><button type="button" class="btn sec items-save">сохранить изменения записей</button> <span class="muted" id="items-note">правьте тип и значение прямо в таблице</span></p>'
+			printf '<p><button type="button" class="btn sec items-save">'"$T_save_entry_changes"'</button> <span class="muted" id="items-note">правьте тип и значение прямо в таблице</span></p>'
 			printf '<form method="post" style="margin-top:8px"><input type="hidden" name="action" value="item_add"><input type="hidden" name="set" value="%s"><div class="row">' "$(h "$_cur_set")"
 			printf '<div><label>Что добавляем</label>'
 			# по умолчанию — готовый список доменов: в 99% случаев нужен он
@@ -4845,13 +4854,13 @@ sets_card_html() {
 			# руками в шаблоне легко ошибиться в экранировании точки или в скобках
 			printf '<div style="margin-top:6px"><label>Собрать шаблон из сайтов (если нужен шаблон)</label>'
 			printf '<div style="display:flex;gap:6px"><input id="tmpl-sites" placeholder="vkvideo.ru, rutube.ru" autocomplete="off">'
-			printf '<button type="button" class="btn sec" id="tmpl-build">собрать шаблон</button></div>'
+			printf '<button type="button" class="btn sec" id="tmpl-build">'"$T_build_template"'</button></div>'
 			printf '<p class="tmpl-hint" id="tmpl-hint" style="margin:4px 0 0">Напиши домены через запятую — панель соберёт <code>(^|\\.)(домен1|домен2)$</code>, переключит тип на «Шаблон» и подставит выражение в «Значение».</p></div>'
 			# проверка домена — тут же, рядом с полем «Значение»: найденный домен
 			# можно сразу положить в набор (удержание плашки) или скопировать
 			printf '<div><label>Проверка домена: где он есть и какое правило поймает</label>'
 			printf '<input name="rule_find_name" placeholder="youtube.com" autocomplete="off">'
-			printf '<p style="margin:6px 0 0"><button type="button" class="btn small rule-find">проверить домен</button> <button type="button" class="btn small sec list-show">что в списке</button> <span class="muted" id="rule-find-out"></span></p>'
+			printf '<p style="margin:6px 0 0"><button type="button" class="btn small rule-find">'"$T_check_domain"'</button> <button type="button" class="btn small sec list-show">'"$T_what_is_in_the_list"'</button> <span class="muted" id="rule-find-out"></span></p>'
 			printf '<input name="list_find_name" list="geo-names" placeholder="список: vk, rutube, youtube, category-ru" autocomplete="off" style="margin-top:6px">'
 			printf '</div>'
 			printf '</div></form>'
@@ -4869,7 +4878,7 @@ rules_lists_html() {
 	# «Маршрутов», хотя блоки со спойлером обычно свёрнуты. Сама подсказка
 	# названий (datalist) остаётся в странице — она лёгкая и нужна полю «Значение».
 	printf '<div class="card" style="order:4" id="geo-card">'
-	printf '<details class="pick" id="geo-det"><summary>Готовые списки доменов и адресов (geosite / geoip)</summary>'
+	printf '<details class="pick" id="geo-det"><summary>'"$T_geo_lists_of_domains_and_add"'</summary>'
 	printf '<div id="geo-body"><p class="muted">Нажмите на заголовок — покажу файлы со списками, состояние разбора по наборам, обновление из интернета и журналы. Расчёты панель делает только при открытии, чтобы «Маршруты» открывались быстрее.</p></div>'
 	printf '</details>'
 	geo_datalist
@@ -4889,13 +4898,13 @@ geo_body_html() {
 	if [ -z "$_sf$_if" ]; then
 		printf '<p class="bad">Файлов со списками (geosite.dat, geoip.dat) на роутере нет — правила с готовыми списками работать не будут.</p>'
 		printf '<p class="muted">Их ставят пакеты v2ray-geosite и v2ray-geoip. Кнопка ниже поставит их в фоне.</p>'
-		printf '<form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">поставить пакеты со списками</button></form>'
+		printf '<form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">'"$T_install_list_packages"'</button></form>'
 		return 0
 	fi
 	# --- 1. сами файлы со списками
 	printf '<h3>1. Файлы со списками на роутере</h3>'
 	printf '<p class="muted">Панель берёт названия списков прямо из этих файлов — значит, подсказка в поле «Значение» совпадает с тем, что умеет ваш xray.</p>'
-	printf '<table><tr><th>Файл</th><th>Что внутри</th><th>Размер</th><th>Изменён</th><th>Названий разобрано</th></tr>'
+	printf '<table><tr><th>'"$T_file"'</th><th>'"$T_contains"'</th><th>'"$T_size"'</th><th>'"$T_modified"'</th><th>'"$T_names_parsed"'</th></tr>'
 	# /usr/share/xray/geosite.dat обычно ссылка на /usr/share/v2ray/geosite.dat:
 	# показываем такой файл один раз, иначе таблица дублируется зря
 	_seenreal=""
@@ -4939,7 +4948,7 @@ geo_body_html() {
 	else
 		printf '<p class="muted">Названия списков ещё не собраны. Это разово и занимает до пары минут — панель делает это фоном, страницу держать открытой не нужно.</p>'
 	fi
-	printf '<form method="post"><input type="hidden" name="action" value="geo_build"><button class="btn sec">собрать названия заново</button></form>'
+	printf '<form method="post"><input type="hidden" name="action" value="geo_build"><button class="btn sec">'"$T_rebuild_names"'</button></form>'
 	# --- 2. списки, которые стоят в наборах
 	printf '<h3>2. Списки из правил и наборов</h3>'
 	printf '<p class="muted">По разобранному списку панель точно понимает, какое правило поймало трафик: лампочка в правиле и в наборе загорается верно. Без разбора условие проверяется только «по выходу».</p>'
@@ -4947,7 +4956,7 @@ geo_body_html() {
 	if [ -z "$_sr" ]; then
 		printf '<p class="muted">В правилах и наборах нет записей с готовыми списками — разбирать нечего.</p>'
 	else
-		printf '<table><tr><th>Список</th><th>Что внутри</th><th>Записей</th><th>Разобран</th><th>Состояние</th></tr>'
+		printf '<table><tr><th>'"$T_list"'</th><th>'"$T_contains"'</th><th>'"$T_entries"'</th><th>'"$T_parsed"'</th><th>'"$T_status"'</th></tr>'
 		printf '%s\n' "$_sr" | while IFS="$(printf '\t')" read -r _n _ty _c _d _st; do
 			[ -n "$_n" ] || continue
 			case "$_ty" in
@@ -4965,7 +4974,7 @@ geo_body_html() {
 		printf '</table>'
 	fi
 	printf '<p class="muted">Разбирать нужно <b>один раз</b>. После обновления баз панель разбирает заново сама — вручную повторять ничего не надо. Списки адресов (geoip) нужны, чтобы правило вида <code>geoip:ru</code> проверялось по адресу.</p>'
-	printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec">разобрать списки</button></form>'
+	printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec">'"$T_parse_lists"'</button></form>'
 	# --- 3. обновление из интернета
 	printf '<h3>3. Обновление из интернета</h3>'
 	printf '<p class="muted">Файлы берутся из релизов на GitHub. Старые сохраняются рядом как <code>.bak</code>, затем панель сама пересобирает названия, разбирает списки наборов и перезапускает xray.</p>'
@@ -4985,7 +4994,7 @@ geo_body_html() {
 	printf '<b>Loyalsoldier</b>: <code>github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat</code> и <code>geoip.dat</code><br>'
 	printf '<b>v2fly</b>: <code>github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat</code> и <code>github.com/v2fly/geoip/releases/latest/download/geoip.dat</code><br>'
 	printf '<b>runetfreedom</b>: <code>github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat</code> и <code>geoip.dat</code></p>'
-	printf '<p><button class="btn">обновить списки сейчас</button> <span class="muted">фоном: скачивание и разбор — минута-две</span></p></form>'
+	printf '<p><button class="btn">'"$T_update_lists_now"'</button> <span class="muted">фоном: скачивание и разбор — минута-две</span></p></form>'
 	# что было в прошлый раз: видно, обновилось ли и что именно
 	_lu=$(geo_update_last 2>/dev/null)
 	if [ -n "$_lu" ]; then
@@ -5015,7 +5024,7 @@ geo_body_html() {
 		printf '<option value="%s"%s>%s</option>' "$_s" "$([ "$_asrc" = "$_s" ] && echo ' selected')" "$_lb"
 	done
 	printf '</select></div></div>'
-	printf '<p><button class="btn sec">сохранить</button> '
+	printf '<p><button class="btn sec">'"$T_save_2"'</button> '
 	case "$_au" in
 		7)  printf '<span class="muted">сейчас: включено — раз в неделю (понедельник, 4 утра)</span>' ;;
 		30) printf '<span class="muted">сейчас: включено — раз в месяц (1-е число, 4 утра)</span>' ;;
@@ -5025,15 +5034,15 @@ geo_body_html() {
 	# --- 5. журналы: три отдельных, чтобы было видно, где что происходит
 	_gulog="$STATE_DIR/geo-update.log"
 	if [ -f "$_gulog" ]; then
-		printf '<details class="pick"><summary>Журнал обновления из интернета</summary><pre>%s</pre></details>' "$(tail -n 25 "$_gulog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_update_log_from_the_internet"'</summary><pre>%s</pre></details>' "$(tail -n 25 "$_gulog" | h_in)"
 	fi
 	_gtlog="$STATE_DIR/geo-tags.log"
 	if [ -f "$_gtlog" ]; then
-		printf '<details class="pick"><summary>Журнал сбора названий</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gtlog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_name_collection_log"'</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gtlog" | h_in)"
 	fi
 	_gilog="$STATE_DIR/geo-item.log"
 	if [ -f "$_gilog" ]; then
-		printf '<details class="pick"><summary>Журнал разбора списков наборов</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gilog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_set_list_parsing_log"'</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gilog" | h_in)"
 	fi
 }
 
@@ -5063,7 +5072,7 @@ page_rule_old() {
 	for _c in $(lan_clients 2>/dev/null); do
 		printf '<option value="%s"></option>' "$(h "$_c")"
 	done
-	printf '</datalist><p class="muted" id="geo-hint" style="display:none">Название списка выбирается из подсказки — начните печатать, например <code>yo</code> или <code>ru</code>. <button type="button" class="btn sec geo-check">проверить название</button> <span id="geo-check-out"></span></p></div>'
+	printf '</datalist><p class="muted" id="geo-hint" style="display:none">Название списка выбирается из подсказки — начните печатать, например <code>yo</code> или <code>ru</code>. <button type="button" class="btn sec geo-check">'"$T_check_name"'</button> <span id="geo-check-out"></span></p></div>'
 	printf '<div><label>Категория</label>'
 	rule_category_select "$_cat"
 	printf '</div>'
@@ -5073,9 +5082,9 @@ page_rule_old() {
 	printf '<div><label>Если «напрямую» — через интерфейс (необязательно)</label>'
 	rule_iface_select "$_rif"
 	printf '</div></div>'
-	printf '<p><button>Сохранить правило</button></p></form>'
+	printf '<p><button>'"$T_save_rule"'</button></p></form>'
 	geo_datalist
-	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить правило</button></form>' "$(h "$_sec")"
+	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_rule"'</button></form>' "$(h "$_sec")"
 	printf '</div>\n'
 }
 
@@ -5097,8 +5106,8 @@ page_rule() { # изменение правила (модель 0.62: кто →
 	printf '<div><label>Через что</label>'
 	rule_out_select "$_ro"
 	printf '</div></div>'
-	printf '<p><button>Сохранить правило</button></p></form>'
-	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить правило</button></form>' "$(h "$_sec")"
+	printf '<p><button>'"$T_save_rule"'</button></p></form>'
+	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_rule"'</button></form>' "$(h "$_sec")"
 	printf '<p class="muted">Если «кто» не выбран — правило для всех устройств. Если наборы не выбраны — правило просто направляет выбранных клиентов целиком, без разбора адресов.</p>'
 	printf '</div>\n'
 }
@@ -5249,17 +5258,17 @@ page_transparent() {
 	fi
 
 	cat <<EOF
-<div class="card" id="proxy-card"><h2>Прозрачный режим</h2>
+<div class="card" id="proxy-card"><h2>$T_transparent_mode</h2>
 <form method="post" style="display:flex;flex-direction:column">
 <table style="order:-3">
-<tr><th>Правила фаервола</th><td id="t-rules" class="$_sc">$_sv</td></tr>
-<tr><th>Режим в настройках</th><td>$_ev</td></tr>
-<tr><th>Порт перехвата</th><td>$_pt — $( if [ "$_lst" = yes ]; then echo '<span class="ok">слушает</span>'; elif [ "$_en" = 1 ]; then echo '<span class="bad">не слушает: xray не поднял вход</span>'; else echo '<span class="muted">не слушает (режим выключен)</span>'; fi )</td></tr>
-<tr><th>Автооткат</th><td id="t-revert">$_rev</td></tr>
-<tr><th>Трафик</th><td id="t-traffic">$_tt_line</td></tr>
-<tr><th>Куда уходит трафик</th><td>$_eff</td></tr>
-<tr><th>Сейчас трафик идёт через</th><td>${_now_line}</td></tr>
-<tr><th>Последний запуск</th><td id="t-last">${_last:-ещё не запускалось}</td></tr>
+<tr><th>$T_firewall_rules</th><td id="t-rules" class="$_sc">$_sv</td></tr>
+<tr><th>$T_mode_in_settings</th><td>$_ev</td></tr>
+<tr><th>$T_intercept_port</th><td>$_pt — $( if [ "$_lst" = yes ]; then echo '<span class="ok">слушает</span>'; elif [ "$_en" = 1 ]; then echo '<span class="bad">не слушает: xray не поднял вход</span>'; else echo '<span class="muted">не слушает (режим выключен)</span>'; fi )</td></tr>
+<tr><th>$T_auto_rollback</th><td id="t-revert">$_rev</td></tr>
+<tr><th>$T_traffic</th><td id="t-traffic">$_tt_line</td></tr>
+<tr><th>$T_where_the_traffic_goes</th><td>$_eff</td></tr>
+<tr><th>$T_traffic_is_currently_going_t</th><td>${_now_line}</td></tr>
+<tr><th>$T_last_start</th><td id="t-last">${_last:-ещё не запускалось}</td></tr>
 </table>
 EOF
 	# Предупреждение о лишних .json в каталоге конфига: служба xray запускается с
@@ -5267,11 +5276,11 @@ EOF
 	# старые серверы и правила, которых в панели уже нет.
 	_extra=$(config_extra_json)
 	if [ -n "$_extra" ]; then
-		printf '<div class="card"><h2 class="bad">В каталоге конфига есть лишние .json</h2>'
+		printf '<div class="card"><h2 class="bad">'"$T_extra_json_files_in_the_conf"'</h2>'
 		printf '<p>Служба xray запущена с ключом <code>-confdir</code>, поэтому она читает <b>все</b> файлы <code>.json</code> из каталога конфига и склеивает их. Из-за лишнего файла могут работать серверы и правила, которых в панели уже нет.</p>'
 		printf '<p>Вот эти файлы:</p><pre>%s</pre>' "$(printf '%s\n' "$_extra" | h_in)"
 		printf '<p class="muted">Кнопка ниже переименует их в <code>.bak-дата</code> — xray их больше не увидит, а сами файлы останутся рядом.</p>'
-		printf '<form method="post"><input type="hidden" name="action" value="confdir_clean"><button class="btn danger">Убрать лишние .json из каталога конфига</button></form></div>\n'
+		printf '<form method="post"><input type="hidden" name="action" value="confdir_clean"><button class="btn danger">'"$T_remove_extra_json_files"'</button></form></div>\n'
 	fi
 	# Если вход перехвата не поднялся — ничего не «выскакивает» на странице:
 	# в таблице состояния уже написано «не слушает», а причина и журнал лежат
@@ -5305,14 +5314,14 @@ EOF
 	# Рядом кнопка подтверждения: до включения обычная, после включения красная
 	# (как «применить конфиг»), после подтверждения — обычная синяя.
 	if [ "$_st" = "on" ]; then
-		printf '<button name="action" value="trans_off" class="btn apply-btn done" title="снять правила перехвата и вернуть обычный интернет">можно и выключить</button> '
+		printf '<button name="action" value="trans_off" class="btn apply-btn done" title="снять правила перехвата и вернуть обычный интернет">'"$T_or_turn_it_off"'</button> '
 	else
-		printf '<button name="action" value="trans_on" title="завернуть трафик в xray (с автооткатом через 5 минут)">включить прокси</button> '
+		printf '<button name="action" value="trans_on" title="завернуть трафик в xray (с автооткатом через 5 минут)">'"$T_enable_proxy"'</button> '
 	fi
 	if [ "$_st" = "on" ] && [ ! -f "$_kf" ]; then
-		printf '<button name="action" value="trans_keep" class="btn apply-btn pending" title="оставить правила насовсем">подтвердить</button>'
+		printf '<button name="action" value="trans_keep" class="btn apply-btn pending" title="оставить правила насовсем">'"$T_confirm"'</button>'
 	else
-		printf '<button name="action" value="trans_keep" title="оставить правила насовсем">подтвердить</button>'
+		printf '<button name="action" value="trans_keep" title="оставить правила насовсем">'"$T_confirm"'</button>'
 	fi
 	printf '</p>\n'
 	printf '<div id="t-keepbox"%s><div class="msg">Правила включены «на пробу»: через <span id="t-left">%s</span> сек они снимутся сами. Если всё работает — нажмите «Подтвердить (оставить правила)».</div></div>' "$_kbstyle" "${_left:-0}"
@@ -5335,7 +5344,7 @@ EOF
 	# как в блоке «Перехват DNS»: галочки и подписи к ним в одном столбце,
 	# но сам список спрятан под спойлер, чтобы не занимать место
 	opt_html_open "Интерфейсы сети"
-	printf '<details class="pick"><summary>выбрать интерфейсы</summary>'
+	printf '<details class="pick"><summary>'"$T_choose_interfaces"'</summary>'
 	_seen=""
 	for _if in $_ifs; do
 		_seen="$_seen$_if "
@@ -5370,7 +5379,7 @@ EOF
 	opt_html_close "работает при выборе «по лучшему пингу»: сервер меняется только если другой заметно быстрее или текущий перестал отвечать"
 
 	# DNS через туннель
-	printf '<h2>DNS через туннель</h2>'
+	printf '<h2>'"$T_dns_through_tunnel"'</h2>'
 	# 1) куда уходит DNS клиентов
 	_dt=$(cfg dns_tunnel 0); _dvia=$(cfg dns_client_via xray)
 	if [ "$_dt" != 1 ]; then _dcli="none"
@@ -5432,7 +5441,7 @@ EOF
 	printf '<option value="relay" %s>пересылать через выбранный сервер (по умолчанию)</option>' "$([ "$(cfg dns_mode relay)" != module ] && echo selected)"
 	printf '<option value="module" %s>внутренним резолвером xray (если сборка xray это умеет)</option>' "$([ "$(cfg dns_mode relay)" = module ] && echo selected)"
 	opt_select_close "пересылка работает везде; внутренний резолвер — только если сборка xray это умеет"
-	printf '<details class="pick"><summary>подробнее про DNS и перехват</summary>'
+	printf '<details class="pick"><summary>'"$T_more_about_dns_and_intercept"'</summary>'
 	printf '<p class="muted">Запросы на 53-й порт перехватываются и уходят через выбранный сервер — тогда местный провайдер не видит, какие сайты вы открываете. Работает во всех режимах, а в режиме «только сам роутер» перехватываются и запросы самого роутера.</p>'
 	printf '<p class="muted">Галочек две, и это разные вещи: первая заворачивает DNS клиентов (правила фаервола на 53-й порт), вторая переводит на тот же путь dnsmasq самого роутера. Можно, например, оставить DoH для роутера и перехватывать DNS только у выбранных клиентов.</p>'
 	if [ "$(cfg dns_mode relay)" != module ]; then
@@ -5452,7 +5461,7 @@ EOF
 		printf '<p class="muted"><b>Куда уходит DNS сейчас:</b> перехват выключен — имена разбирает роутер (dnsmasq) со своими вышестоящими серверами, в туннель они не идут.</p>'
 	fi
 	opt_html_open "Проверить DNS"
-	printf '<input name="dns_check_name" value="%s" placeholder="example.com" style="width:60%%;display:inline-block"> <button type="button" class="btn sec dns-check">проверить</button> <span class="muted" id="dns-check-out"></span>' "$(h "$(param dns_check_name "example.com")")"
+	printf '<input name="dns_check_name" value="%s" placeholder="example.com" style="width:60%%;display:inline-block"> <button type="button" class="btn sec dns-check">'"$T_check"'</button> <span class="muted" id="dns-check-out"></span>' "$(h "$(param dns_check_name "example.com")")"
 	opt_html_close "делает два запроса: через роутер (как видят клиенты) и напрямую к резолверу; разные ответы — похоже на подмену DNS провайдером"
 
 	# выбор клиентов: список с возможностью отметить несколько адресов
@@ -5506,11 +5515,11 @@ EOF
 		if [ "$_acting" = 0 ]; then
 			# режим ещё не включён — выбираем галочками
 			printf '<p class="muted">Отметьте нужных клиентов и нажмите «включить прокси». Если не отмечено ничего, панель считает, что нужны <b>все</b> — включая те устройства, что появятся позже.</p>'
-			printf '<table class="responsive"><tr><th>завернуть</th><th>имя</th><th>адрес</th><th>MAC</th><th>трафик ↑/↓</th><th>идёт через</th><th></th></tr>'
+			printf '<table class="responsive"><tr><th>'"$T_route"'</th><th>'"$T_name_2"'</th><th>'"$T_address_2"'</th><th>'"$T_mac"'</th><th>'"$T_traffic_2"'</th><th>'"$T_goes_through"'</th><th></th></tr>'
 		else
 			# режим включён: галочек нет, список только для просмотра
 			printf '<p class="muted">Режим включён: <span class="ok">зелёные</span> — эти клиенты завёрнуты в туннель, <span class="muted">серые</span> — не в списке (идут как обычно). Чтобы поменять выбор, нажмите «можно и выключить».</p>'
-			printf '<table class="responsive"><tr><th>имя</th><th>адрес</th><th>MAC</th><th>трафик ↑/↓</th><th>идёт через</th><th></th></tr>'
+			printf '<table class="responsive"><tr><th>'"$T_name_2"'</th><th>'"$T_address_2"'</th><th>'"$T_mac"'</th><th>'"$T_traffic_2"'</th><th>'"$T_goes_through"'</th><th></th></tr>'
 		fi
 		_cdns_all=$(client_dns_traffic 2>/dev/null)
 		printf '%s' "$_list" | while IFS='|' read -r _ip _host _mac; do
@@ -5567,13 +5576,13 @@ EOF
 			fi
 			# DNS у клиента считаем отдельно: в счётчике трафика — только TCP
 			# (UDP/443 намеренно блокируется, чтобы трафик не уходил в обход прокси)
-			printf '<tr data-client="%s">%s<td%s>%s</td><td%s>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span>%s</td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">сброс</button></td></tr>\n' \
+			printf '<tr data-client="%s">%s<td%s>%s</td><td%s>%s</td><td class="muted">%s</td><td class="muted"><span class="ct-up">%s</span> / <span class="ct-dn">%s</span>%s</td><td class="ct-exit-cell">%s</td><td><button type="button" class="btn sec traffic-reset" data-ip="%s" title="обнулить счётчик у этого клиента">'"$T_reset"'</button></td></tr>\n' \
 				"$(h "$_ip")" "$_ckcell" "$_rcls" "$(h "$_host")" "$_rcls" "$(h "$_ip")" "$(h "$_mac")" \
 				"$(h "$(human_bytes "${_cup:-0}")")" "$(h "$(human_bytes "${_cdn:-0}")")" "$_cdns_html" "$_cxhtml" "$(h "$_ip")"
 		done
 		printf '</table><p class="muted">Список — постоянные аренды DHCP и текущие выданные адреса. «Трафик» — сколько устройство отдало и получило через туннель; «сброс» обнуляет счётчик у этого клиента. Есть и общая кнопка — обнуляет всем.</p>'
 		printf '<p class="muted">Считается только <b>TCP</b> — тот трафик, который заворачивается в туннель. UDP (в том числе HTTP/3 на 443-м порту) панель намеренно блокирует, чтобы трафик не уходил мимо прокси; DNS-запросы клиента (порт 53) идут отдельным путём и показаны в столбце «трафик» как «DNS …».</p>'
-		printf '<p><button type="button" class="btn sec traffic-reset-all">сбросить трафик у всех</button></p>'
+		printf '<p><button type="button" class="btn sec traffic-reset-all">'"$T_reset_traffic_for_all"'</button></p>'
 		printf '<script>(function(){function post(d){return fetch(location.pathname+location.search,{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:new URLSearchParams(d),cache:"no-store"})}function zero(r){var u=r.querySelector(".ct-up"),n=r.querySelector(".ct-dn");if(u)u.textContent="0 Б";if(n)n.textContent="0 Б"}document.querySelectorAll("button.traffic-reset").forEach(function(b){b.addEventListener("click",function(){var ip=b.getAttribute("data-ip");b.disabled=true;post({action:"traffic_reset_one",ip:ip}).then(function(){var r=document.querySelector("tr[data-client=\\""+ip+"\\"]");if(r)zero(r)}).catch(function(){}).then(function(){b.disabled=false})})});var a=document.querySelector("button.traffic-reset-all");if(a)a.addEventListener("click",function(){a.disabled=true;post({action:"traffic_reset"}).then(function(){document.querySelectorAll("tr[data-client]").forEach(zero)}).catch(function(){}).then(function(){a.disabled=false})})})()</script>\n'
 		[ "$_sel_show" = 1 ] || printf '</details>\n'
 	else
@@ -5593,12 +5602,12 @@ EOF
 	# поэтому после первого сохранения он переставал работать до перезагрузки.
 	# Живая подсказка: показывает, кто и куда пойдёт, ещё ДО включения режима.
 	# Текст собирает скрипт страницы из того, что выбрано в окошках выше.
-	printf '<h2>Что получится</h2><div id="dns-preview" class="muted">Считаю по выбранным настройкам…</div>\n'
+	printf '<h2>'"$T_what_you_will_get"'</h2><div id="dns-preview" class="muted">Считаю по выбранным настройкам…</div>\n'
 	printf '<p class="muted">Кнопки управления — вверху страницы, в блоке «Управление». Правила ставятся «на пробу» на 5 минут: если не подтвердить, они снимутся сами.</p></div>\n'
 	_tlog="$STATE_DIR/transparent.log"
 
 	# --- куда идёт трафик: байты по выходам и что ходило (по журналу) ---------
-	printf '<div class="card"><h2>Куда идёт трафик</h2>'
+	printf '<div class="card"><h2>'"$T_where_traffic_goes"'</h2>'
 	_tr=$(exit_traffic 2>/dev/null)
 	_pd=$(exits_period 2>/dev/null)
 	_dm=$(exit_domains 600 2>/dev/null)
@@ -5610,7 +5619,7 @@ EOF
 	if [ -z "$_base" ] || [ "${_tot:-0}" = 0 ]; then
 		printf '<p class="muted">Статистика xray пока пустая — либо служба не запущена, либо трафика ещё не было.</p>'
 	else
-		printf '<table class="responsive"><tr><th>Выход</th><th>Прошло (%s)</th><th>Доля</th><th>Что ходило</th></tr>' "$_label"
+		printf '<table class="responsive"><tr><th>'"$T_outbound"'</th><th>Прошло (%s)</th><th>'"$T_share"'</th><th>'"$T_what_was_visited"'</th></tr>' "$_label"
 		printf '%s\n' "$_base" | awk -F'\t' '{ printf "%d\t%s\t%s\t%s\n", $2 + $3, $1, $2, $3 }' \
 			| LC_ALL=C sort -t"$(printf '\t')" -k1,1 -rn | cut -f2- | while IFS="$(printf '\t')" read -r _tag _up _dn; do
 			[ -n "$_tag" ] || continue
@@ -5654,8 +5663,8 @@ EOF
 	printf '<div class="card"><details class="pick"><summary><b>Проверка</b> — что видит панель: DNS, мост, правила, журнал</summary>'
 	# почему не поднялся вход перехвата (если так было) — тоже здесь, свёрнуто
 	if [ -n "$_fail_html" ] || [ -n "$_fail_raw" ]; then
-		printf '<details class="pick"><summary>Почему вход перехвата не поднялся</summary>%s' "$_fail_html"
-		[ -n "$_fail_raw" ] && printf '<details class="pick"><summary>строки журнала целиком</summary><pre>%s</pre></details>' "$_fail_raw"
+		printf '<details class="pick"><summary>'"$T_why_the_intercept_entry_did_"'</summary>%s' "$_fail_html"
+		[ -n "$_fail_raw" ] && printf '<details class="pick"><summary>'"$T_full_log_lines"'</summary><pre>%s</pre></details>' "$_fail_raw"
 		printf '</details>'
 	fi
 	_dt=$(cfg dns_tunnel 0); _dr=$(cfg dns_router "$_dt")
@@ -5673,9 +5682,9 @@ EOF
 		if [ "$_dt" = 1 ]; then
 			_dline=$(nft list chain ip xraypanel dns 2>/dev/null | grep -a "dport 53" | tail -2)
 			if [ -n "$_dline" ]; then
-				printf '<h2>Перехват DNS</h2><pre>%s</pre>' "$(h "$_dline")"
+				printf '<h2>'"$T_dns_interception"'</h2><pre>%s</pre>' "$(h "$_dline")"
 			else
-				printf '<h2>Перехват DNS</h2><p class="bad">правил нет — DNS клиентов не уйдёт в туннель. Нажмите «Включить с автооткатом».</p>'
+				printf '<h2>'"$T_dns_interception"'</h2><p class="bad">правил нет — DNS клиентов не уйдёт в туннель. Нажмите «Включить с автооткатом».</p>'
 			fi
 		fi
 	else
@@ -5703,29 +5712,29 @@ EOF
 	# правила и журнал нужны не каждый раз — убираем их под спойлеры, а наверху
 	# оставляем то, что смотрят при проверке: что заходило в перехватчик
 	if [ -n "$_tail" ]; then
-		printf '<h2>Что заходило в перехватчик</h2><pre id="t-tail">%s</pre>' "$(h "$_tail")"
+		printf '<h2>'"$T_what_went_through_the_interc"'</h2><pre id="t-tail">%s</pre>' "$(h "$_tail")"
 	else
-		printf '<h2>Что заходило в перехватчик</h2><pre id="t-tail"></pre><p class="muted">пока пусто. Откройте на компьютере любой сайт — записи появятся сами, страницу обновлять не нужно. Если они так и не появятся, значит трафик до перехватчика не доходит: проверьте имя моста выше.</p>'
+		printf '<h2>'"$T_what_went_through_the_interc"'</h2><pre id="t-tail"></pre><p class="muted">пока пусто. Откройте на компьютере любой сайт — записи появятся сами, страницу обновлять не нужно. Если они так и не появятся, значит трафик до перехватчика не доходит: проверьте имя моста выше.</p>'
 	fi
 	if [ -n "$_rules" ]; then
-		printf '<details class="pick"><summary>Правила, которые стоят сейчас</summary><pre>%s</pre></details>' "$(h "$_rules")"
+		printf '<details class="pick"><summary>'"$T_rules_currently_in_place"'</summary><pre>%s</pre></details>' "$(h "$_rules")"
 	else
 		printf '<p class="bad">Правил не найдено — нажмите «Включить с автооткатом» и подтвердите.</p>'
 	fi
 	if [ -f "$_tlog" ]; then
-		printf '<details class="pick"><summary>Журнал прозрачного режима</summary><pre>%s</pre></details>' "$(tail -n 20 "$_tlog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_transparent_mode_log"'</summary><pre>%s</pre></details>' "$(tail -n 20 "$_tlog" | h_in)"
 	fi
 	printf '</details></div>\n'
 
 	cat <<EOF
 <div class="card"><details class="pick"><summary><b>Что именно заворачивается</b></summary>
 <table>
-<tr><th>Интернет-трафик</th><td>идёт в xray, а дальше по правилам панели: в нужный сервер или напрямую</td></tr>
-<tr><th>Правила маршрутизации</th><td>проверяются первыми — поэтому «частное» правило работает даже при выбранном сервере выше</td></tr>
-<tr><th>Локальная сеть и сам роутер</th><td>не трогается — доступ к панели, LuCI и SSH не ломается</td></tr>
-<tr><th>Сам xray</th><td>не заворачивается в себя (у его соединений ставится метка)</td></tr>
-<tr><th>QUIC (UDP 443)</th><td>для завёрнутых клиентов блокируется, чтобы браузеры не обходили прокси по UDP — они сами переходят на обычный TCP</td></tr>
-<tr><th>DNS и прочий UDP</th><td>в этой версии не заворачиваются: имена разбирает роутер как обычно</td></tr>
+<tr><th>$T_internet_traffic</th><td>идёт в xray, а дальше по правилам панели: в нужный сервер или напрямую</td></tr>
+<tr><th>$T_routing_rules</th><td>проверяются первыми — поэтому «частное» правило работает даже при выбранном сервере выше</td></tr>
+<tr><th>$T_local_network_and_the_router</th><td>не трогается — доступ к панели, LuCI и SSH не ломается</td></tr>
+<tr><th>$T_xray_itself</th><td>не заворачивается в себя (у его соединений ставится метка)</td></tr>
+<tr><th>$T_quic_udp_443</th><td>для завёрнутых клиентов блокируется, чтобы браузеры не обходили прокси по UDP — они сами переходят на обычный TCP</td></tr>
+<tr><th>$T_dns_and_other_udp</th><td>в этой версии не заворачиваются: имена разбирает роутер как обычно</td></tr>
 </table>
 <p class="muted">После перезагрузки роутера правила ставятся заново автоматически, если режим включён.</p></details></div>
 EOF
@@ -5739,13 +5748,13 @@ page_config() {
 	# и каждый раз просила применить конфиг
 	_gen=$(gen_config 2>/dev/null)
 	if [ -z "$_gen" ]; then
-		printf '<div class="card"><h2 class="bad">Конфиг не собирается</h2><pre>%s</pre></div>\n' "$(gen_config 2>&1 | sed -n '1,20p' | h_in)"
+		printf '<div class="card"><h2 class="bad">'"$T_config_cannot_be_built"'</h2><pre>%s</pre></div>\n' "$(gen_config 2>&1 | sed -n '1,20p' | h_in)"
 	fi
-	printf '<div class="card"><h2>Что получится по текущим настройкам</h2><pre>'
+	printf '<div class="card"><h2>'"$T_what_the_current_settings_wi"'</h2><pre>'
 	printf '%s' "$_gen" | h_in
 	printf '</pre><p class="muted">Это конфиг, собранный из настроек панели; на диск он попадёт только после кнопки «Применить конфиг». Здесь ничего не записывается.</p></div>\n'
 	# отдельный блок: чем файл на роутере отличается от этих настроек
-	printf '<div class="card"><h2>Различия с файлом на роутере</h2>'
+	printf '<div class="card"><h2>'"$T_differences_with_the_file_on"'</h2>'
 	if config_text_matches "$_gen"; then
 		printf '<p class="muted">Различий нет: файл на роутере полностью совпадает с текущими настройками — применять нечего.</p>'
 	else
@@ -5760,7 +5769,7 @@ page_config() {
 }
 
 page_settings() {
-	printf '<div class="card"><h2>Настройки панели</h2><form method="post"><input type="hidden" name="action" value="settings"><div class="row">'
+	printf '<div class="card"><h2>'"$T_panel_settings"'</h2><form method="post"><input type="hidden" name="action" value="settings"><div class="row">'
 	printf '<div><label>Порт SOCKS</label><input name="socks_port" value="%s"></div>' "$(h "$(cfg socks_port 10808)")"
 	printf '<div><label>Порт API</label><input name="api_port" value="%s"></div>' "$(h "$(cfg api_port 62789)")"
 	printf '<div><label>Пароль панели (пусто = без пароля)</label><input name="password" value="%s"></div>' "$(h "$(cfg password "")")"
@@ -5785,6 +5794,13 @@ page_settings() {
 	printf '<div><label>Оформление панели</label><select name="theme" data-old="%s">' "$(h "$(theme_name)")"
 	for _t in $THEME_LIST; do
 		printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$(theme_name)" = "$_t" ] && echo selected)" "$(h "$(theme_title "$_t")")"
+	done
+	printf '</select></div>'
+	# язык интерфейса: строки лежат в файлах языков, в коде — ссылки вида $T_…
+	printf '<div><label>Язык панели</label><select name="lang">'
+	_curlang=$(cfg lang auto)
+	for _lg in auto ru en; do
+		printf '<option value="%s" %s>%s</option>' "$_lg" "$([ "$_curlang" = "$_lg" ] && echo selected)" "$(lang_title "$_lg")"
 	done
 	printf '</select></div>'
 	# лампочки правил: служебный трафик (проверки связи, обращения к панели и к
@@ -5825,7 +5841,7 @@ page_settings() {
 	printf '<option value="1"%s>раз в сутки (и при открытии «Статуса»)</option>' "$([ "$(cfg update_auto 1)" = 1 ] && echo ' selected')"
 	printf '<option value="0"%s>вручную, только по кнопке</option>' "$([ "$(cfg update_auto 1)" = 0 ] && echo ' selected')"
 	printf '</select></div>'
-	printf '</div><p><button>Сохранить настройки</button></p></form>'
+	printf '</div><p><button>'"$T_save_settings"'</button></p></form>'
 	printf '<p class="muted">Файл настроек: /etc/config/xraypanel. Изменения применяются кнопкой «Применить конфиг» на странице «Статус».</p></div>\n'
 }
 
@@ -5835,7 +5851,7 @@ page_settings() {
 update_card_html() {
 	_repo=$(cfg update_repo "Petr700/xraypanel")
 	_cver=$(panel_version)
-	printf '<h2>Обновление панели</h2>'
+	printf '<h2>'"$T_panel_update"'</h2>'
 	if [ -z "$_repo" ]; then
 		printf '<p class="muted">Проверка новых версий выключена: не указан репозиторий. Его можно вписать на странице «Настройки».</p>'
 		return 0
@@ -5875,31 +5891,31 @@ update_card_html() {
 	elif [ -n "$_nver" ]; then
 		printf '<p class="ok">Установлена последняя версия: %s.</p>' "$(h "$_cver")"
 	fi
-	printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="update_check"><button class="btn sec">проверить обновление сейчас</button></form>'
+	printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="update_check"><button class="btn sec">'"$T_check_for_updates_now"'</button></form>'
 	_ulog="$STATE_DIR/update.log"
 	if [ -f "$_ulog" ]; then
-		printf '<details class="pick"><summary>журнал проверок обновления</summary><pre>%s</pre></details>' "$(tail -n 15 "$_ulog" | h_in)"
+		printf '<details class="pick"><summary>'"$T_update_check_log"'</summary><pre>%s</pre></details>' "$(tail -n 15 "$_ulog" | h_in)"
 	fi
 }
 
 page_backup() {
-	printf '<div class="card"><h2>Сохранение настроек</h2>'
+	printf '<div class="card"><h2>'"$T_saving_settings"'</h2>'
 	printf '<p class="muted">Скачайте файл — в нём все настройки панели: серверы, реверс-мосты, правила маршрутизации, прозрачный режим и DNS. Файл можно хранить у себя и позже восстановить, в том числе на другом роутере.</p>'
 	printf '<p class="muted">Список клиентов (конкретные адреса устройств) по умолчанию в файл не попадает: на другом роутере такие адреса чужие. Если переносишь настройки на этот же роутер и хочешь сохранить список — отметь галочку ниже.</p>'
 	printf '<form method="post" action="%s"><input type="hidden" name="action" value="export">' "$SCRIPT_NAME"
 	printf '<div><label style="display:inline"><input type="checkbox" name="keep_clients" value="1" style="width:auto"> включить в файл список клиентов этого роутера</label></div>'
-	printf '<p><button>Скачать настройки</button></p></form></div>\n'
-	printf '<div class="card"><h2>Восстановление настроек</h2>'
+	printf '<p><button>'"$T_download_settings"'</button></p></form></div>\n'
+	printf '<div class="card"><h2>'"$T_restoring_settings"'</h2>'
 	printf '<p class="muted">Выберите файл настроек (тот, что скачали кнопкой выше) — панель применит его. Прежние настройки сохранятся рядом с конфигом как файл с датой и .bak, откатить можно в любой момент.</p>'
 	printf '<form method="post" enctype="multipart/form-data"><input type="hidden" name="action" value="import">'
 	printf '<label>Файл с настройками</label><input type="file" name="cfgfile" accept=".conf,.txt,text/plain">'
-	printf '<p><button>Загрузить и восстановить</button></p></form></div>\n'
-	printf '<div class="card"><h2>Или вставить текстом</h2>'
+	printf '<p><button>'"$T_upload_and_restore"'</button></p></form></div>\n'
+	printf '<div class="card"><h2>'"$T_or_paste_as_text"'</h2>'
 	printf '<p class="muted">Если файл почему-то не выбирается — можно открыть его в блокноте, скопировать содержимое целиком и вставить сюда.</p>'
 	printf '<form method="post"><input type="hidden" name="action" value="import">'
 	printf '<textarea name="cfgtext" rows="8" placeholder="# Настройки панели xraypanel..."></textarea>'
-	printf '<p><button class="btn sec">Восстановить из текста</button></p></form></div>\n'
-	printf '<div class="card"><h2>Что дальше</h2><p class="muted">После восстановления панель сама применит конфиг и перезапустит xray. Если что-то не так — верните прежний файл из копии .bak или нажмите «Откат конфига» на странице «Статус».</p></div>\n'
+	printf '<p><button class="btn sec">'"$T_restore_from_text"'</button></p></form></div>\n'
+	printf '<div class="card"><h2>'"$T_what_next"'</h2><p class="muted">После восстановления панель сама применит конфиг и перезапустит xray. Если что-то не так — верните прежний файл из копии .bak или нажмите «Откат конфига» на странице «Статус».</p></div>\n'
 }
 
 if [ "$(param page)" = state ]; then

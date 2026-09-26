@@ -16,6 +16,38 @@ cfg() { # cfg ключ [по умолчанию]
 	if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "${2:-}"; fi
 }
 
+# --- язык интерфейса ---------------------------------------------------------
+# Строки лежат в /usr/lib/xraypanel/lang/<язык>.sh, в коде остаются ссылки
+# вида $T_имя_строки. Язык берётся из настроек панели; значение «auto» —
+# по языку браузера (HTTP_ACCEPT_LANGUAGE).
+LANG_DIR="${XRAYPANEL_LANG_DIR:-/usr/lib/xraypanel/lang}"
+PANEL_LANG="ru"
+lang_load() {
+	_l=$(cfg lang auto 2>/dev/null)
+	case "$_l" in
+		ru|en) ;;
+		*)
+			case "${HTTP_ACCEPT_LANGUAGE:-}" in
+				ru*|*,\ ru*) _l=ru ;;
+				en*|*,\ en*) _l=en ;;
+				*)           _l=ru ;;
+			esac
+			;;
+	esac
+	[ -f "$LANG_DIR/$_l.sh" ] || _l=ru
+	. "$LANG_DIR/$_l.sh"
+	PANEL_LANG="$_l"
+}
+
+# как называется выбранный язык — для страницы «Настройки»
+lang_title() {
+	case "${1:-auto}" in
+		ru) printf 'русский' ;;
+		en) printf 'English' ;;
+		*)  printf 'как в браузере (авто)' ;;
+	esac
+}
+
 # --- поиск бинарника xray и службы -------------------------------------------
 xray_bin() {
 	_b=$(cfg xray_bin "")
