@@ -80,6 +80,31 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 - темы оформления (светлая, тёмная, WinXP, «плитки», боковое меню), звук
   нажатий, удобная работа с телефона.
 
+## Как это выглядит
+
+Скриншоты сняты с демонстрационных настроек: адреса вида `203.0.113.x` и домены
+`example.com` — это примеры из документации, ваши данные на картинках не
+попадают. Панель на снимках открыта в окне 1280 px — так её видно на компьютере.
+
+**Русский интерфейс**
+
+| Страница | Светлая тема «В стиле Windows XP» | Тёмная тема |
+| --- | --- | --- |
+| Реверс (мосты) | <img src="docs/screenshots/ru-reverse-winxp.png" width="420"> | <img src="docs/screenshots/ru-reverse-dark.png" width="420"> |
+| Прокси (прозрачный режим, DNS) | <img src="docs/screenshots/ru-transparent-winxp.png" width="420"> | <img src="docs/screenshots/ru-transparent-dark.png" width="420"> |
+| Маршруты (правила и наборы) | <img src="docs/screenshots/ru-rules-winxp.png" width="420"> | <img src="docs/screenshots/ru-rules-dark.png" width="420"> |
+
+**English interface**
+
+| Page | Light theme (Windows XP style) | Dark theme |
+| --- | --- | --- |
+| Reverse (bridges) | <img src="docs/screenshots/en-reverse-winxp.png" width="420"> | <img src="docs/screenshots/en-reverse-dark.png" width="420"> |
+| Proxy (transparent mode, DNS) | <img src="docs/screenshots/en-transparent-winxp.png" width="420"> | <img src="docs/screenshots/en-transparent-dark.png" width="420"> |
+| Routes (rules and sets) | <img src="docs/screenshots/en-rules-winxp.png" width="420"> | <img src="docs/screenshots/en-rules-dark.png" width="420"> |
+
+Язык переключается на странице «Настройки» → «Язык панели» (русский, English или
+«как в браузере»); тема — там же, в поле «Оформление панели».
+
 ## Установка
 
     scp xraypanel_0.67.0_all.ipk root@<IP роутера>:/tmp/
