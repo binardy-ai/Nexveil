@@ -4308,7 +4308,7 @@ rule_type_select() { # $1 = выбранный тип, $2 = имя поля, $3 
 		"domain|$T_domain_and_all_subdomains_yo" \
 		"full|$T_exactly_this_domain_only_you" \
 		"keyword|$T_word_in_the_name_google" \
-		"regexp|$T_template_ru_2" \
+		"regexp|$T_template_ru" \
 		"geosite|$T_ready_list_of_domains_from_t" \
 		"geoip|$T_ready_list_of_addresses_from"
 	do
