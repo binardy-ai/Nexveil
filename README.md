@@ -97,6 +97,30 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 (положить пакет в `/tmp` или загрузить файлом) либо кнопка «обновить» в блоке
 самообновления.
 
+### Скачать и поставить прямо с роутера
+
+Если рядом нет компьютера, пакет можно скачать с роутера — из терминала (ssh
+или веб-консоль). Репозиторий приватный, поэтому нужен токен GitHub (тот же,
+что вписан на странице «Настройки»), а из инструментов — `curl`: busybox-wget
+не умеет отправлять заголовки.
+
+    opkg update && opkg install curl
+    ID=591247875      # номер файла в релизе, см. ниже
+    curl -L -H "Authorization: Bearer <ТОКЕН>" -H "Accept: application/octet-stream" \
+         -o /tmp/xraypanel.ipk https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID
+    opkg install --force-reinstall /tmp/xraypanel.ipk
+
+Номер файла (`ID`) панель показывает на странице «Статус» в блоке обновления.
+Его же видно командой:
+
+    curl -s -H "Authorization: Bearer <ТОКЕН>" \
+         https://api.github.com/repos/Petr700/xraypanel/releases/latest | grep -B2 '"browser_download_url"'
+
+Если сделать репозиторий публичным, скачивание упрощается до одной строки:
+
+    wget -O /tmp/xraypanel.ipk https://github.com/Petr700/xraypanel/releases/download/v0.67.4/xraypanel_0.67.4_all.ipk
+    opkg install --force-reinstall /tmp/xraypanel.ipk
+
 Удалить панель (настройки и конфиг Xray при этом остаются):
 
     opkg remove xraypanel

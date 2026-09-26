@@ -129,7 +129,6 @@ tr.drop-target{box-shadow:inset 0 2px 0 0 var(--nav-line)}
 .acts{gap:3px}
 /* столбец «Работает» у правил: один адрес, остальное — в подсказке */
 .rule-seen{display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
-td[data-label="Работает"],td[data-label="Что ходило"]{max-width:230px}
 .report{white-space:pre-line}
 /* результаты проверки домена не должны разъезжаться на весь экран */
 #rule-find-report{max-height:220px;overflow:auto}
@@ -192,8 +191,10 @@ label.chk input{width:auto;margin:0}
  table.responsive td:empty{display:none}
  /* длинные адреса и ключи переносим, а кнопки — в одну строку с переносом */
  table.responsive td span,table.responsive td b{overflow-wrap:anywhere;word-break:break-word}
- table.responsive td[data-label="Действия"]{flex-wrap:wrap;justify-content:flex-end}
- table.responsive td[data-label="Действия"] form{display:inline-block;margin:0}
+ /* последний столбец таблиц — «Действия»; привязка к месту, а не к подписи:
+    подпись зависит от языка панели */
+ table.responsive td:last-child{flex-wrap:wrap;justify-content:flex-end}
+ table.responsive td:last-child form{display:inline-block;margin:0}
  table.responsive button,table.responsive .btn{padding:4px 8px;font-size:13px}
  /* обрезанное значение в карточке не должно вылезать за экран */
  table.responsive td .clip{max-width:52vw}
@@ -221,6 +222,9 @@ label.chk input{width:auto;margin:0}
  .clip{max-width:min(150px,12vw)}
 }
 CSS
+	# подписи столбцов зависят от языка, а в heredoc переменные не раскрываются:
+	# правила, привязанные к подписи столбца, печатаем отдельно
+	printf 'td[data-label="%s"]{max-width:230px}\n' "$T_what_was_visited"
 	case "$_t" in
 	compact)
 		cat <<'CSS'
