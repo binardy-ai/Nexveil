@@ -4304,13 +4304,13 @@ rule_type_select() { # $1 = выбранный тип, $2 = имя поля, $3 
 	_id=${3:-rule-type}
 	printf '<select name="%s" id="%s">' "$_nm" "$_id"
 	for _pair in \
-		"ip|IP-адрес или сеть — 10.0.0.0/8, 8.8.8.8" \
-		"domain|Домен и все поддомены — youtube.com" \
-		"full|Только ровно этот домен — youtube.com" \
-		"keyword|Слово в имени — google" \
-		"regexp|Шаблон — .*\\.ru\$" \
-		"geosite|Готовый список доменов (из файла роутера)" \
-		"geoip|Готовый список адресов (из файла роутера)"
+		"ip|$T_ip_address_or_network_10_0_0" \
+		"domain|$T_domain_and_all_subdomains_yo" \
+		"full|$T_exactly_this_domain_only_you" \
+		"keyword|$T_word_in_the_name_google" \
+		"regexp|$T_template_ru_2" \
+		"geosite|$T_ready_list_of_domains_from_t" \
+		"geoip|$T_ready_list_of_addresses_from"
 	do
 		_k=${_pair%%|*}; _v=${_pair#*|}
 		printf '<option value="%s"%s>%s</option>' "$_k" "$([ "$1" = "$_k" ] && echo ' selected')" "$_v"
@@ -4339,9 +4339,9 @@ rule_category_select() { # $1 = текущая категория (direct|proxy|
 	[ -n "$_cur" ] || _cur=proxy
 	printf '<select name="category" id="rule-cat">'
 	for _pair in \
-		"direct|Напрямую — мимо прокси" \
-		"proxy|Через прокси — в тоннель" \
-		"block|Заблокировать"
+		"direct|$T_straight_past_the_proxy" \
+		"proxy|$T_through_proxy_into_the_tunne" \
+		"block|$T_block"
 	do
 		_k=${_pair%%|*}; _v=${_pair#*|}
 		printf '<option value="%s"%s>%s</option>' "$_k" "$([ "$_cur" = "$_k" ] && echo ' selected')" "$_v"
@@ -5790,14 +5790,14 @@ page_settings() {
 	printf '<div><label>'"$T_check_nodes_automatically"'</label><select name="url_test_interval">'
 	_ui="$(cfg url_test_interval 0)"
 	for _n in 0 5 15 30 60; do
-		if [ "$_n" = 0 ]; then _lbl="выключено"; else _lbl="каждые $_n минут"; fi
+		if [ "$_n" = 0 ]; then _lbl="$T_disabled"; else _lbl=$(printf "$T_every_s_minutes" "$_n"); fi
 		printf '<option value="%s" %s>%s</option>' "$_n" "$([ "$_ui" = "$_n" ] && echo selected)" "$_lbl"
 	done
 	printf '</select></div>'
 	printf '<div><label>'"$T_update_subscriptions_automat"'</label><select name="sub_interval">'
 	_si="$(cfg sub_interval 0)"
 	for _n in 0 6 12 24; do
-		if [ "$_n" = 0 ]; then _lbl="выключено"; else _lbl="каждые $_n ч"; fi
+		if [ "$_n" = 0 ]; then _lbl="$T_disabled"; else _lbl=$(printf "$T_every_s_h" "$_n"); fi
 		printf '<option value="%s" %s>%s</option>' "$_n" "$([ "$_si" = "$_n" ] && echo selected)" "$_lbl"
 	done
 	printf '</select></div>'
@@ -5824,11 +5824,11 @@ page_settings() {
 	_cur_snd=$(cfg sound click)
 	for _s in off click tick blip two; do
 		case "$_s" in
-			off)   _lbl="выключен" ;;
-			click) _lbl="щелчок (короткий, по умолчанию)" ;;
-			tick)  _lbl="тик (самый тихий)" ;;
-			blip)  _lbl="блип (мягкий гудок)" ;;
-			two)   _lbl="два тона (вверх — обычные, вниз — удаление)" ;;
+			off)   _lbl="$T_disabled_3" ;;
+			click) _lbl="$T_click_short_default" ;;
+			tick)  _lbl="$T_tick_quietest" ;;
+			blip)  _lbl="$T_blip_soft_beep" ;;
+			two)   _lbl="$T_two_tones_up_normal_down_del" ;;
 		esac
 		printf '<option value="%s" %s>%s</option>' "$_s" "$([ "$_cur_snd" = "$_s" ] && echo selected)" "$_lbl"
 	done
@@ -5837,9 +5837,9 @@ page_settings() {
 	_cur_vol=$(cfg volume mid)
 	for _v in low mid high; do
 		case "$_v" in
-			low)  _lbl="тихо" ;;
-			mid)  _lbl="средне" ;;
-			high) _lbl="громко" ;;
+			low)  _lbl="$T_quiet" ;;
+			mid)  _lbl="$T_medium" ;;
+			high) _lbl="$T_loud" ;;
 		esac
 		printf '<option value="%s" %s>%s</option>' "$_v" "$([ "$_cur_vol" = "$_v" ] && echo selected)" "$_lbl"
 	done

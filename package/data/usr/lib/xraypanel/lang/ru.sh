@@ -180,8 +180,6 @@ T_show_sets_and_their_content='показать наборы и их содер�
 T_full_log_lines='строки журнала целиком'
 T_apply_config_2='применить конфиг'
 T_config_applied='конфиг применён'
-
-# --- второй этап: подписи полей, списки, подсказки ---
 T_check_2='Проверка'
 T_ping='Пинг'
 T_collecting='собираю…'
@@ -659,3 +657,23 @@ T_is_not_touched_access_to_the='не трогается — доступ к па
 T_is_not_wrapped_into_itself_i='не заворачивается в себя (у его соединений ставится метка)'
 T_is_blocked_for_wrapped_clien='для завёрнутых клиентов блокируется, чтобы браузеры не обходили прокси по UDP — они сами переходят на обычный TCP'
 T_are_not_wrapped_in_this_vers='в этой версии не заворачиваются: имена разбирает роутер как обычно'
+
+# --- второй этап: подписи полей, списки, подсказки ---
+T_template_ru_2='Шаблон — .*\.ru$'
+T_every_s_minutes='каждые %s минут'
+T_every_s_h='каждые %s ч'
+T_compact_dense_lists_and_butt='Компактная — плотные списки и кнопки в строку'
+T_dark_with_a_side_menu='Тёмная с боковым меню'
+T_windows_xp_style='В стиле Windows XP'
+T_luci_style='В стиле LuCI'
+T_with_a_side_menu_like_passwa='С боковым меню (как PassWall)'
+T_tiles_large_buttons_like_hom='Плитками, крупные кнопки (как HomeProxy)'
+T_classic='Классическая'
+T_dark='Тёмная'
+T_click_short_default='щелчок (короткий, по умолчанию)'
+T_tick_quietest='тик (самый тихий)'
+T_blip_soft_beep='блип (мягкий гудок)'
+T_two_tones_up_normal_down_del='два тона (вверх — обычные, вниз — удаление)'
+T_quiet='тихо'
+T_medium='средне'
+T_loud='громко'

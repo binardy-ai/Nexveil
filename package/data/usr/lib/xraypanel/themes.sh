@@ -14,14 +14,15 @@ theme_name() {
 
 theme_title() {
 	case "$1" in
-		classic) printf 'Классическая' ;;
-		compact) printf 'Компактная — плотные списки и кнопки в строку' ;;
-		dark)    printf 'Тёмная' ;;
-		sidebar) printf 'С боковым меню (как PassWall)' ;;
-		tiles)   printf 'Плитками, крупные кнопки (как HomeProxy)' ;;
-		luci)    printf 'В стиле LuCI' ;;
-		sidebar-dark) printf 'Тёмная с боковым меню' ;;
-		winxp)   printf 'В стиле Windows XP' ;;
+		# названия тем берутся из языка панели (см. lang/<язык>.sh)
+		classic) printf '%s' "$T_classic" ;;
+		compact) printf '%s' "$T_compact_dense_lists_and_butt" ;;
+		dark)    printf '%s' "$T_dark" ;;
+		sidebar) printf '%s' "$T_with_a_side_menu_like_passwa" ;;
+		tiles)   printf '%s' "$T_tiles_large_buttons_like_hom" ;;
+		luci)    printf '%s' "$T_luci_style" ;;
+		sidebar-dark) printf '%s' "$T_dark_with_a_side_menu" ;;
+		winxp)   printf '%s' "$T_windows_xp_style" ;;
 		*)       printf '%s' "$1" ;;
 	esac
 }
