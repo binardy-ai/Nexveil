@@ -40,19 +40,24 @@ _tok=$(cfg update_token "" 2>/dev/null)
 TMP="$STATE/update.json.new"
 say "проверяю последний релиз: $_repo"
 
+# Приватный репозиторий требует отправки токена, а busybox-wget и uclient-fetch
+# на OpenWrt этого не умеют — там нужен пакет curl. Если репозиторий публичный,
+# всё работает и обычным wget.
 fetch() { # $1 = куда
-	if [ -n "$_tok" ] && wget --help 2>&1 | grep -q -- "--header"; then
-		wget -q -T 25 --header "Authorization: Bearer $_tok" -O "$1" "$API" && return 0
+	if [ -n "$_tok" ]; then
+		if command -v curl >/dev/null 2>&1; then
+			curl -sSL --max-time 30 -H "Authorization: Bearer $_tok" -o "$1" "$API" && return 0
+			return 1
+		fi
+		say "для приватного репозитория нужен пакет curl: busybox-wget не умеет отправлять токен"
+		say "поставьте его командой: opkg update && opkg install curl"
+		return 1
 	fi
 	if command -v wget >/dev/null 2>&1; then
 		wget -q -T 25 -O "$1" "$API" && return 0
 	fi
 	if command -v curl >/dev/null 2>&1; then
-		if [ -n "$_tok" ]; then
-			curl -sSL --max-time 30 -H "Authorization: Bearer $_tok" -o "$1" "$API" && return 0
-		else
-			curl -sSL --max-time 30 -o "$1" "$API" && return 0
-		fi
+		curl -sSL --max-time 30 -o "$1" "$API" && return 0
 	fi
 	if command -v uclient-fetch >/dev/null 2>&1; then
 		uclient-fetch -q -O "$1" "$API" && return 0
@@ -80,6 +85,12 @@ _tag=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$TMP" | head -1)
 _ver=${_tag#v}
 # ссылка на пакет панели: первый .ipk среди файлов релиза
 _url=$(grep -o '"browser_download_url": *"[^"]*\.ipk"' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*"\(http[^"]*\)".*/\1/')
+# адрес того же файла через API: для приватного репозитория обычная ссылка не
+# скачивается, а API-адрес с токеном — скачивается (Accept: octet-stream)
+_apiurl=$(awk '
+	/"url": *"[^"]*\/releases\/assets\/[0-9]+"/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) }
+	/"browser_download_url": *"[^"]*\.ipk"/ { if (last != "") { print "https://api.github.com/repos/'"$_repo"'/releases/" last; exit } }
+' "$TMP" 2>/dev/null)
 _size=$(grep -o '"size": *[0-9]*' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*: *//')
 _date=$(date '+%d.%m.%Y %H:%M')
 
@@ -121,6 +132,7 @@ awk '
 	printf 'version\t%s\n' "$_ver"
 	printf 'tag\t%s\n' "$_tag"
 	printf 'url\t%s\n' "$_url"
+	printf 'apiurl\t%s\n' "$_apiurl"
 	printf 'size\t%s\n' "$_size"
 	printf 'page\thttps://github.com/%s/releases/tag/%s\n' "$_repo" "$_tag"
 } > "$STATE/update.info.new" 2>/dev/null

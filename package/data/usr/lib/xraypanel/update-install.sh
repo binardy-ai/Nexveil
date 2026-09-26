@@ -26,7 +26,19 @@ _f="$STATE/versions/xraypanel_${_ver}_all.ipk"
 say "скачиваю $_url"
 rm -f "$_f" 2>/dev/null
 _ok=0
-if command -v wget >/dev/null 2>&1; then
+_tok=$(cfg update_token "" 2>/dev/null)
+_apiurl=$(awk -F'\t' '$1 == "apiurl" { print $2; exit }' "$STATE/update.info" 2>/dev/null)
+# приватный репозиторий: обычная ссылка отдаёт 404, файл берём через API с токеном
+if [ -n "$_tok" ] && [ -n "$_apiurl" ] && command -v curl >/dev/null 2>&1; then
+	say "репозиторий приватный — качаю через API с токеном"
+	curl -sSL --max-time 300 -H "Authorization: Bearer $_tok" -H "Accept: application/octet-stream" -o "$_f" "$_apiurl" && _ok=1
+elif [ -n "$_tok" ]; then
+	say "для приватного репозитория нужен пакет curl (busybox-wget не умеет отправлять токен): opkg update && opkg install curl"
+	printf '1' > "$STATE/update-install.rc"
+	rm -f "$RUN"
+	exit 1
+fi
+if [ "$_ok" = 0 ] && command -v wget >/dev/null 2>&1; then
 	wget -q -T 60 -O "$_f" "$_url" && _ok=1
 fi
 if [ "$_ok" = 0 ] && command -v curl >/dev/null 2>&1; then
