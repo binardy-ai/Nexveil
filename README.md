@@ -86,34 +86,33 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 `example.com` — это примеры из документации, ваши данные на картинках не
 попадают. Панель на снимках открыта в окне 1280 px — так её видно на компьютере.
 
-Все снимки лежат в папке [`docs/screenshots`](https://github.com/Petr700/xraypanel/tree/main/docs/screenshots)
-— если картинки не показываются прямо в README, откройте файл оттуда.
+Все снимки лежат в папке `docs/screenshots` этого репозитория — их видно, когда вы залогинены в GitHub под аккаунтом, у которого есть доступ.
 
 **Реверс (мосты)** — слева светлая тема «В стиле Windows XP», справа тёмная:
 
-![Реверс, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-winxp.png) ![Реверс, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-dark.png)
+![Реверс, светлая тема](docs/screenshots/ru-reverse-winxp.png) ![Реверс, тёмная тема](docs/screenshots/ru-reverse-dark.png)
 
 **Прокси (прозрачный режим, DNS)**:
 
-![Прокси, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-transparent-winxp.png) ![Прокси, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-transparent-dark.png)
+![Прокси, светлая тема](docs/screenshots/ru-transparent-winxp.png) ![Прокси, тёмная тема](docs/screenshots/ru-transparent-dark.png)
 
 **Маршруты (правила и наборы)**:
 
-![Маршруты, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-rules-winxp.png) ![Маршруты, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-rules-dark.png)
+![Маршруты, светлая тема](docs/screenshots/ru-rules-winxp.png) ![Маршруты, тёмная тема](docs/screenshots/ru-rules-dark.png)
 
 **English interface**
 
 **Reverse (bridges)**:
 
-![Reverse, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-reverse-winxp.png) ![Reverse, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-reverse-dark.png)
+![Reverse, light theme](docs/screenshots/en-reverse-winxp.png) ![Reverse, dark theme](docs/screenshots/en-reverse-dark.png)
 
 **Proxy (transparent mode, DNS)**:
 
-![Proxy, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-transparent-winxp.png) ![Proxy, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-transparent-dark.png)
+![Proxy, light theme](docs/screenshots/en-transparent-winxp.png) ![Proxy, dark theme](docs/screenshots/en-transparent-dark.png)
 
 **Routes (rules and sets)**:
 
-![Routes, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-rules-winxp.png) ![Routes, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-rules-dark.png)
+![Routes, light theme](docs/screenshots/en-rules-winxp.png) ![Routes, dark theme](docs/screenshots/en-rules-dark.png)
 
 Язык переключается на странице «Настройки» → «Язык панели» (русский, English или
 «как в браузере»); тема — там же, в поле «Оформление панели».
