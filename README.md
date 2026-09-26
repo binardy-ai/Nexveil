@@ -88,19 +88,17 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 **Русский интерфейс**
 
-| Страница | Светлая тема «В стиле Windows XP» | Тёмная тема |
-| --- | --- | --- |
-| Реверс (мосты) | <img src="docs/screenshots/ru-reverse-winxp.png" width="420"> | <img src="docs/screenshots/ru-reverse-dark.png" width="420"> |
-| Прокси (прозрачный режим, DNS) | <img src="docs/screenshots/ru-transparent-winxp.png" width="420"> | <img src="docs/screenshots/ru-transparent-dark.png" width="420"> |
-| Маршруты (правила и наборы) | <img src="docs/screenshots/ru-rules-winxp.png" width="420"> | <img src="docs/screenshots/ru-rules-dark.png" width="420"> |
+|  | Реверс (мосты) | Прокси (прозрачный режим, DNS) | Маршруты (правила и наборы) |
+| --- | --- | --- | --- |
+| Светлая тема «В стиле Windows XP» | ![Реверс, светлая тема](docs/screenshots/ru-reverse-winxp.png) | ![Прокси, светлая тема](docs/screenshots/ru-transparent-winxp.png) | ![Маршруты, светлая тема](docs/screenshots/ru-rules-winxp.png) |
+| Тёмная тема | ![Реверс, тёмная тема](docs/screenshots/ru-reverse-dark.png) | ![Прокси, тёмная тема](docs/screenshots/ru-transparent-dark.png) | ![Маршруты, тёмная тема](docs/screenshots/ru-rules-dark.png) |
 
 **English interface**
 
-| Page | Light theme (Windows XP style) | Dark theme |
-| --- | --- | --- |
-| Reverse (bridges) | <img src="docs/screenshots/en-reverse-winxp.png" width="420"> | <img src="docs/screenshots/en-reverse-dark.png" width="420"> |
-| Proxy (transparent mode, DNS) | <img src="docs/screenshots/en-transparent-winxp.png" width="420"> | <img src="docs/screenshots/en-transparent-dark.png" width="420"> |
-| Routes (rules and sets) | <img src="docs/screenshots/en-rules-winxp.png" width="420"> | <img src="docs/screenshots/en-rules-dark.png" width="420"> |
+|  | Reverse (bridges) | Proxy (transparent mode, DNS) | Routes (rules and sets) |
+| --- | --- | --- | --- |
+| Light theme (Windows XP style) | ![Reverse, light theme](docs/screenshots/en-reverse-winxp.png) | ![Proxy, light theme](docs/screenshots/en-transparent-winxp.png) | ![Routes, light theme](docs/screenshots/en-rules-winxp.png) |
+| Dark theme | ![Reverse, dark theme](docs/screenshots/en-reverse-dark.png) | ![Proxy, dark theme](docs/screenshots/en-transparent-dark.png) | ![Routes, dark theme](docs/screenshots/en-rules-dark.png) |
 
 Язык переключается на странице «Настройки» → «Язык панели» (русский, English или
 «как в браузере»); тема — там же, в поле «Оформление панели».
