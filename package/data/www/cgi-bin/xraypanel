@@ -170,7 +170,7 @@ act_save_server() {
 	_existed=$(uci -q get "$UCI_APP.$_want" 2>/dev/null)
 	_sec=$(ensure_section server "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел сервера"
-	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_address wg_allowed mtu network path hosthdr tls; do
+	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_address wg_allowed mtu network path hosthdr tls hy_obfs hy_obfs_pass; do
 		_v=$(param "$_f")
 		# тег приводим к безопасному виду: пробелы и посторонние символы ломают
 		# и конфиг xray, и саму панель (она разбирает списки тегов по пробелам)
@@ -4066,6 +4066,13 @@ page_server() {
 		"$([ "$(uci -q get "$UCI_APP.$_sec.tls")" != 1 ] && echo selected)" "$([ "$(uci -q get "$UCI_APP.$_sec.tls")" = 1 ] && echo selected)"
 	printf '<div class="f-hysteria"><label>Проверять сертификат</label><select name="insecure"><option value="0" %s>проверять</option><option value="1" %s>не проверять (allowInsecure)</option></select></div>' \
 		"$([ "$(uci -q get "$UCI_APP.$_sec.insecure")" != 1 ] && echo selected)" "$([ "$(uci -q get "$UCI_APP.$_sec.insecure")" = 1 ] && echo selected)"
+	# обфускация Hysteria 2 (salamander): нужна, если сервер её требует. В xray
+	# это «финальная маска» (finalmask.udp), в ссылках приходит как obfs=salamander
+	printf '<div class="f-hysteria"><label>Обфускация</label><select name="hy_obfs">'
+	printf '<option value="" %s>нет</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.hy_obfs")" != salamander ] && echo selected)"
+	printf '<option value="salamander" %s>salamander (как в Hysteria 2)</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.hy_obfs")" = salamander ] && echo selected)"
+	printf '</select></div>'
+	printf '<div class="f-hysteria"><label>Пароль обфускации</label><input name="hy_obfs_pass" value="%s" placeholder="obfs-password из ссылки"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.hy_obfs_pass")")"
 	printf '<div class="f-wg"><label>Приватный ключ клиента (secretKey)</label><input name="wg_private" value="%s"></div>' "$(h "$_wgp")"
 	printf '<div class="f-wg"><label>Публичный ключ сервера (publicKey)</label><input name="wg_peer" value="%s"></div>' "$(h "$_wgk")"
 	printf '<div class="f-wg"><label>Адрес клиента (например 10.0.0.2/32)</label><input name="wg_address" value="%s"></div>' "$(h "$_wga")"

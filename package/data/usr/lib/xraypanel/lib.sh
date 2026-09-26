@@ -2029,9 +2029,18 @@ gen_outbound_server() { # имя секции
 		# а если он не задан — из адреса сервера.
 		_hsni=$(jesc "$(uci -q get "$UCI_APP.$_s.sni" 2>/dev/null)")
 		[ -n "$_hsni" ] || _hsni="$_addr"
-		printf '{"tag":"%s","protocol":"hysteria","settings":{"version":2,"address":"%s","port":%s},"streamSettings":{"network":"hysteria","security":"tls","tlsSettings":{"serverName":"%s"%s},"hysteriaSettings":{"version":2,"auth":"%s"}}}' \
+		# обфускация Hysteria 2 (salamander): в xray это «финальная маска»
+		# UDP-транспорта (finalmask.udp). Нужна только если сервер её требует —
+		# иначе обычное подключение к серверу без обфускации не пройдёт.
+		_hmask=""
+		_hobfs=$(uci -q get "$UCI_APP.$_s.hy_obfs" 2>/dev/null)
+		_hpass=$(uci -q get "$UCI_APP.$_s.hy_obfs_pass" 2>/dev/null)
+		if [ "$_hobfs" = salamander ] && [ -n "$_hpass" ]; then
+			_hmask=",\"finalmask\":{\"udp\":[{\"type\":\"salamander\",\"settings\":{\"password\":\"$(jesc "$_hpass")\"}}]}"
+		fi
+		printf '{"tag":"%s","protocol":"hysteria","settings":{"version":2,"address":"%s","port":%s},"streamSettings":{"network":"hysteria","security":"tls","tlsSettings":{"serverName":"%s"%s},"hysteriaSettings":{"version":2,"auth":"%s"}%s}}' \
 			"$_tag" "$_addr" "$_port" "$_hsni" "$_insl" \
-			"$(jesc "$(uci -q get "$UCI_APP.$_s.password")")"
+			"$(jesc "$(uci -q get "$UCI_APP.$_s.password")")" "$_hmask"
 		return 0
 	fi
 	# --- VMess (часто приходит в подписках)
@@ -3596,6 +3605,16 @@ server_add_from_link() {
 			_sni=$(_q sni)
 			[ -n "$_sni" ] && uci -q set "$UCI_APP.$_sec.sni=$_sni"
 			case "$_query" in *insecure=1*) uci -q set "$UCI_APP.$_sec.insecure=1" ;; esac
+			# обфускация (salamander): в ссылке это obfs=… и obfs-password=…
+			_obfs=$(_q obfs)
+			_obfsp=$(_q obfs-password)
+			[ -n "$_obfsp" ] || _obfsp=$(_q obfs_password)
+			case "$_obfs" in
+				salamander)
+					uci -q set "$UCI_APP.$_sec.hy_obfs=salamander"
+					[ -n "$_obfsp" ] && uci -q set "$UCI_APP.$_sec.hy_obfs_pass=$_obfsp"
+					;;
+			esac
 			;;
 		vmess)
 			uci -q set "$UCI_APP.$_sec.protocol=vmess"
