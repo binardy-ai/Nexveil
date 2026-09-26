@@ -2,17 +2,17 @@
 # Веб-панель xraypanel для OpenWrt/ImmortalWrt.
 # CGI-скрипт для uhttpd. Открывается в браузере: http://<роутер>/cgi-bin/xraypanel
 
-. /tmp/stage2/lib.sh 2>/dev/null || {
+. /usr/lib/xraypanel/lib.sh 2>/dev/null || {
 	echo "Status: 500"
 	echo "Content-Type: text/plain; charset=utf-8"
 	echo
-	echo "не найден /tmp/stage2/lib.sh — пакет установлен не полностью"
+	echo "не найден /usr/lib/xraypanel/lib.sh — пакет установлен не полностью"
 	exit 0
 }
-. /tmp/stage2/themes.sh 2>/dev/null
+. /usr/lib/xraypanel/themes.sh 2>/dev/null
 # если файла тем нет (старый пакет) — работаем без оформления
 command -v theme_style >/dev/null 2>&1 || { theme_name() { printf 'classic'; }; theme_style() { :; }; }
-# язык интерфейса: строки берутся из /tmp/stage2/lang/<язык>.sh
+# язык интерфейса: строки берутся из /usr/lib/xraypanel/lang/<язык>.sh
 lang_load 2>/dev/null
 
 METHOD="${REQUEST_METHOD:-GET}"
@@ -756,26 +756,26 @@ act_set_default() {
 }
 
 # --- прозрачный режим (весь трафик роутера/сети заворачивается в xray) ------
-TRANS="${XRAYPANEL_TRANSPARENT:-/tmp/stage2/transparent.sh}"
-LIB="${XRAYPANEL_LIB:-/tmp/stage2/lib.sh}"
-ENABLER="${XRAYPANEL_ENABLE:-/tmp/stage2/transparent-enable.sh}"
-DISABLER="${XRAYPANEL_DISABLE:-/tmp/stage2/transparent-disable.sh}"
+TRANS="${XRAYPANEL_TRANSPARENT:-/usr/lib/xraypanel/transparent.sh}"
+LIB="${XRAYPANEL_LIB:-/usr/lib/xraypanel/lib.sh}"
+ENABLER="${XRAYPANEL_ENABLE:-/usr/lib/xraypanel/transparent-enable.sh}"
+DISABLER="${XRAYPANEL_DISABLE:-/usr/lib/xraypanel/transparent-disable.sh}"
 # сбор названий гео-списков: скрипт и разборщики (пути можно переопределить)
-GEO_SCRIPT="${XRAYPANEL_GEO_TAGS:-/tmp/stage2/geo-tags.sh}"
-GEO_PARSER="${XRAYPANEL_GEO_PARSER:-/tmp/stage2/geo-parse.awk}"
-GEO_PARSER_BYTES="${XRAYPANEL_GEO_PARSER_BYTES:-/tmp/stage2/geo-parse-bytes.awk}"
-GEO_LOOKUP="${XRAYPANEL_GEO_LOOKUP:-/tmp/stage2/geo-lookup.awk}"
+GEO_SCRIPT="${XRAYPANEL_GEO_TAGS:-/usr/lib/xraypanel/geo-tags.sh}"
+GEO_PARSER="${XRAYPANEL_GEO_PARSER:-/usr/lib/xraypanel/geo-parse.awk}"
+GEO_PARSER_BYTES="${XRAYPANEL_GEO_PARSER_BYTES:-/usr/lib/xraypanel/geo-parse-bytes.awk}"
+GEO_LOOKUP="${XRAYPANEL_GEO_LOOKUP:-/usr/lib/xraypanel/geo-lookup.awk}"
 # разборщик «список → домены»: по нему делаются файлы доменов для наборов
-GEO_LIST_SCRIPT="${XRAYPANEL_GEO_LIST:-/tmp/stage2/geo-list.awk}"
-GEO_UPDATE="${XRAYPANEL_GEO_UPDATE:-/tmp/stage2/geo-update.sh}"
+GEO_LIST_SCRIPT="${XRAYPANEL_GEO_LIST:-/usr/lib/xraypanel/geo-list.awk}"
+GEO_UPDATE="${XRAYPANEL_GEO_UPDATE:-/usr/lib/xraypanel/geo-update.sh}"
 GEO_ENV="XRAYPANEL_STATE='$STATE_DIR' XRAYPANEL_LIB='$LIB' XRAYPANEL_GEO_PARSER='$GEO_PARSER' XRAYPANEL_GEO_PARSER_BYTES='$GEO_PARSER_BYTES'"
 # разбор готовых списков, которые стоят в наборах: без него лампочка в наборе
 # может показать срабатывание только «вероятно» (серым пунктиром)
-GEO_ITEM="${XRAYPANEL_GEO_ITEM:-/tmp/stage2/geo-item.sh}"
+GEO_ITEM="${XRAYPANEL_GEO_ITEM:-/usr/lib/xraypanel/geo-item.sh}"
 GEO_ITEM_ENV="$GEO_ENV XRAYPANEL_GEO_LIST='$GEO_LIST_SCRIPT'"
 # обновление самой панели: проверка релиза на GitHub и установка пакета
-UPDATE_CHECK="${XRAYPANEL_UPDATE_CHECK:-/tmp/stage2/update-check.sh}"
-UPDATE_INSTALL="${XRAYPANEL_UPDATE_INSTALL:-/tmp/stage2/update-install.sh}"
+UPDATE_CHECK="${XRAYPANEL_UPDATE_CHECK:-/usr/lib/xraypanel/update-check.sh}"
+UPDATE_INSTALL="${XRAYPANEL_UPDATE_INSTALL:-/usr/lib/xraypanel/update-install.sh}"
 UPDATE_ENV="XRAYPANEL_STATE='$STATE_DIR' XRAYPANEL_LIB='$LIB'"
 
 # Тяжёлые операции (проверка конфига, перезапуск xray, правила фаервола) уводим
