@@ -10,6 +10,8 @@ STATE="${XRAYPANEL_STATE:-/etc/xraypanel}"
 LIB="${XRAYPANEL_LIB:-/usr/lib/xraypanel/lib.sh}"
 PARSER="${XRAYPANEL_GEO_PARSER:-/usr/lib/xraypanel/geo-parse.awk}"
 GEO_TAGS="${XRAYPANEL_GEO_TAGS:-/usr/lib/xraypanel/geo-tags.sh}"
+GEO_ITEM="${XRAYPANEL_GEO_ITEM:-/usr/lib/xraypanel/geo-item.sh}"
+GEO_LIST="${XRAYPANEL_GEO_LIST:-/usr/lib/xraypanel/geo-list.awk}"
 SRC="${1:-loyalsoldier}"
 
 [ -f "$LIB" ] && . "$LIB"
@@ -19,6 +21,11 @@ fi
 mkdir -p "$STATE" 2>/dev/null
 LOG="$STATE/geo-update.log"
 RUN="$STATE/geo-update.running"
+# краткая сводка последнего обновления: её показывает панель в блоке «Готовые
+# списки» — откуда качали, когда и сколько названий внутри
+SUM="$STATE/geo-update.last"
+SUM_NEW="$STATE/geo-update.last.new"
+: > "$SUM_NEW" 2>/dev/null
 trap 'rm -f "$RUN" 2>/dev/null' EXIT INT TERM
 touch "$RUN" 2>/dev/null
 
@@ -120,6 +127,8 @@ install_file() { # $1 ссылка, $2 имя файла, $3 как называ
 	fi
 	if mv -f "$_tmp" "$_target" 2>/dev/null; then
 		say "  поставлен $2: $(human_bytes "$_size" 2>/dev/null || echo "$_size байт"), названий $_cnt → $_target"
+		# для сводки: какой файл, куда лёг, сколько весит и сколько названий
+		printf 'file\t%s\t%s\t%s\t%s\n' "$2" "$_target" "$_size" "$_cnt" >> "$SUM_NEW" 2>/dev/null
 		return 0
 	fi
 	say "  не смог записать $_target"
@@ -136,10 +145,25 @@ if [ "$_ok" = 0 ]; then
 	exit 1
 fi
 
+# сводку кладём на место только когда обновление правда удалось: иначе панель
+# показывала бы «последнее обновление», которого не было
+{
+	printf 'date\t%s\n' "$(date '+%d.%m.%Y %H:%M')"
+	printf 'source\t%s\n' "$SRC"
+	printf 'name\t%s\n' "$NAME"
+	cat "$SUM_NEW" 2>/dev/null
+} > "$SUM_NEW.2" 2>/dev/null && mv -f "$SUM_NEW.2" "$SUM" 2>/dev/null
+rm -f "$SUM_NEW" "$SUM_NEW.2" 2>/dev/null
+
 # названия списков пересобираем и сбрасываем кэши поиска
 say "пересобираю названия списков…"
 rm -f "$STATE/geo-tags.tsv" "$STATE/geo-tags.sig" "$STATE/geo-lookup.cache" "$STATE/geo-list.cache" 2>/dev/null
 XRAYPANEL_STATE="$STATE" XRAYPANEL_LIB="$LIB" XRAYPANEL_GEO_PARSER="$PARSER" sh "$GEO_TAGS" >>"$LOG" 2>&1
+
+# списки, которые стоят записями в наборах, разбираем заново: файлы со списками
+# обновились, значит и «какие домены в TELEGRAM» надо взять из новых файлов
+say "пересобираю списки наборов…"
+XRAYPANEL_STATE="$STATE" XRAYPANEL_LIB="$LIB" XRAYPANEL_GEO_LIST="$GEO_LIST" sh "$GEO_ITEM" >>"$LOG" 2>&1
 
 # xray читает эти файлы при запуске — перезапускаем
 if type svc_restart >/dev/null 2>&1; then

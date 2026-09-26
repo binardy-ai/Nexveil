@@ -46,7 +46,12 @@ theme_style() {
 }
 *{box-sizing:border-box}
 body{font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:var(--bg);color:var(--fg)}
-header{background:var(--hd-bg);color:var(--hd-fg);padding:10px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+/* шапка с меню остаётся на месте, содержимое листается под ней. В темах с
+   боковым меню header{display:contents} (боковой вариант ниже) — там этот
+   приём не работает и не мешает: блока у шапки просто нет */
+header{background:var(--hd-bg);color:var(--hd-fg);padding:10px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+/* переход по якорю не должен прятать заголовок под закреплённой шапкой */
+html{scroll-padding-top:70px}
 header b{font-size:16px}
 nav a{color:var(--nav);text-decoration:none;margin-right:12px;display:inline-block}
 nav a.on{color:var(--nav-on);font-weight:600;border-bottom:2px solid var(--nav-line);padding-bottom:2px}
@@ -82,11 +87,39 @@ details.dd>label.chk{display:flex;gap:6px;align-items:center;margin:2px 0;font-s
 details.dd>label.chk input{width:auto}
 details.dd .dd-body label.chk{display:flex;gap:6px;align-items:center;margin:3px 0;font-size:13px}
 details.dd .dd-body label.chk input{width:auto}
-/* активное правило: яркая мигающая подсветка */
-tr.row-live{background:var(--row-ok);animation:rowpulse 1.6s ease-in-out infinite}
-tr.row-live td{background:transparent}
-@keyframes rowpulse{0%,100%{background:var(--row-ok)}50%{background:rgba(74,222,128,.35)}}
-@media (prefers-reduced-motion:reduce){tr.row-live{animation:none}}
+/* Сработавшее правило и сработавшая запись набора горят ОДИНАКОВО: вспыхнули
+   максимально ярко и гаснут за 30 секунд. При новом срабатывании — снова
+   максимум. Затухание рисует сам браузер (CSS-анимация), поэтому оно плавное,
+   хотя состояние панель спрашивает раз в 4 секунды. Где именно мы внутри этих
+   30 секунд, задаёт inline style в самой строке:
+   animation-delay:-<сколько секунд назад сработало>s — поэтому лампочка стоит
+   на месте и после перезагрузки страницы, и на любом другом устройстве. */
+tr.lamp-on{animation:lampfade 30s linear both}
+tr.lamp-on td{background:transparent}
+@keyframes lampfade{
+ 0%{background:rgba(74,222,128,.95)}
+ 5%{background:rgba(74,222,128,.30)}
+ 10%{background:rgba(74,222,128,.95)}
+ 16%{background:rgba(74,222,128,.40)}
+ 22%{background:rgba(74,222,128,.88)}
+ 100%{background:rgba(74,222,128,0)}
+}
+@media (prefers-reduced-motion:reduce){tr.lamp-on{animation:none;background:var(--row-ok)}}
+/* «вероятно, сработала эта запись»: готовый список целиком не разбираем,
+   поэтому показываем пунктиром, без яркости и без затухания */
+tr.item-maybe{background:rgba(148,163,184,.14)}
+tr.item-maybe td{background:transparent}
+tr.item-maybe code{text-decoration:underline dotted}
+/* отклик на нажатие: кнопка на мгновение вспыхивает — видно, что нажатие
+   дошло, даже когда сохранение идёт тихо, без перезагрузки страницы */
+button.hit,a.btn.hit{box-shadow:0 0 0 3px rgba(74,222,128,.85),0 0 12px rgba(74,222,128,.55)}
+button.hit.danger,a.btn.hit.danger{box-shadow:0 0 0 3px rgba(248,113,113,.85),0 0 12px rgba(248,113,113,.55)}
+/* плашки доменов в подборе: короткий клик — копировать, удержание — добавить */
+.dom{-webkit-touch-callout:none;user-select:none;touch-action:manipulation}
+/* значения, которые уже лежат в окне добавления: клик убирает */
+.valchip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;
+  border:1px solid var(--nav-line);background:rgba(148,163,184,.12);font-size:12px;cursor:pointer}
+.valchip:hover{background:rgba(248,113,113,.18);border-color:rgba(248,113,113,.5)}
 tr.dragging{opacity:.55;background:var(--row-ok)}
 tr.drop-target{box-shadow:inset 0 2px 0 0 var(--nav-line)}
 /* компактные кнопки действий в таблицах (правила, серверы) */
@@ -98,6 +131,15 @@ tr.drop-target{box-shadow:inset 0 2px 0 0 var(--nav-line)}
 .rule-seen{display:inline-block;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 td[data-label="Работает"],td[data-label="Что ходило"]{max-width:230px}
 .report{white-space:pre-line}
+/* результаты проверки домена не должны разъезжаться на весь экран */
+#rule-find-report{max-height:220px;overflow:auto}
+/* компактная строка «новый набор» + управление текущим набором */
+.newset{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:10px}
+.newset form{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:0}
+.newset label{display:block;font-size:12px;color:var(--muted);margin:0 0 2px}
+.newset input{max-width:190px}
+.newset .btn,.newset button{margin:0}
+.btn.small{padding:3px 9px;font-size:13px}
 /* цветные кнопки порядка правил: чем выше — тем зеленее, чем ниже — тем темнее */
 .acts .btn.top,.acts .btn.up,.acts .btn.down,.acts .btn.bottom,.acts .btn.stop,.acts .btn.start{border-color:transparent;color:#fff;font-weight:700}
 .acts .btn.top{background:#15803d}
@@ -115,6 +157,14 @@ code{display:inline;padding:1px 5px}
 .dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#cbd5e1;margin-right:6px;vertical-align:middle}
 .dot.warm{background:#f59e0b}
 .dot.live{background:var(--ok);animation:dotpulse 1.4s ease-out infinite}
+/* та же лампочка-точка: вспышка и затухание за 30 секунд, как у строк */
+.dot.on{background:var(--ok);animation:dotfade 30s linear both}
+@keyframes dotfade{
+ 0%{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.45)}
+ 22%{background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.20)}
+ 100%{background:#cbd5e1;box-shadow:0 0 0 0 rgba(34,197,94,0)}
+}
+@media (prefers-reduced-motion:reduce){.dot.on{animation:none;background:var(--ok)}}
 @keyframes dotpulse{
  0%{box-shadow:0 0 0 0 rgba(21,128,61,.55)}
  70%{box-shadow:0 0 0 7px rgba(21,128,61,0)}
@@ -145,6 +195,8 @@ label.chk input{width:auto;margin:0}
  table.responsive td[data-label="Действия"]{flex-wrap:wrap;justify-content:flex-end}
  table.responsive td[data-label="Действия"] form{display:inline-block;margin:0}
  table.responsive button,table.responsive .btn{padding:4px 8px;font-size:13px}
+ /* обрезанное значение в карточке не должно вылезать за экран */
+ table.responsive td .clip{max-width:52vw}
  /* на телефоне поля идут в одну колонку, а отступы уменьшаем */
  main{padding:10px}
  .card{padding:calc(var(--card-pad) - 2px)}
@@ -154,6 +206,20 @@ label.chk input{width:auto;margin:0}
 }
 /* длинный адрес подписки или ссылка не должны растягивать карточку */
 .url{overflow-wrap:anywhere;word-break:break-all}
+/* длинные значения в таблицах держим в одной строке: хвост обрезаем, полный
+   текст показывается подсказкой при наведении (атрибут title) */
+.bad-input{border-color:var(--bad)!important;color:var(--bad)!important;box-shadow:0 0 0 1px var(--bad)}
+.tmpl-hint{font-size:12px;color:var(--muted)}
+.tmpl-hint.bad{color:var(--bad)}
+.clip{display:inline-block;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+/* Ширина обрезки привязана к экрану: иначе в режиме «как для ПК» на телефоне
+   (браузер берёт ширину около 980 пикселей) таблица не влезает и страница
+   разъезжается в стороны. Старые браузеры просто берут 200px выше. */
+.clip{max-width:min(200px,13vw)}
+@media (max-width:1100px){
+ th,td{padding:5px 6px}
+ .clip{max-width:min(150px,12vw)}
+}
 CSS
 	case "$_t" in
 	compact)

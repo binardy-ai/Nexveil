@@ -78,6 +78,12 @@ params_all() {
 	done
 }
 
+# было ли такое поле в запросе (в отличие от «пришло пустым»): по этому панель
+# понимает, что поле вообще не присылали и менять его не нужно
+params_present() {
+	grep -q "^$1=" "$PARAMS" 2>/dev/null
+}
+
 urlenc() { # простое кодирование для сообщений и ссылок
 	printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/&/%26/g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/+/%2B/g' -e 's/=/%3D/g'
 }
@@ -116,7 +122,11 @@ redirect() { # redirect "страница" "сообщение"
 				printf '{"ok":true,"msg":"%s","target":"%s","html":"%s"}\n' \
 					"$(jesc "$2")" "$(jesc "$_AJAX_TARGET")" "$(jesc "$_AJAX_HTML")"
 			else
-				printf '{"ok":true,"msg":"%s"}\n' "$(jesc "$2")"
+				# «go» — куда вернуться после тихого сохранения. Страницы-редакторы
+				# (мост, сервер, правило) после сохранения должны уходить на свой
+				# список, а не оставаться в форме: раньше после «Сохранить мост»
+				# пользователь так и оставался в редактировании.
+				printf '{"ok":true,"msg":"%s","go":"%s"}\n' "$(jesc "$2")" "$(jesc "$1")"
 			fi
 			# ВАЖНО: не выходим — действие ещё должно доработать (перезапуск,
 			# фоновые задачи). Ответ уже отдан, браузеру он и нужен.
@@ -211,11 +221,23 @@ act_save_bridge() {
 	done
 	_bt=$(param tag)
 	_bd=$(param domain)
+	# способ реверса у моста: пусто — «как у роутера», иначе legacy или new
+	_style=$(param style)
+	case "$_style" in
+		legacy|new) ui_uci set "$UCI_APP.$_sec.style=$_style" ;;
+		*)          ui_uci delete "$UCI_APP.$_sec.style" ;;
+	esac
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	_bnt=$(param tag); [ -n "$_bnt" ] || _bnt="$_sec"
 	if [ -n "$_existed" ]; then pending_note "изменён мост «$_bnt»"; else pending_note "добавлен мост «$_bnt»"; fi
-	if [ -z "$_bt" ] || [ -z "$_bd" ]; then
-		redirect bridges "мост сохранён, но не хватает данных: нужны «Тег моста» (как на сервере-портале) и «Домен»"
+	if [ -z "$_bt" ]; then
+		redirect bridges "мост сохранён, но не хватает данных: нужен «Тег моста» (как на сервере-портале)"
+	fi
+	_bstyle=$(bridge_style "$_sec")
+	# домен нужен только старому способу: в новом (VLESS Reverse Proxy)
+	# связь идёт по тегу, и домена на портале нет
+	if [ "$_bstyle" = legacy ] && [ -z "$_bd" ]; then
+		redirect bridges "мост сохранён, но для старого способа нужен «Домен» (как на сервере-портале). Либо выберите новый способ реверса — там домен не нужен."
 	fi
 	[ -n "$_existed" ] && redirect bridges "реверс-мост сохранён. Осталось нажать «Применить конфиг» на странице «Статус»." \
 		|| redirect bridges "реверс-мост добавлен. Осталось нажать «Применить конфиг» на странице «Статус»."
@@ -227,6 +249,46 @@ act_del_bridge() {
 	[ -n "$_sec" ] && { ui_uci delete "$UCI_APP.$_sec"; uci commit "$UCI_APP" >/dev/null 2>&1; }
 	[ -n "$_sec" ] && pending_note "удалён мост «$_bnt»"
 	redirect bridges "реверс-мост удалён"
+}
+
+# --- обновление самой панели -------------------------------------------------
+act_update_check() { # проверить новые версии панели в релизах GitHub
+	[ -n "$(cfg update_repo "Petr700/xraypanel")" ] || redirect status "не указан репозиторий для проверки обновлений — впишите его на странице «Настройки»"
+	bg_run "$UPDATE_ENV sh '$UPDATE_CHECK'" "$STATE_DIR/update.log"
+	respond_now status "проверяю новые версии — результат появится на этой странице через несколько секунд"
+	exit 0
+}
+
+act_update_install() { # скачать и поставить новую версию панели
+	_nver=$(update_field version 2>/dev/null)
+	_geturl=$(update_field url 2>/dev/null)
+	[ -n "$_geturl" ] || redirect status "нет данных о новой версии — сначала нажмите «проверить сейчас»"
+	rm -f "$STATE_DIR/update-install.rc" 2>/dev/null
+	bg_run "$UPDATE_ENV sh '$UPDATE_INSTALL' '$_geturl'" "$STATE_DIR/update-install.log"
+	respond_now status "скачиваю и ставлю версию ${_nver:-из релиза} — через 20–40 секунд обновите страницу. Настройки, серверы и правила не трогаются."
+	exit 0
+}
+
+# Общий способ сборки реверс-мостов. Выбрать можно только то, что понимает
+# установленный бинарник xray: иначе панель писала бы в конфиг блок, из-за
+# которого xray вообще откажется запускаться.
+act_rev_style() {
+	_v=$(param style)
+	case "$_v" in
+		legacy|new) ;;
+		*) redirect bridges "неизвестный способ реверса — ничего не менял" ;;
+	esac
+	_cap=$(reverse_bin_support 2>/dev/null)
+	if [ "$_v" = legacy ] && [ "$_cap" != both ]; then
+		redirect bridges "установленный xray старый реверс не понимает (его удалили в свежих сборках) — этот способ выбрать нельзя. Поставьте сборку до 26.4.18 или переключите мосты на новый способ"
+	fi
+	if [ "$_v" = new ] && [ "$_cap" = none ]; then
+		redirect bridges "установленный xray не умеет ни старый, ни новый реверс — проверьте бинарник на странице «Настройки»"
+	fi
+	printf '%s' "$_v" > "$STATE_DIR/reverse.style" 2>/dev/null
+	pending_note "изменён общий способ реверса: $([ "$_v" = legacy ] && echo 'старый (по домену)' || echo 'новый (по тегу)')"
+	respond_now bridges "общий способ реверса изменён — нажмите «применить конфиг», чтобы он попал в конфиг xray"
+	exit 0
 }
 
 act_save_rule() {
@@ -276,6 +338,15 @@ act_save_rule() {
 	if [ -n "$_st" ]; then
 		_t="$_st"; _v=$(printf '%s' "$_split" | cut -f2)
 		ui_uci set "$UCI_APP.$_sec.value=$_v"
+	fi
+	# битый или «ловящий всё» шаблон не сохраняем: с битым xray не запустится,
+	# а «ловящий всё» тихо завернёт весь трафик
+	if [ "$_t" = regexp ]; then
+		_rs=$(regexp_problem "$_v")
+		if [ -n "$_rs" ]; then
+			uci -q revert "$UCI_APP"
+			redirect rules "шаблон не сохраняю: $_v — $_rs"
+		fi
 	fi
 	if [ -n "$_t" ]; then ui_uci set "$UCI_APP.$_sec.type=$_t"; else ui_uci delete "$UCI_APP.$_sec.type"; fi
 	uci commit "$UCI_APP" >/dev/null 2>&1
@@ -380,21 +451,35 @@ act_del_rule() {
 # --- наборы (категории) и их записи ------------------------------------------
 act_save_rules_all() { # сохранить все правила из таблицы и применить конфиг
 	for _r in $(rule_sections); do
-		_src=$(params_all "src_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
-		_sets=$(params_all "sets_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
-		_out=$(param "out_$_r")
-		if [ -n "$_src" ]; then ui_uci set "$UCI_APP.$_r.source=$_src"; else ui_uci delete "$UCI_APP.$_r.source"; fi
-		if [ -n "$_sets" ]; then ui_uci set "$UCI_APP.$_r.sets=$_sets"; else ui_uci delete "$UCI_APP.$_r.sets"; fi
-		[ -n "$_out" ] && ui_uci set "$UCI_APP.$_r.outbound=$_out"
+		# Поля правим ТОЛЬКО если они вообще были в запросе. Раньше отсутствие
+		# поля считалось «пустым значением» и правило теряло источник или набор:
+		# сохранение одного правила стирало данные у соседних.
+		if params_present "src_$_r"; then
+			_src=$(params_all "src_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+			if [ -n "$_src" ]; then ui_uci set "$UCI_APP.$_r.source=$_src"; else ui_uci delete "$UCI_APP.$_r.source"; fi
+		fi
+		if params_present "sets_$_r"; then
+			_sets=$(params_all "sets_$_r" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
+			if [ -n "$_sets" ]; then ui_uci set "$UCI_APP.$_r.sets=$_sets"; else ui_uci delete "$UCI_APP.$_r.sets"; fi
+		fi
+		if params_present "out_$_r"; then
+			_out=$(param "out_$_r")
+			[ -n "$_out" ] && ui_uci set "$UCI_APP.$_r.outbound=$_out"
+		fi
 	done
+	_skip=0
 	for _k in $(param newrows | tr ',' ' '); do
 		[ -n "$_k" ] || continue
 		_src=$(params_all "src_$_k" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
 		_sets=$(params_all "sets_$_k" | grep -v '^$' | tr '\n' ',' | sed -e 's/,,*/,/g' -e 's/^,//' -e 's/,$//')
 		_out=$(param "out_$_k")
 		[ -n "$_out" ] || _out=auto
-		# пустую строку (ничего не выбрано) не сохраняем
-		if [ -z "$_src$_sets" ] && [ "$_out" = auto ]; then continue; fi
+		# пустую строку (ничего не выбрано) не сохраняем — но и не молчим об этом,
+		# иначе кажется, что правило «не сохранилось»
+		if [ -z "$_src$_sets" ] && [ "$_out" = auto ]; then
+			_skip=$((_skip + 1))
+			continue
+		fi
 		_new=$(rule_new_name)
 		uci -q set "$UCI_APP.$_new=rule"
 		[ -n "$_src" ] && uci -q set "$UCI_APP.$_new.source=$_src"
@@ -406,7 +491,11 @@ act_save_rules_all() { # сохранить все правила из табл�
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	pending_clear
 	pending_note "правила сохранены"
-	respond_now rules "правила сохранены, конфиг применяется — страница обновится сама"
+	if [ "${_skip:-0}" -gt 0 ]; then
+		respond_now rules "остальные правила сохранены и конфиг применяется. Пустых строк пропущено: $_skip — в них не выбрано ни устройство, ни набор, а выход стоит «по пингу». Чтобы строка сохранилась, выберите устройство, набор или конкретный выход."
+	else
+		respond_now rules "правила сохранены, конфиг применяется — страница обновится сама"
+	fi
 	bg_apply
 	exit 0
 }
@@ -448,6 +537,22 @@ act_set_new() { # создать набор
 	redirect rules "набор «$_nm» создан — добавьте в него адреса или домены"
 }
 
+act_set_rename() { # переименовать набор
+	_st=$(param set)
+	_nm=$(param newname | sed -e 's/^ *//' -e 's/ *$//')
+	[ -n "$_st" ] || redirect rules "набор не выбран"
+	[ -n "$_nm" ] || redirect rules "впишите новое имя набора"
+	_old_sec=$(set_section_by_name "$_nm" 2>/dev/null)
+	if [ -n "$_old_sec" ] && [ "$_old_sec" != "$_st" ]; then
+		redirect rules "набор «$_nm» уже есть — выберите другое имя"
+	fi
+	ui_uci set "$UCI_APP.$_st.name=$_nm"
+	ui_uci set "$UCI_APP.settings.rules_set=$_st"
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "набор переименован в «$_nm»"
+	redirect rules "набор переименован в «$_nm»"
+}
+
 act_set_del() { # удалить набор вместе с записями
 	_st=$(param set)
 	[ -n "$_st" ] || redirect rules "набор не выбран"
@@ -482,11 +587,74 @@ act_set_toggle() { # выключить/включить набор целико
 	redirect rules "набор «$(set_name "$_st")»: состояние изменено"
 }
 
+# сохранить правки записей набора (тип и значение, правятся в таблице)
+act_item_save_all() {
+	_st=$(param set)
+	[ -n "$_st" ] || _st=$(cfg rules_set "")
+	[ -n "$_st" ] || redirect rules "набор не выбран"
+	_n=0
+	_bad=""
+	for _it in $(set_item_sections "$_st" 2>/dev/null); do
+		_t=$(param "ittype_$_it")
+		_v=$(param "itvalue_$_it")
+		# пустое значение — запись оставляем как была
+		[ -n "$_v" ] || continue
+		case "$_t" in
+			ip|domain|full|keyword|regexp|geosite|geoip) ;;
+			*) _t=$(guess_rule_type "$_v") ;;
+		esac
+		# если вписали готовое название с префиксом — разберём его
+		_split=$(rule_split_value "$_v")
+		_stt=$(printf '%s' "$_split" | cut -f1)
+		if [ -n "$_stt" ]; then
+			_t="$_stt"; _v=$(printf '%s' "$_split" | cut -f2)
+		fi
+		# битый или «ловящий всё» шаблон не сохраняем
+		if [ "$_t" = regexp ]; then
+			_rs=$(regexp_problem "$_v")
+			if [ -n "$_rs" ]; then
+				_bad="${_bad:+$_bad; }$_v — $_rs"
+				continue
+			fi
+		fi
+		ui_uci set "$UCI_APP.$_it.value=$_v"
+		[ -n "$_t" ] && ui_uci set "$UCI_APP.$_it.type=$_t"
+		_n=$((_n + 1))
+	done
+	if [ -n "$_bad" ]; then
+		uci -q revert "$UCI_APP"
+		redirect rules "шаблон с ошибкой — не сохраняю: $_bad"
+	fi
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	pending_note "изменён набор «$(set_name "$_st")»"
+	if [ "$(param ajax)" = 1 ]; then
+		printf 'Content-Type: application/json; charset=utf-8\n\n{"ok":true,"msg":"записи сохранены: %s"}' "$_n"
+		exit 0
+	fi
+	redirect rules "записи сохранены: $_n"
+}
+
 act_item_add() { # добавить запись в набор
 	_st=$(param set)
 	[ -n "$_st" ] || redirect rules "сначала выберите набор"
 	_type=$(param type)
 	_val=$(param value)
+	# шаблон проверяем до сохранения: с битым выражением xray не запустится
+	_bad=$(printf '%s\n' "$_val" | tr ',;' '\n' | while IFS= read -r _one; do
+		_one=$(printf '%s' "$_one" | sed -e 's/^ *//' -e 's/ *$//')
+		[ -n "$_one" ] || continue
+		_chk=$_one
+		case "$_chk" in regexp:*) _chk=${_chk#regexp:} ;; esac
+		_rs=""
+		case "$_type" in
+			regexp) _rs=$(regexp_problem "$_chk") ;;
+			*)      case "$_one" in regexp:*) _rs=$(regexp_problem "$_chk") ;; esac ;;
+		esac
+		[ -n "$_rs" ] && printf '%s — %s\n' "$_chk" "$_rs"
+	done)
+	if [ -n "$_bad" ]; then
+		redirect rules "шаблон с ошибкой — не сохраняю: $(printf '%s' "$_bad" | tr '\n' ' ')"
+	fi
 	# строк может быть несколько: каждая — отдельная запись
 	_n=0
 	printf '%s\n' "$_val" | tr ',;' '\n' | while IFS= read -r _one; do
@@ -595,8 +763,18 @@ GEO_SCRIPT="${XRAYPANEL_GEO_TAGS:-/usr/lib/xraypanel/geo-tags.sh}"
 GEO_PARSER="${XRAYPANEL_GEO_PARSER:-/usr/lib/xraypanel/geo-parse.awk}"
 GEO_PARSER_BYTES="${XRAYPANEL_GEO_PARSER_BYTES:-/usr/lib/xraypanel/geo-parse-bytes.awk}"
 GEO_LOOKUP="${XRAYPANEL_GEO_LOOKUP:-/usr/lib/xraypanel/geo-lookup.awk}"
+# разборщик «список → домены»: по нему делаются файлы доменов для наборов
+GEO_LIST_SCRIPT="${XRAYPANEL_GEO_LIST:-/usr/lib/xraypanel/geo-list.awk}"
 GEO_UPDATE="${XRAYPANEL_GEO_UPDATE:-/usr/lib/xraypanel/geo-update.sh}"
 GEO_ENV="XRAYPANEL_STATE='$STATE_DIR' XRAYPANEL_LIB='$LIB' XRAYPANEL_GEO_PARSER='$GEO_PARSER' XRAYPANEL_GEO_PARSER_BYTES='$GEO_PARSER_BYTES'"
+# разбор готовых списков, которые стоят в наборах: без него лампочка в наборе
+# может показать срабатывание только «вероятно» (серым пунктиром)
+GEO_ITEM="${XRAYPANEL_GEO_ITEM:-/usr/lib/xraypanel/geo-item.sh}"
+GEO_ITEM_ENV="$GEO_ENV XRAYPANEL_GEO_LIST='$GEO_LIST_SCRIPT'"
+# обновление самой панели: проверка релиза на GitHub и установка пакета
+UPDATE_CHECK="${XRAYPANEL_UPDATE_CHECK:-/usr/lib/xraypanel/update-check.sh}"
+UPDATE_INSTALL="${XRAYPANEL_UPDATE_INSTALL:-/usr/lib/xraypanel/update-install.sh}"
+UPDATE_ENV="XRAYPANEL_STATE='$STATE_DIR' XRAYPANEL_LIB='$LIB'"
 
 # Тяжёлые операции (проверка конфига, перезапуск xray, правила фаервола) уводим
 # в фон: браузеру ответ уходит сразу, иначе uhttpd обрывает CGI по таймауту и
@@ -781,14 +959,39 @@ trans_save() {
 			if [ -n "$_all" ]; then ui_uci set "$UCI_APP.settings.transparent_iface=$_all"; fi
 			;;
 	esac
-	# галочки: чекбокс не отправляется, если снят
-	if [ "$(param dns_tunnel)" = 1 ]; then ui_uci set "$UCI_APP.settings.dns_tunnel=1"; else ui_uci set "$UCI_APP.settings.dns_tunnel=0"; fi
-	if [ "$(param dns_router)" = 1 ]; then ui_uci set "$UCI_APP.settings.dns_router=1"; else ui_uci set "$UCI_APP.settings.dns_router=0"; fi
-	_v=$(param dns_client_via)
-	case "$_v" in
-		router|xray) ui_uci set "$UCI_APP.settings.dns_client_via=$_v" ;;
-		*)           ui_uci delete "$UCI_APP.settings.dns_client_via" ;;
+	# DNS — три понятных выбора вместо прежней путаницы из двух галочек:
+	#   dns_clients     — куда уходит DNS клиентов: none | tunnel | router
+	#   dns_resolver_up — чем отвечает роутерный резолвер: own | tunnel
+	#   dns_router_own  — «и DNS самого роутера тем же путём»
+	# Внутри оставляем прежние ключи (dns_tunnel / dns_client_via / dns_router):
+	# их читает transparent.sh, и менять их смысл не нужно.
+	case "$(param dns_clients)" in
+		tunnel)
+			ui_uci set "$UCI_APP.settings.dns_tunnel=1"
+			ui_uci set "$UCI_APP.settings.dns_client_via=xray" ;;
+		router)
+			ui_uci set "$UCI_APP.settings.dns_tunnel=1"
+			ui_uci set "$UCI_APP.settings.dns_client_via=router" ;;
+		*)
+			ui_uci set "$UCI_APP.settings.dns_tunnel=0" ;;
 	esac
+	# «через туннель» и галочка про сам роутер — это одно и то же действие:
+	# роутерный резолвер один на всех, поэтому оба варианта переводят dnsmasq
+	# на вход xray (панель пропишет 127.0.0.1#5353 и вернёт всё назад).
+	if [ "$(param dns_resolver_up)" = tunnel ] || [ "$(param dns_router_own)" = 1 ]; then
+		ui_uci set "$UCI_APP.settings.dns_router=1"
+	else
+		ui_uci set "$UCI_APP.settings.dns_router=0"
+	fi
+	# шифрованный DNS: закрываем, чтобы клиент не обошёл перехват своим
+	# «приватным DNS» (DoT) или DoH-сервером
+	if [ "$(param block_dot)" = 1 ]; then ui_uci set "$UCI_APP.settings.block_dot=1"; else ui_uci set "$UCI_APP.settings.block_dot=0"; fi
+	if [ "$(param block_doh)" = 1 ]; then ui_uci set "$UCI_APP.settings.block_doh=1"; else ui_uci set "$UCI_APP.settings.block_doh=0"; fi
+	if [ "$(param dns_canary)" = 1 ]; then ui_uci set "$UCI_APP.settings.dns_canary=1"; else ui_uci set "$UCI_APP.settings.dns_canary=0"; fi
+	if [ "$(param dns_bootstrap)" = 1 ]; then ui_uci set "$UCI_APP.settings.dns_bootstrap=1"; else ui_uci set "$UCI_APP.settings.dns_bootstrap=0"; fi
+	if [ "$(param auto_calm)" = 1 ]; then ui_uci set "$UCI_APP.settings.auto_calm=1"; else ui_uci set "$UCI_APP.settings.auto_calm=0"; fi
+	_v=$(param doh_block_list | tr ',;' '  ' | tr -s ' ' | sed 's/^ *//; s/ *$//')
+	if [ -n "$_v" ]; then ui_uci set "$UCI_APP.settings.doh_block_list=$_v"; fi
 	# список резолверов: сохраняем списком, а первый дублируем в dns_resolver
 	# (это значение читают старые версии панели и часть подсказок)
 	_v=$(param dns_resolvers | tr ',;' '  ' | tr -s ' ' | sed 's/^ *//; s/ *$//')
@@ -902,25 +1105,21 @@ act_trans_on() {
 		ui_uci set "$UCI_APP.settings.auto_best=0"
 		ui_uci set "$UCI_APP.settings.transparent_out=$_out"
 	fi
-	# список клиентов сохраняем только для режимов, где он используется
+	# Список клиентов нужен только режиму «только клиенты из списка». Там он
+	# обязателен: с пустым списком перехват не ставится и режим не включается
+	# (раньше панель при всех отмеченных галочках сохраняла «пусто = все», и
+	# включение молча срывалось). В остальных режимах заворачиваются все, и
+	# список только мешает.
 	case "$(param transparent_scope)" in
-		list|both)
-			# если отмечены ВСЕ известные клиенты — сохраняем «все» (пустой
-			# список): тогда и новые устройства, которые появятся позже,
-			# попадут в перехват автоматически
-			_known=$(lan_clients 2>/dev/null | tr '\n' ' ')
-			_allok=0
-			[ -n "$_known" ] && _allok=1
-			for _k in $_known; do
-				case ",$_clients," in *",$_k,"*) ;; *) _allok=0 ;; esac
-			done
-			if [ "$_allok" = 1 ]; then
-				ui_uci delete "$UCI_APP.settings.transparent_clients"
-			elif [ -n "$_clients" ]; then
-				ui_uci set "$UCI_APP.settings.transparent_clients=$_clients"
-			else
-				ui_uci delete "$UCI_APP.settings.transparent_clients"
+		list)
+			if [ -z "$_clients" ]; then
+				respond_now transparent "В режиме «только клиенты из списка» отметьте галочкой хотя бы одного клиента — иначе заворачивать некого, режим не включаю."
+				exit 0
 			fi
+			ui_uci set "$UCI_APP.settings.transparent_clients=$_clients"
+			;;
+		*)
+			ui_uci delete "$UCI_APP.settings.transparent_clients"
 			;;
 	esac
 	ui_uci set "$UCI_APP.settings.transparent=1"
@@ -989,6 +1188,21 @@ act_dnslog_repair() { # «починить»: перезапустить dnsmasq
 		3) redirect rules "dnsmasq работает, но записей в системном журнале всё равно нет — посмотрите системный журнал роутера (LuCI → Статус → Системный журнал)." ;;
 		*) redirect rules "не удалось: dnsmasq сейчас не работает — сначала поднимите его на странице «Прокси»." ;;
 	esac
+}
+
+# Само собой: если dnsmasq потерял системный журнал (бывает после сбоя logd),
+# панель перезапускает его сама — но не чаще раза в час, чтобы не дёргать DNS
+# без нужды. Так лампочки не начинают «врать» незаметно для пользователя.
+dns_try_repair() {
+	_at="$STATE_DIR/dns-repair.at"
+	_now=$(date +%s 2>/dev/null)
+	case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
+	_old=$(cat "$_at" 2>/dev/null)
+	case "$_old" in ''|*[!0-9]*) _old=0 ;; esac
+	[ "$_now" -gt 0 ] && [ $((_now - _old)) -lt 3600 ] && return 0
+	[ "$_now" -gt 0 ] && printf '%s' "$_now" > "$_at" 2>/dev/null
+	bg_run ". '$LIB' >/dev/null 2>&1; dns_log_repair >/dev/null 2>&1" "$STATE_DIR/dns-repair.log"
+	return 0
 }
 
 act_sub_save() { # добавить подписку и сразу её обновить
@@ -1119,8 +1333,11 @@ EOL
 					case $((_ci % 2)) in 1) _cc=dom-a ;; *) _cc=dom-b ;; esac
 					_chips="$_chips<span class=\"dom $_cc\" data-copy=\"$_nm\">$_nm</span> "
 				done
+				# подсказка про нажатия — прямо в результатах проверки, чтобы
+				# не искать её в другом месте
 				_out="$_out
-Есть в готовых списках: $_chips"
+Есть в готовых списках: $_chips
+(нажми на домен — скопируется в буфер; задержи на секунду — добавится в «Значение»)"
 			else
 				_out="$_out
 В готовых списках домена нет — придётся указывать его вручную (домен) или шаблоном."
@@ -1225,7 +1442,7 @@ act_geo_update() { # скачать свежие списки из интерн�
 	esac
 	bg_run "sh '$GEO_UPDATE' '$_src'" "$STATE_DIR/geo-update.log"
 	if [ "$(param ajax)" = 1 ]; then
-		printf 'Content-Type: text/plain; charset=utf-8\n\nзапущено'
+		geo_ajax_reply "обновляю списки из интернета — это фоном, минута-две. Результат появится в блоке «Готовые списки»"
 		exit 0
 	fi
 	respond_now rules "обновляю списки из интернета в фоне — это минуты две (скачивание и пересборка названий). Результат будет в журнале в блоке «Готовые списки»."
@@ -1273,10 +1490,20 @@ act_dnscheck() {
 }
 
 # --- гео-списки: собрать названия из файлов роутера --------------------------
+# ответ для «тихого» режима: сообщение и, если нужно, перерисованный блок
+# (страница подменяет его на месте, без перезагрузки)
+geo_ajax_reply() { # $1 сообщение, $2 селектор блока (необязательно), $3 функция рендера
+	printf 'Content-Type: application/json; charset=utf-8\n\n{"ok":true,"msg":"%s"' "$(jesc "$1")"
+	if [ -n "${2:-}" ] && [ -n "${3:-}" ]; then
+		printf ',"target":"%s","html":"%s"' "$(jesc "$2")" "$("$3" | jesc)"
+	fi
+	printf '}'
+}
+
 act_geo_build() { # разбор geoip.dat / geosite.dat — в фоне, файлы большие
 	if [ "$(param ajax)" = 1 ]; then
-		printf 'Content-Type: text/plain; charset=utf-8\n\nзапущено'
 		bg_run "$GEO_ENV sh '$GEO_SCRIPT'" "$STATE_DIR/geo-tags.log"
+		geo_ajax_reply "собираю названия списков — это фоном, пара минут. После сборки названия появятся в поле «Значение»"
 		exit 0
 	fi
 	respond_now rules "собираю названия списков — это разово и занимает до пары минут. Страница сама покажет результат."
@@ -1284,9 +1511,50 @@ act_geo_build() { # разбор geoip.dat / geosite.dat — в фоне, фай
 	exit 0
 }
 
+# автообновление списков: сохраняем период и источник, ставим задание в cron
+act_geo_auto() {
+	case "$(param geo_auto)" in
+		7|30) _v=$(param geo_auto) ;;
+		*)    _v=0 ;;
+	esac
+	case "$(param geo_auto_src)" in
+		loyalsoldier|v2fly|russia) _s=$(param geo_auto_src) ;;
+		*) _s=loyalsoldier ;;
+	esac
+	ui_uci set "$UCI_APP.settings.geo_auto=$_v"
+	ui_uci set "$UCI_APP.settings.geo_auto_src=$_s"
+	uci commit "$UCI_APP" >/dev/null 2>&1
+	cron_set_geo "$_v" "$_s"
+	case "$_v" in
+		7)  _msg="автообновление включено: раз в неделю, по понедельникам в 4 утра" ;;
+		30) _msg="автообновление включено: раз в месяц, 1-го числа в 4 утра" ;;
+		*)  _msg="автообновление выключено" ;;
+	esac
+	if [ "$(param ajax)" = 1 ]; then
+		# сам блок страница перерисует сама (в её списке живых блоков есть
+		# #geo-card) — поэтому здесь только сообщение
+		geo_ajax_reply "$_msg"
+		exit 0
+	fi
+	redirect rules "$_msg"
+}
+
 act_geo_pkg() { # поставить/обновить пакеты со списками (v2ray-geoip, v2ray-geosite)
 	respond_now rules "ставлю пакеты со списками в фоне — через минуту загляните сюда."
 	bg_run "opkg update; opkg install v2ray-geoip v2ray-geosite; echo '--- итог ---'; ls -l \$(geo_dirs | tr '\n' ' ' | sed 's/ /\\/*.dat /g') 2>/dev/null" "$STATE_DIR/geo-pkg.log"
+	exit 0
+}
+
+# разбор готовых списков, которые стоят в наборах: по разобранному списку
+# лампочка в наборе загорается точно так же, как в правиле
+act_geo_items() {
+	if [ "$(param ajax)" = 1 ]; then
+		bg_run "$GEO_ITEM_ENV sh '$GEO_ITEM'" "$STATE_DIR/geo-item.log"
+		geo_ajax_reply "разбираю готовые списки набора — фоном, несколько секунд на список"
+		exit 0
+	fi
+	respond_now rules "разбираю готовые списки набора — фоном, несколько секунд на список. Лампочки в наборе после этого будут точными."
+	bg_run "$GEO_ITEM_ENV sh '$GEO_ITEM'" "$STATE_DIR/geo-item.log"
 	exit 0
 }
 
@@ -1345,8 +1613,12 @@ act_ping_one() { # замерить пинг одного сервера — о�
 act_urltest() { # проверить один сервер: качаем тестовую страницу через него
 	_t=$(param tag)
 	[ -n "$_t" ] || redirect servers "не выбран сервер для проверки"
-	_r=$(url_test_server "$_t")
-	url_test_save "$_t" "$_r"
+	# без подстановки команды: тогда причина отказа (URLTEST_REASON) остаётся
+	# видна и её можно сохранить вместе с результатом
+	_otf="$STATE_DIR/urltest.out.$$"
+	url_test_server "$_t" > "$_otf" 2>/dev/null
+	_r=$(cat "$_otf" 2>/dev/null); rm -f "$_otf" 2>/dev/null
+	url_test_save "$_t" "$_r" "$URLTEST_REASON"
 	# тихая проверка со страницы: отдаём только результат, без перехода
 	if [ "$(param ajax)" = 1 ]; then
 		printf 'Content-Type: text/plain; charset=utf-8\n\n%s' "$_r"
@@ -1412,6 +1684,9 @@ case "$ACTION" in
 	save_bridge) act_save_bridge ;;
 	del_bridge)  act_del_bridge ;;
 	bridge_toggle) act_bridge_toggle ;;
+	rev_style)   act_rev_style ;;
+	update_check)   act_update_check ;;
+	update_install) act_update_install ;;
 	confdir_clean) _n=$(config_extra_clean); pending_note "убраны лишние .json из каталога конфига (файлов: $_n)"; redirect "" "лишние файлы убраны (переименованы в .bak): $_n. Осталось нажать «Применить конфиг»." ;;
 	save_rule)   act_save_rule ;;
 	rule_move)   act_rule_move ;;
@@ -1422,8 +1697,10 @@ case "$ACTION" in
 	rule_reorder) act_rule_reorder ;;
 	save_rules_all) act_save_rules_all ;;
 	set_del)     act_set_del ;;
+	set_rename)  act_set_rename ;;
 	set_toggle)  act_set_toggle ;;
 	item_add)    act_item_add ;;
+	item_save_all) act_item_save_all ;;
 	item_del)    act_item_del ;;
 	item_toggle) act_item_toggle ;;
 	import_link) act_import_link ;;
@@ -1453,6 +1730,8 @@ case "$ACTION" in
 	geo_build)   act_geo_build ;;
 	geo_check)   act_geo_check ;;
 	geo_pkg)     act_geo_pkg ;;
+	geo_items)   act_geo_items ;;
+	geo_auto)    act_geo_auto ;;
 	rule_find)   act_rule_find ;;
 	list_show)   act_list_show ;;
 	geo_update)  act_geo_update ;;
@@ -1517,9 +1796,40 @@ case "$ACTION" in
 		else
 			ui_uci set "$UCI_APP.settings.lamp_filter=0"
 		fi
+		if [ "$(param set_highlight)" = 1 ]; then
+			ui_uci set "$UCI_APP.settings.set_highlight=1"
+		else
+			ui_uci set "$UCI_APP.settings.set_highlight=0"
+		fi
+		# звук кнопок: без файлов, звук синтезирует сам браузер. Принимаем только
+		# известные значения — иначе опечатка в адресе сломала бы отклик кнопок
+		_v=$(param sound)
+		case " off click tick blip two " in
+			*" $_v "*) ui_uci set "$UCI_APP.settings.sound=$_v" ;;
+		esac
+		_v=$(param volume)
+		case " low mid high " in
+			*" $_v "*) ui_uci set "$UCI_APP.settings.volume=$_v" ;;
+		esac
 		# автовыбор по пингу теперь живёт только на странице «Прокси»,
 		# поэтому здесь его не трогаем — иначе сохранение настроек выключало бы
 		# режим, выбранный там
+		# автообновление готовых списков живёт в блоке «Готовые списки» на
+		# «Маршрутах»: здесь только приводим задание в cron в порядок
+		cron_set_geo "$(cfg geo_auto 0)" "$(cfg geo_auto_src loyalsoldier)"
+		# самообновление панели: репозиторий, необязательный токен и расписание
+		_v=$(param update_repo | tr -cd 'A-Za-z0-9._/-')
+		[ -n "$_v" ] && ui_uci set "$UCI_APP.settings.update_repo=$_v"
+		_v=$(param update_token | tr -cd 'A-Za-z0-9._-')
+		if [ -n "$_v" ]; then ui_uci set "$UCI_APP.settings.update_token=$_v"
+		else ui_uci delete "$UCI_APP.settings.update_token" 2>/dev/null; fi
+		if [ "$(param update_auto)" = 0 ]; then
+			ui_uci set "$UCI_APP.settings.update_auto=0"
+			cron_set_update 0
+		else
+			ui_uci set "$UCI_APP.settings.update_auto=1"
+			cron_set_update 1
+		fi
 		_pu=$(param probe_url)
 		[ -n "$_pu" ] && ui_uci set "$UCI_APP.settings.probe_url=$_pu"
 		# оформление: принимаем только известные темы
@@ -1539,6 +1849,8 @@ page_header() {
 	[ -n "$_th" ] || _th=classic
 	cat <<EOF
 Content-Type: text/html; charset=utf-8
+Cache-Control: no-store, no-cache, must-revalidate
+Pragma: no-cache
 
 <!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -1579,13 +1891,17 @@ EOF
 		_pend="настройки изменены (список пометок пуст — например, после обновления панели)"
 	fi
 	if [ -n "$_pend" ]; then
-		printf '<span style="margin-left:auto">'
+		# кнопка применения в шапке: у неё свой класс, чтобы страница могла
+		# синхронизировать её состояние с кнопкой в карточке правил
+		printf '<span class="apply-hdr" style="margin-left:auto">'
 		apply_form "$(param page)"
 		printf '</span>'
 	fi
 	printf '</header><main>\n'
 	_msg=$(param msg)
-	[ -n "$_msg" ] && printf '<div class="msg">%s</div>\n' "$(h "$_msg")"
+	# сообщение показываем всплывающим (внизу, поверх страницы) — плашка
+	# первым элементом сдвигала всё содержимое вниз
+	[ -n "$_msg" ] && printf '<div class="msg" id="page-msg" style="display:none">%s</div>\n' "$(h "$_msg")"
 	if [ -n "$_pend" ]; then
 		printf '<p class="muted" style="margin:0 0 10px">Изменено, но ещё не применено: %s</p>\n' "$(h "$_pend")"
 	fi
@@ -1633,9 +1949,155 @@ opt_html_close() { # $1=подсказка справа
 }
 
 page_footer() {
+	printf '</main>\n'
+	# Звук кнопок: имя звука и громкость отдаём странице маленьким скриптом.
+	# Своих звуковых файлов в пакете нет — звук синтезирует сам браузер, поэтому
+	# он не занимает места и не тянет загрузку.
+	printf '<script>window.__xpSound="%s";window.__xpVolume="%s";</script>\n' \
+		"$(h "$(cfg sound click)")" "$(h "$(cfg volume mid)")"
 	cat <<'EOF'
-</main>
 <script>
+/* Всплывающее сообщение внизу экрана: ничего не сдвигает на странице и само
+   исчезает через 4 секунды. Раньше панель вставляла серую плашку первым
+   элементом страницы, и вся страница от неё резко уезжала вниз. */
+window.__toast = function (msg, bad) {
+	var el = document.getElementById('quiet-msg');
+	if (!el) {
+		el = document.createElement('div');
+		el.id = 'quiet-msg';
+		el.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);'
+			+ 'background:#111827;color:#fff;padding:8px 14px;border-radius:8px;'
+			+ 'font-size:13px;z-index:9999;max-width:90%';
+		document.body.appendChild(el);
+	}
+	el.style.background = bad ? '#b91c1c' : '#111827';
+	el.textContent = msg;
+	el.style.display = '';
+	clearTimeout(el._t);
+	el._t = setTimeout(function () { el.style.display = 'none'; }, 4000);
+};
+/* сообщение из адреса (?msg=...) показываем тем же всплывающим, а не плашкой */
+(function () {
+	var pm = document.getElementById('page-msg');
+	if (!pm) return;
+	var txt = (pm.textContent || '').replace(/^\s+|\s+$/g, '');
+	pm.parentNode.removeChild(pm);
+	if (txt) window.__toast(txt);
+})();
+/* Блок «Кого заворачивать» нужен ровно в одном режиме — «только клиенты из
+   списка». Прячем и показываем сразу при смене режима: раньше это делал
+   маленький скрипт внутри блока, а блок панель подменяет после сохранений —
+   из-за этого помогала только перезагрузка страницы. */
+(function () {
+	function sync() {
+		var s = document.querySelector('select[name=transparent_scope]');
+		var b = document.getElementById('clients-box');
+		if (!s || !b) return;
+		b.style.display = (s.value === 'list') ? '' : 'none';
+	}
+	document.addEventListener('change', function (ev) {
+		var t = ev.target;
+		if (t && t.name === 'transparent_scope') sync();
+	}, true);
+	document.addEventListener('click', function () { setTimeout(sync, 0); }, true);
+	sync();
+	window.__syncClientsBox = sync;
+})();
+/* DNS: «чем отвечает роутерный резолвер» и галочка «и у самого роутера» — это
+   одно и то же действие (резолвер один на всех), поэтому держим их вместе. */
+(function () {
+	function sync() {
+		var s = document.querySelector('select[name=dns_resolver_up]');
+		var o = document.getElementById('dns-own');
+		if (!s || !o) return;
+		o.checked = (s.value === 'tunnel');
+	}
+	document.addEventListener('change', function (ev) {
+		var t = ev.target;
+		if (!t) return;
+		if (t.name === 'dns_resolver_up') {
+			var o = document.getElementById('dns-own');
+			if (o) o.checked = (t.value === 'tunnel');
+			return;
+		}
+		if (t.id === 'dns-own' && t.checked) {
+			var s = document.querySelector('select[name=dns_resolver_up]');
+			if (s) s.value = 'tunnel';
+		}
+	}, true);
+	sync();
+	window.__syncDnsOwn = sync;
+})();
+/* «Что получится»: живая подсказка под настройками — кто заворачивается, куда
+   идёт его трафик и куда уходит DNS. Пересобирается на каждое изменение
+   окошек, то есть видна ещё до включения режима. */
+(function () {
+	var box = document.getElementById('dns-preview');
+	if (!box) return;
+	function val(n) { var e = document.querySelector('[name="' + n + '"]'); return e ? e.value : ''; }
+	function label(n) {
+		var e = document.querySelector('select[name="' + n + '"]');
+		if (!e || e.selectedIndex < 0) return '';
+		var t = e.options[e.selectedIndex].text || '';
+		return t.replace(/\s+/g, ' ').replace(/^\s+|\s+$/g, '');
+	}
+	function on(n) { var e = document.querySelector('[name="' + n + '"]'); return !!(e && e.checked); }
+	function esc(s) {
+		return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+			return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+		});
+	}
+	function render() {
+		var scope = val('transparent_scope');
+		var who = { lan: 'вся локальная сеть', router: 'только сам роутер',
+			both: 'роутер и локальная сеть', list: 'только выбранные клиенты' }[scope] || scope;
+		if (scope === 'list') {
+			var n = Array.prototype.filter.call(document.querySelectorAll('input[name=client]'), function (c) { return c.checked; }).length;
+			who += (n > 0) ? (' (' + n + ' шт.)') : ' (ни один не отмечен — включить не даст)';
+		}
+		var outv = val('transparent_out');
+		var out = label('transparent_out');
+		if (outv === 'auto') out = 'через сервер с лучшим пингом (авто)';
+		else if (outv === 'direct') out = 'напрямую, без прокси';
+		else if (outv) out = 'через выход «' + outv + '»';
+		var dcli = val('dns_clients');
+		var up = val('dns_resolver_up') === 'tunnel' || on('dns_router_own');
+		var dport = val('dns_port') || '5353';
+		var plain = val('dns_server_mode') === 'plain';
+		var dns;
+		if (scope === 'router') dns = 'у клиентов не перехватывается — в этом режиме заворачивается только DNS самого роутера';
+		else if (dcli === 'tunnel') dns = 'перехватывается и сразу уходит в туннель (xray)';
+		else if (dcli === 'router') dns = 'перехватывается и уходит на роутерный резолвер';
+		else dns = 'не перехватывается — уходит так, как настроено на самом устройстве';
+		var res = up ? ('уходит через туннель — панель поставит в dnsmasq вход xray 127.0.0.1#' + esc(dport))
+			: ('отвечает своими серверами (' + (plain ? 'обычный DNS по 53-му порту' : 'шифрованно, DoH') + ')');
+		var names;
+		if (scope === 'router') names = 'не видит — клиентский DNS в этом режиме не перехватывается';
+		else if (dcli === 'router') names = 'видит — запросы клиентов проходят через резолвер роутера';
+		else if (dcli === 'tunnel') names = 'не видит — запросы идут мимо резолвера роутера';
+		else names = 'видит, только если устройства спрашивают роутер';
+		var prov;
+		if (scope === 'router') prov = 'как настроено на устройствах — клиентский DNS не перехватывается';
+		else if (dcli === 'tunnel' || up) prov = 'имена не видит — они уходят только через сервер туннеля';
+		else if (dcli === 'router') prov = plain ? 'видит имена — резолвер спрашивает по 53-му порту' : 'имена не видит — резолвер отвечает шифрованно (DoH)';
+		else prov = 'смотря как настроены устройства';
+		box.innerHTML = '<b>Заворачивается:</b> ' + esc(who)
+			+ '<br><b>Трафик идёт:</b> ' + esc(out)
+			+ '<br><b>DNS клиентов:</b> ' + dns
+			+ '<br><b>Резолвер роутера:</b> ' + res
+			+ '<br><b>Имена сайтов:</b> панель — ' + names + '; провайдер — ' + prov + '.'
+			+ '<br><b>Шифрованный DNS:</b> DoT (853) — ' + (on('block_dot') ? (dcli !== 'none' ? 'закрыт' : 'разрешён (DNS не перехватывается)') : 'разрешён')
+			+ ', DoH (443) — ' + (on('block_doh') ? 'закрыт по списку' : 'разрешён') + '.'
+			+ ' Канарейки для браузеров и Apple: ' + (on('dns_canary') ? 'включены' : 'выключены') + '.'
+			+ '<br><span class="muted">Так будет после нажатия «включить прокси». До этого ничего не меняется.</span>';
+	}
+	document.addEventListener('change', render, true);
+	document.addEventListener('input', function (ev) {
+		if (ev.target && /^(dns_port|dns_resolvers|transparent_port)$/.test(ev.target.name || '')) render();
+	}, true);
+	render();
+	window.__renderDnsPreview = render;
+})();
 /* Тихое выполнение действий: любое переключение (включить/выключить, удалить,
    добавить запись) уходит на сервер без перезагрузки страницы. Сервер отвечает
    JSON-ом: сообщение для показа и, если нужно, готовый HTML блока, который
@@ -1643,11 +2105,14 @@ page_footer() {
 (function () {
 	/* Всё, что можно сделать без перезагрузки страницы. Не в списке только
 	   то, что обязано идти обычным путём: скачивание и загрузка файлов. */
+	/* Включение и выключение сервера идёт обычным путём, с загрузкой страницы:
+	   ответ приходит, но таблица на месте не перерисовывалась, и выглядело так,
+	   будто кнопка не работает. Остальное — тихо. */
 	var QUIET = ['rule_toggle','del_rule','item_add','item_del','item_toggle','set_new','set_del','set_toggle',
 		'traffic_reset','traffic_reset_one','dnslog_on','dnslog_off','dnslog_repair',
-		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','srv_toggle','set_default',
+		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','set_default',
 		'save_bridge','del_bridge','bridge_toggle','dedup','import_link','sub_save','sub_del','sub_update',
-		'geo_build','geo_update','geo_pkg','confdir_clean','restart','rollback','enable_service','fix_tz',
+		'geo_build','geo_update','geo_pkg','geo_items','geo_auto','rev_style','update_check','update_install','confdir_clean','restart','rollback','enable_service','fix_tz',
 		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
 
@@ -1659,22 +2124,27 @@ page_footer() {
 		var box = document.getElementById('rules-form');
 		if (!box) return;
 		var data = new URLSearchParams();
-		Array.prototype.forEach.call(box.querySelectorAll('input[name^="src_"],input[name^="sets_"],select[name^="out_"]'), function (el) {
-			if (el.value !== undefined && el.value !== '') data.append(el.getAttribute('name'), el.value);
-		});
+		/* Собираем и input, и select: «кто идёт» и «куда» — это выпадающие
+		   списки (select), а раньше были галочки (input). Из-за старого
+		   селектора эти поля не отправлялись, и новая строка сохранялась
+		   пустой — то есть «не сохранялась». */
+		Array.prototype.forEach.call(
+			box.querySelectorAll('input[name^="src_"],input[name^="sets_"],input[name^="out_"],select[name^="src_"],select[name^="sets_"],select[name^="out_"]'),
+			function (el) {
+				if (el.type === 'checkbox' && !el.checked) return;
+				/* пустые значения тоже отправляем: «все устройства» и «весь
+				   трафик» — это как раз пустое значение, а сервер по наличию поля
+				   понимает, что строку вообще прислали */
+				if (el.value === undefined) return;
+				data.append(el.getAttribute('name'), el.value);
+			});
 		var nr = document.getElementById('newrows');
 		if (nr && nr.value) data.set('newrows', nr.value);
 		data.set('action', 'save_rules_all');
 		data.set('ajax', '1');
 		b.disabled = true;
-		fetch(location.pathname + '?page=rules', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: data,
-			cache: 'no-store'
-		}).then(function (r) { return r.json(); }).then(function (d) {
-			if (d && d.msg) toast(d.msg);
-			if (window.__panelRepaint) window.__panelRepaint();
+		/* перерисовать карточки правил и наборов из свежей страницы */
+		function refreshRules() {
 			fetch(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' })
 				.then(function (r) { return r.text(); })
 				.then(function (html) {
@@ -1684,7 +2154,88 @@ page_footer() {
 						if (fresh && cur) cur.innerHTML = fresh.innerHTML;
 					});
 				}).catch(function () {});
-		}).catch(function () {}).then(function () { b.disabled = false; });
+		}
+		/* состояние кнопки: зелёная «конфиг применён» после применения */
+	function markApply(ok) {
+		var bb = document.querySelector('button.rules-apply');
+		if (bb) setApplyButtons(ok);
+	}
+		/* ждём, пока фоновое применение конфига закончится, и только потом
+		   перерисовываем: раньше карточку обновляли сразу, кнопка оставалась
+		   красной, пока страницу не перезагрузят руками */
+		function waitApply(n, started) {
+			if (n > 40) { markApply(false); refreshRules(); return; }
+			fetch('?page=jobs&t=' + Date.now(), { cache: 'no-store' })
+				.then(function (r) { return r.json(); })
+				.then(function (j) {
+					var running = !!(j && j.apply === 'running');
+					if (running) started = true;
+					/* первый опрос может застать момент до старта применения —
+					   тогда подождём ещё, а не решаем сразу */
+					if (running || (!started && n < 3)) {
+						setTimeout(function () { waitApply(n + 1, started); }, 1500);
+						return;
+					}
+					markApply(!j || j.apply_rc === '0');
+					refreshRules();
+				})
+				.catch(function () { setTimeout(function () { waitApply(n + 1, started); }, 2000); });
+		}
+		fetch(location.pathname + '?page=rules', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: data,
+			cache: 'no-store'
+		}).then(function (r) { return r.json(); }).then(function (d) {
+			if (d && d.msg) toast(d.msg);
+			if (window.__panelRepaint) window.__panelRepaint();
+			waitApply(0);
+		}).catch(function () { b.disabled = false; });
+	});
+
+	/* «сохранить изменения записей» в наборе: правим тип и значение прямо в
+	   таблице набора, сохраняем тихо, без перезагрузки страницы */
+	document.addEventListener('click', function (ev) {
+		var b = ev.target && ev.target.closest ? ev.target.closest('button.items-save') : null;
+		if (!b) return;
+		ev.preventDefault();
+		var card = document.getElementById('sets-card');
+		if (!card) return;
+		var data = new URLSearchParams();
+		Array.prototype.forEach.call(
+			card.querySelectorAll('select[name^="ittype_"],input[name^="itvalue_"]'),
+			function (el) {
+				var n = el.getAttribute('name');
+				if (!n || el.value === undefined || el.value === '') return;
+				data.append(n, el.value);
+			});
+		var cur = card.querySelector('a.set-pick:not(.sec)');
+		if (cur && cur.getAttribute('data-set-pick')) data.set('set', cur.getAttribute('data-set-pick'));
+		data.set('action', 'item_save_all');
+		data.set('ajax', '1');
+		var note = document.getElementById('items-note');
+		var old = b.textContent;
+		b.disabled = true; b.textContent = 'сохраняю…';
+		fetch(location.pathname + '?page=rules', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: data,
+			cache: 'no-store'
+		}).then(function (r) { return r.json(); }).then(function (d) {
+			if (note) note.textContent = (d && d.msg) ? d.msg : 'сохранено';
+			if (window.__panelRepaint) window.__panelRepaint();
+			fetch(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' })
+				.then(function (r) { return r.text(); })
+				.then(function (html) {
+					var doc = new DOMParser().parseFromString(html, 'text/html');
+					['#rules-card', '#sets-card'].forEach(function (sel) {
+						var fresh = doc.querySelector(sel), now = document.querySelector(sel);
+						if (fresh && now) now.innerHTML = fresh.innerHTML;
+					});
+				}).catch(function () {});
+		}).catch(function () {
+			if (note) note.textContent = 'не получилось сохранить';
+		}).then(function () { b.disabled = false; b.textContent = old; });
 	});
 
 	/* любое открытое выпадающее меню закрываем по щелчку вне него */
@@ -1702,10 +2253,15 @@ page_footer() {
 		ev.preventDefault();
 		var tbl = document.getElementById('rules-table');
 		if (!tbl) return;
-		var rows = tbl.querySelectorAll('tr[data-rule]');
-		if (!rows.length) { toast('сначала добавьте хотя бы одну строку вручную не получится — создайте правило'); return; }
+		/* копируем скрытый шаблон: он есть всегда, поэтому пустое правило
+		   можно добавить даже когда правил нет ни одного */
+		var tpl = document.getElementById('rule-tpl');
+		if (!tpl) { toast('не нашёл шаблон строки — обновите страницу (Ctrl+F5)'); return; }
 		var nr = 'new' + String(Date.now()).slice(-6);
-		var copy = rows[rows.length - 1].cloneNode(true);
+		var copy = tpl.cloneNode(true);
+		copy.removeAttribute('id');
+		copy.removeAttribute('data-tpl');
+		copy.style.display = '';
 		copy.setAttribute('data-rule', nr);
 		copy.className = '';
 		Array.prototype.forEach.call(copy.querySelectorAll('input,select'), function (el) {
@@ -1721,8 +2277,38 @@ page_footer() {
 		tbl.appendChild(copy);
 		var hidden = document.getElementById('newrows');
 		if (hidden) hidden.value = hidden.value ? hidden.value + ',' + nr : nr;
-		toast('строка добавлена — выберите наборы и нажмите «сохранить конфиг»');
+		markDirty();
+		toast('строка добавлена — выберите наборы и нажмите «применить конфиг»');
 	});
+	/* Новая строка и правка правил живут только на странице (в памяти браузера):
+	   на сервер ничего не уходит, пока не нажали «применить конфиг». Чтобы это
+	   было видно, кнопка сразу становится красной «применить конфиг». */
+	function markDirty() {
+		setApplyButtons(false);
+	}
+
+	/* Состояние всех кнопок «применить конфиг» на странице всегда одинаковое:
+	   раньше их было две (в шапке и в карточке правил), и они расходились —
+	   одна оставалась красной после применения или не краснела после правок. */
+	window.setApplyButtons = function (ok) {
+		Array.prototype.forEach.call(document.querySelectorAll('button.apply-btn'), function (b) {
+			b.disabled = false;
+			b.textContent = ok ? 'конфиг применён' : 'применить конфиг';
+			b.className = b.className.replace(/\b(done|pending)\b/g, '').replace(/\s+/g, ' ').trim() + (ok ? ' done' : ' pending');
+		});
+		var hdr = document.querySelector('.apply-hdr');
+		if (hdr) {
+			/* применили — кнопка в шапке больше не нужна, убираем её совсем:
+			   так она не может остаться «красной» после успешного применения */
+			if (ok) { if (hdr.parentNode) hdr.parentNode.removeChild(hdr); }
+			else hdr.style.display = '';
+		}
+	};
+	document.addEventListener('change', function (ev) {
+		var t = ev.target;
+		if (!t || !t.closest) return;
+		if (t.closest('#rules-card') && /^(src_|sets_|out_)/.test(t.getAttribute('name') || '')) markDirty();
+	}, true);
 	/* Перетаскивание правил: держим ручку «⠿» секунду — строка «поднимается»,
 	   дальше тянем на нужное место. Порядок сохраняется тихо. */
 	(function () {
@@ -1796,7 +2382,9 @@ page_footer() {
 		if (history.replaceState) {
 			history.replaceState(null, '', location.pathname + '?page=rules&set=' + encodeURIComponent(id));
 		}
-		fetch(location.pathname + '?page=rules&set=' + encodeURIComponent(id) + '&t=' + Date.now(), { cache: 'no-store' })
+		/* берём только карточку наборов (part=sets): полная страница собирается
+		   5–6 секунд, а при переключении меняется лишь этот блок */
+		fetch(location.pathname + '?page=rules&part=sets&set=' + encodeURIComponent(id) + '&t=' + Date.now(), { cache: 'no-store' })
 			.then(function (r) { return r.text(); })
 			.then(function (html) {
 				var doc = new DOMParser().parseFromString(html, 'text/html');
@@ -1818,17 +2406,7 @@ page_footer() {
 		if (b) lastBtn = b;
 	}, true);
 	function toast(msg) {
-		var el = document.getElementById('quiet-msg');
-		if (!el) {
-			el = document.createElement('div');
-			el.id = 'quiet-msg';
-			el.style.cssText = 'position:fixed;left:50%;bottom:18px;transform:translateX(-50%);background:#111827;color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;z-index:9999;max-width:90%';
-			document.body.appendChild(el);
-		}
-		el.textContent = msg;
-		el.style.display = '';
-		clearTimeout(el._t);
-		el._t = setTimeout(function () { el.style.display = 'none'; }, 4000);
+		window.__toast(msg);
 	}
 	document.addEventListener('submit', function (ev) {
 		var f = ev.target;
@@ -1863,7 +2441,6 @@ page_footer() {
 					if (t) t.innerHTML = d.html;
 				}
 				if (d && d.msg) toast(d.msg);
-				if (window.__panelRepaint) window.__panelRepaint();
 				/* тему применяем сразу: если она сменилась — перезагружаем страницу */
 				if (act === 'settings') {
 					var th = document.querySelector('select[name=theme]');
@@ -1874,27 +2451,62 @@ page_footer() {
 				   перезагрузка текущей страницы. */
 				var curPage = new URLSearchParams(location.search).get('page') || '';
 				if (d && d.go && d.go !== curPage) {
-					location.href = location.pathname + '?page=' + encodeURIComponent(d.go);
+					/* сообщение передаём с собой: иначе после перехода на список
+					   подсказка «мост сохранён» пропадала */
+					location.href = location.pathname + '?page=' + encodeURIComponent(d.go) +
+						(d.msg ? '&msg=' + encodeURIComponent(d.msg) : '');
 					return;
 				}
 				/* обновляем блоки страницы на месте — без перезагрузки.
 				   Кнопки внутри новых блоков работают: обработчики здесь
 				   делегированные, то есть висят на всём документе. */
 				var live = [];
-				['#rules-card','#sets-card','#proxy-card'].forEach(function (sel) {
+				['#rules-card','#sets-card','#proxy-card','#geo-card'].forEach(function (sel) {
 					if (document.querySelector(sel)) live.push(sel);
 				});
-				if (live.length) {
-					fetch(location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now(), { cache: 'no-store' })
+				if (document.querySelector('#update-card')) live.push('#update-card');
+				/* включение и выключение прокси — долгая операция: страницу
+				   пересобираем с задержкой, иначе она «держится», пока роутер
+				   применяет конфиг и перезапускает xray */
+				var slow = (act === 'trans_on' || act === 'trans_off' || act === 'trans_keep');
+				if (!live.length && window.__panelRepaint) window.__panelRepaint();
+				var refreshOnce = function () {
+					var url = location.pathname + location.search + (location.search ? '&' : '?') + 't=' + Date.now();
+					/* действия с наборами и записями меняют только карточку
+					   наборов: берём её отдельно (part=sets) — это заметно
+					   быстрее, чем пересобирать всю страницу «Маршруты» */
+					if (/^(set_|item_)/.test(act)) {
+						var curSet = document.querySelector('#sets-card a.set-pick:not(.sec)');
+						var setId = curSet ? (curSet.getAttribute('data-set-pick') || '') : '';
+						url = location.pathname + '?page=rules&part=sets&set=' + encodeURIComponent(setId) + '&t=' + Date.now();
+						/* правка набора меняет конфиг: кнопки должны стать красными */
+						setApplyButtons(false);
+					}
+					fetch(url, { cache: 'no-store' })
 						.then(function (r) { return r.text(); })
 						.then(function (html) {
 							var doc = new DOMParser().parseFromString(html, 'text/html');
+							/* блок «Готовые списки» перерисовывается вместе с
+							   карточкой: запоминаем, был ли он открыт, чтобы он не
+							   закрывался у пользователя на глазах */
+							var geoWasOpen = false;
+							var gd = document.getElementById('geo-det');
+							if (gd) geoWasOpen = !!gd.open;
 							live.forEach(function (sel) {
 								var fresh = doc.querySelector(sel), cur = document.querySelector(sel);
 								if (fresh && cur) cur.innerHTML = fresh.innerHTML;
 							});
+							if (window.__geoReload) window.__geoReload(geoWasOpen);
+							if (window.__updateWatch) window.__updateWatch();
+							if (window.__syncClientsBox) window.__syncClientsBox();
+							if (window.__syncDnsOwn) window.__syncDnsOwn();
+							if (window.__renderDnsPreview) window.__renderDnsPreview();
+							if (window.__valueChipsRefresh) window.__valueChipsRefresh();
 						})
 						.catch(function () {});
+				};
+				if (live.length) {
+					if (slow) setTimeout(refreshOnce, 3000); else refreshOnce();
 				}
 			})
 			.catch(function () {})
@@ -2028,7 +2640,7 @@ page_footer() {
 		if (geo) {
 			valField.setAttribute('list', 'geo-names');
 			valField.setAttribute('placeholder', t === 'geosite'
-				? 'начните печатать: youtube, ru, category-ads-all…'
+				? 'начните печатать: category-ru, youtube, category-ads-all…'
 				: 'начните печатать: ru, cn, us, private…');
 		} else if (t === 'ip') {
 			valField.setAttribute('list', 'client-list');
@@ -2040,6 +2652,91 @@ page_footer() {
 		if (geoHint) geoHint.style.display = geo ? '' : 'none';
 	}
 	if (typeSel) { typeSel.addEventListener('change', syncType); syncType(); }
+
+	/* --- шаблоны: проверка при вводе и сборка шаблона из доменов ----------- */
+	/* Битый шаблон роняет весь xray (он собирает регулярки при загрузке),
+	   поэтому такие значения подсвечиваем красным и не даём сохранить. */
+	function reIssue(v) {
+		if (!v) return 'шаблон пустой';
+		try { new RegExp(v); } catch (e) { return 'шаблон не разбирается: ' + ((e && e.message) ? e.message : 'проверьте скобки'); }
+		if (v.indexOf('\\|') >= 0) return 'в шаблоне есть \\| — это лишний слэш: для «или» пишите просто |';
+		/* «ловит всё подряд»: проверяем на строке без букв и точек — если шаблон
+		   её совпал, значит в правилах он поймает любой домен (частый промах) */
+		var re = new RegExp(v);
+		if (re.test('###@@@')) return 'шаблон совпадает со всем подряд (как «kino|.») — правило поймает все домены; для всего трафика есть отдельный пункт в «Куда»';
+		if (/(^|[^\\])\.[a-z]{2,6}\$?$/i.test(v)) return 'точка перед доменной зоной не экранирована: пишите \\.ru, а не .ru';
+		return '';
+	}
+	function fieldIsRegexp(el) {
+		if (!el || !el.closest) return false;
+		if (/^\s*regexp:/.test(el.value || '')) return true;
+		var f = el.closest('form');
+		var s = f ? f.querySelector('select[name=type],select[name^=ittype_]') : null;
+		return !!(s && s.value === 'regexp');
+	}
+	function checkTemplateField(el) {
+		if (!el) return '';
+		var isRe = fieldIsRegexp(el);
+		if (!isRe) { el.classList.remove('bad-input'); return ''; }
+		var v = (el.value || '').replace(/^\s*regexp:/, '').trim();
+		var msg = v ? reIssue(v) : '';
+		if (msg) el.classList.add('bad-input'); else el.classList.remove('bad-input');
+		var hint = document.getElementById('tmpl-hint');
+		if (hint) { hint.textContent = msg ? msg : ''; hint.className = 'tmpl-hint' + (msg ? ' bad' : ''); }
+		return msg;
+	}
+	/* сборка шаблона из доменов: vkvideo.ru, rutube.ru -> (^|\.)(vkvideo\.ru|rutube\.ru)$ */
+	function buildTemplate(list) {
+		var doms = (list || '').split(/[\s,;]+/).filter(function (s) { return s; });
+		var out = [];
+		doms.forEach(function (d) {
+			d = d.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+			if (!d || !/\./.test(d)) return;
+			out.push(d.replace(/\./g, '\\.'));
+		});
+		if (!out.length) return '';
+		return '(^|\\.)(' + out.join('|') + ')$';
+	}
+	var tmplBtn = document.getElementById('tmpl-build');
+	if (tmplBtn) {
+		tmplBtn.addEventListener('click', function () {
+			var sites = (document.getElementById('tmpl-sites') || {}).value || '';
+			var re = buildTemplate(sites);
+			var hint = document.getElementById('tmpl-hint');
+			if (!re) {
+				if (hint) { hint.textContent = 'напишите домены, например: vkvideo.ru, rutube.ru'; hint.className = 'tmpl-hint bad'; }
+				return;
+			}
+			if (typeSel) { typeSel.value = 'regexp'; syncType(); }
+			var f = document.querySelector('#sets-card textarea[name=value]');
+			if (f) { f.value = re; f.dispatchEvent(new Event('input', { bubbles: true })); }
+			if (hint) {
+				hint.textContent = 'готовый шаблон: ' + re + ' — нажмите «Добавить в набор»';
+				hint.className = 'tmpl-hint';
+			}
+		});
+	}
+	/* проверяем шаблон прямо при вводе */
+	document.addEventListener('input', function (ev) {
+		var t = ev.target;
+		if (!t || !t.name) return;
+		if (t.name === 'value' || t.id === 'rule-value' || /^itvalue_/.test(t.name)) checkTemplateField(t);
+	}, true);
+	/* и не отправляем форму, если шаблон с ошибкой */
+	document.addEventListener('submit', function (ev) {
+		var f = ev.target;
+		if (!f || f.tagName !== 'FORM') return;
+		var bad = '';
+		Array.prototype.forEach.call(f.querySelectorAll('textarea[name=value],input[name=value],input[id=rule-value],input[name^=itvalue_]'), function (el) {
+			var m = checkTemplateField(el);
+			if (m && !bad) bad = m;
+		});
+		if (bad) {
+			ev.preventDefault();
+			ev.stopImmediatePropagation();
+			if (window.__toast) window.__toast('не сохраняю: ' + bad);
+		}
+	}, true);
 
 	/* плашки доменов в отчёте: навёл — подсветилось, кликнул — скопировалось */
 	/* перестановка правил стрелками — без перезагрузки страницы */
@@ -2095,15 +2792,125 @@ page_footer() {
 	document.addEventListener('click', function (ev) {
 		var d = ev.target.closest ? ev.target.closest('.dom') : null;
 		if (!d) return;
+		/* если это была плашка значения из полоски — убираем значение из окна */
+		if (d.classList.contains('valchip')) {
+			removeValue(d.getAttribute('data-value'));
+			return;
+		}
+		/* удержание уже добавило значение — не копируем */
+		if (d._addedAt && (Date.now() - d._addedAt) < 1500) { d._addedAt = 0; return; }
 		var v = d.getAttribute('data-copy') || d.textContent;
 		copyText(v);
 		var was = d.textContent;
 		d.textContent = 'скопировано';
 		setTimeout(function () { d.textContent = was; }, 900);
 	});
+	/* --- связь подбора домена с окном «Значение» -----------------------------
+	   Короткий клик по найденному домену — копирует в буфер (как было).
+	   Удержание в течение секунды — добавляет значение в окно, без копирования.
+	   Под окном полоска выбранных значений: клик по плашке убирает значение. */
+	function valueBox() { return document.querySelector('#sets-card textarea[name=value]'); }
+	function splitValues(v) {
+		return String(v || '').split(/[\n,;]+/).map(function (s) { return s.trim(); }).filter(function (s) { return s; });
+	}
+	function renderValues() {
+		var ta = valueBox();
+		if (!ta) return;
+		var el = document.getElementById('value-chips');
+		if (!el) {
+			el = document.createElement('div');
+			el.id = 'value-chips';
+			el.style.cssText = 'margin:6px 0 0;display:flex;flex-wrap:wrap;gap:6px';
+			ta.parentNode.appendChild(el);
+		}
+		var vals = splitValues(ta.value);
+		el.innerHTML = '';
+		if (!vals.length) {
+			el.innerHTML = '<span class="muted" style="font-size:12px">пока пусто — впишите значение или зажмите домен из подбора на секунду</span>';
+			return;
+		}
+		vals.forEach(function (v) {
+			var c = document.createElement('span');
+			c.className = 'dom valchip';
+			c.setAttribute('data-value', v);
+			c.title = 'нажмите, чтобы убрать';
+			c.textContent = v + ' ✕';
+			el.appendChild(c);
+		});
+	}
+	window.__valueChipsRefresh = renderValues;
+	function addValue(v) {
+		var ta = valueBox();
+		if (!ta || !v) return false;
+		var vals = splitValues(ta.value);
+		for (var i = 0; i < vals.length; i++) if (vals[i] === v) return false;
+		vals.push(v);
+		ta.value = vals.join('\n');
+		renderValues();
+		var old = ta.style.background;
+		ta.style.background = 'rgba(74,222,128,.25)';
+		setTimeout(function () { ta.style.background = old || ''; }, 900);
+		return true;
+	}
+	function removeValue(v) {
+		var ta = valueBox();
+		if (!ta) return;
+		var vals = splitValues(ta.value).filter(function (x) { return x !== v; });
+		ta.value = vals.join('\n');
+		renderValues();
+	}
+	document.addEventListener('input', function (ev) {
+		var t = ev.target;
+		if (t && t.matches && t.matches('#sets-card textarea[name=value]')) renderValues();
+	}, true);
+	document.addEventListener('contextmenu', function (ev) {
+		var d = ev.target.closest ? ev.target.closest('.dom[data-copy]') : null;
+		if (d) ev.preventDefault();
+	});
+	document.addEventListener('pointerdown', function (ev) {
+		var d = ev.target.closest ? ev.target.closest('.dom[data-copy]') : null;
+		if (!d || ev.button) return;
+		var was = d.textContent;
+		d._t1 = setTimeout(function () { d.textContent = 'держите…'; }, 500);
+		d._t2 = setTimeout(function () {
+			var v = d.getAttribute('data-copy') || was;
+			var ok = addValue(v);
+			d._addedAt = Date.now();
+			d.textContent = ok ? 'добавлено в окно' : 'уже есть в окне';
+			setTimeout(function () { d.textContent = was; d._addedAt = 0; }, 1200);
+		}, 1000);
+	}, true);
+	function stopHold(ev) {
+		var d = ev.target.closest ? ev.target.closest('.dom[data-copy]') : null;
+		if (!d) return;
+		if (d._t1) { clearTimeout(d._t1); d._t1 = null; }
+		if (d._t2 && !d._addedAt) { clearTimeout(d._t2); d._t2 = null; }
+	}
+	document.addEventListener('pointerup', stopHold, true);
+	document.addEventListener('pointercancel', stopHold, true);
+	/* при открытии страницы сразу показываем, что уже лежит в окне */
+	if (valueBox()) renderValues();
 
 	/* --- страница «Прокси»: проверка, куда уходит DNS --- */
 	/* --- страница «Маршруты»: подбор правила для домена --- */
+	// Enter в поле проверки домена внутри формы добавления не должен
+	// отправлять форму — вместо этого запускаем проверку
+	var rfName = document.querySelector('input[name=rule_find_name]');
+	if (rfName) rfName.addEventListener('keydown', function (ev) {
+		if (ev.key === 'Enter' || ev.keyCode === 13) {
+			ev.preventDefault();
+			var btn = document.querySelector('button.rule-find');
+			if (btn) btn.click();
+		}
+	});
+	var lfName = document.querySelector('input[name=list_find_name]');
+	if (lfName) lfName.addEventListener('keydown', function (ev) {
+		if (ev.key === 'Enter' || ev.keyCode === 13) {
+			ev.preventDefault();
+			var btn = document.querySelector('button.list-show');
+			if (btn) btn.click();
+		}
+	});
 	/* обновление файлов со списками из интернета */
 	document.addEventListener('click', function (ev) {
 		if (!ev.target.closest) return;
@@ -2281,7 +3088,7 @@ page_footer() {
 /* Тихие обновления: раз в 10 секунд панель спрашивает состояние и перекрашивает
    только нужные строки — без перезагрузки страницы. */
 (function () {
-	if (!document.querySelector('tr[data-bridge], tr[data-tag], .rule-seen, #t-rules, #t-last')) return;
+	if (!document.querySelector('tr[data-bridge], tr[data-tag], .rule-seen, #t-rules, #t-last, tr[data-rule]')) return;
 	function esc(s) {
 		return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
 			return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
@@ -2298,8 +3105,51 @@ page_footer() {
 		while (n >= 1024 && i < u.length - 1) { n = n / 1024; i++; }
 		return (i === 0 ? String(n) : String(n < 10 ? n.toFixed(1) : Math.round(n))) + ' ' + u[i];
 	}
-	function paint() {
-		fetch('?page=state&t=' + Date.now(), { cache: 'no-store' })
+	/* Лампочка одна на всю панель: правило и запись набора вспыхивают одинаково
+	   ярко и гаснут за 30 секунд, при новом срабатывании — снова максимум.
+	   Позицию внутри этого окна задаём через animation-delay, поэтому плавное
+	   затухание продолжается и между опросами роутера (раз в 4 секунды). */
+	var LAMP = 30;
+	/* Предыдущий опрос ещё не вернулся — следующий не начинаем: иначе при двух
+	   открытых вкладках и медленном ответе роутера запросы копились очередью, и
+	   страница «Маршруты» начинала отвечать по 10 секунд. */
+	var busy = false;
+	function lamp(el, age) {
+		if (!el) return;
+		var a = parseInt(age, 10);
+		if (isNaN(a) || a < 0 || a >= LAMP) {
+			if (el.classList.contains('lamp-on')) {
+				el.classList.remove('lamp-on');
+				el.style.animationDelay = '';
+			}
+			return;
+		}
+		/* перезапуск анимации: снимаем класс, даём браузеру пересчитать — тогда
+		   свежее срабатывание снова даёт максимальную яркость */
+		el.classList.remove('lamp-on');
+		void el.offsetWidth;
+		el.style.animationDelay = '-' + a + 's';
+		el.classList.add('lamp-on');
+	}
+	function paint(done) {
+		/* предыдущий ответ ещё не пришёл — не начинаем новый, но следующий такт
+		   обязательно планируем: иначе обновление остановилось бы совсем */
+		if (busy) { if (done) done(); return; }
+		busy = true;
+		/* у каждой страницы свой набор данных: лампочки правил нужны только
+		   на «Маршрутах», таблица клиентов — только на «Прокси». Просим
+		   роутер посчитать ровно то, что тут есть, — иначе он тратит на
+		   пустое обновление пару секунд каждые 10 секунд. */
+		var need = [];
+		if (document.querySelector('span[id^=rule-dot-]') || document.querySelector('tr[data-rule]')) need.push('rules');
+		if (document.querySelector('tr[data-client]')) need.push('clients');
+		/* «прочее» — состояние прозрачного режима, проверка мостов, трафик и
+		   выходы: спрашиваем только там, где это видно на странице. Проверка
+		   мостов стоит роутеру около секунды на каждый опрос, а на «Маршрутах»
+		   она не нужна вовсе. */
+		if (document.querySelector('tr[data-bridge], tr[data-tag], #t-rules, #t-last, tr[data-exit], #now-tag, .svcstate')) need.push('misc');
+		fetch('?page=state&t=' + Date.now() + '&need=' + (need.length ? need.join(',') : '-'),
+			{ cache: 'no-store' })
 			.then(function (r) { return r.json(); })
 			.then(function (d) {
 				(d.bridges || []).forEach(function (b) {
@@ -2317,8 +3167,10 @@ page_footer() {
 						tag.className = b.off ? 'tagmark' : (b.ok ? 'tagmark active' : 'tagmark bad');
 						tag.style.fontWeight = '';
 					}
-					var note = row.querySelector('.bnote');
-					if (note) note.textContent = b.state;
+					// состояние лежит внутри обрезанного значения (span.clip),
+					// поэтому обновляем его, а подсказку — вместе с ним
+					var note = row.querySelector('.bnote .clip') || row.querySelector('.bnote');
+					if (note) { note.textContent = b.state; note.title = b.state; }
 				});
 				document.querySelectorAll('tr[data-tag]').forEach(function (row) {
 					var tag = row.getAttribute('data-tag');
@@ -2373,7 +3225,8 @@ page_footer() {
 							var a = parseInt(c.age, 10);
 							ex.innerHTML = (c.tag === 'direct' ? '<b>напрямую</b>'
 								: (c.tag === 'blocked' ? '<b>заблокировано</b>' : '<span class="ok">' + esc(c.tag) + '</span>'))
-								+ ' <span class="muted">' + (isNaN(a) ? '' : ageText(a) + ' назад · ') + esc(c.dest) + '</span>';
+								+ ' <span class="muted">' + (isNaN(a) ? '' : ageText(a) + ' назад · ') + esc(c.dest) + '</span>'
+								+ (c.others ? ' <span class="muted">(ещё: ' + esc(c.others) + ')</span>' : '');
 						} else {
 							ex.innerHTML = '<span class="muted">нет свежих записей</span>';
 						}
@@ -2382,16 +3235,37 @@ page_footer() {
 				/* лампочки у правил: зелёная мигает, пока трафик идёт по правилу */
 				// лампочки правил и их подсказки обновляем вживую: у таблицы
 				// правил нет текстовой колонки, поэтому смотрим на сами лампочки
-				if (document.querySelector('span[id^=rule-dot-]')) {
+				if (document.querySelector('span[id^=rule-dot-]') || document.querySelector('tr[data-rule]')) {
 					document.querySelectorAll('span[id^=rule-dot-]').forEach(function (x) { x.className = 'dot'; });
 					document.querySelectorAll('.rule-seen').forEach(function (x) { x.textContent = 'нет записей'; });
+					/* таблица правил: гасим лампочки и надписи, ниже расставим заново */
+					document.querySelectorAll('tr[data-rule]').forEach(function (tr) { lamp(tr, null); });
+					document.querySelectorAll('td[id^=rule-act-]').forEach(function (td) { td.innerHTML = '<span class="muted">—</span>'; });
 					(d.rules || []).forEach(function (r) {
 						var dot = document.getElementById('rule-dot-' + r.sec);
 						var txt = document.getElementById('rule-seen-' + r.sec);
-						if (!dot) return;
 						var a = parseInt(r.age, 10);
+						if (!isNaN(a)) {
+							/* то же окно, что и у записи набора: вспышка и затухание 30 с */
+							var row = document.querySelector('tr[data-rule="' + r.sec + '"]');
+							lamp(row, a);
+							var act = document.getElementById('rule-act-' + r.sec);
+							if (act) {
+								var fullT = r.top || r.dest || '';
+								/* ageText уже добавляет «назад» — второй раз не нужно */
+								act.innerHTML = '<span class="muted">' + ageText(a) + '</span>';
+								act.setAttribute('title', 'за 10 минут: ' + fullT);
+							}
+						}
+						if (!dot) return;
 						if (isNaN(a)) return;
-						dot.className = (a < 30) ? 'dot live' : ((a < 300) ? 'dot warm' : 'dot');
+						if (a < LAMP) {
+							dot.className = 'dot on';
+							dot.style.animationDelay = '-' + a + 's';
+						} else {
+							dot.className = 'dot';
+							dot.style.animationDelay = '';
+						}
 						var full = r.top || r.dest || '';
 						var one = String(full).split(', ')[0].replace(/ \(\d+\)$/, '');
 						if (txt) {
@@ -2404,6 +3278,20 @@ page_footer() {
 					});
 				}
 				/* через какой сервер трафик идёт прямо сейчас (шапка «Прокси») */
+				/* сработавшие записи открытого набора: та же лампочка, что у правил
+				   (вспышка и затухание за 30 секунд), «вероятно» — серым пунктиром */
+				if (d.setitems) {
+					document.querySelectorAll('tr[data-item]').forEach(function (row) {
+						row.classList.remove('item-maybe');
+						lamp(row, null);
+					});
+					d.setitems.forEach(function (it) {
+						var row = document.querySelector('tr[data-item="' + it.id + '"]');
+						if (!row) return;
+						if (it.kind === 'maybe') { row.classList.add('item-maybe'); return; }
+						lamp(row, it.age);
+					});
+				}
 				var nowTag = document.getElementById('now-tag');
 				if (nowTag) {
 					var nowAge = document.getElementById('now-age');
@@ -2447,11 +3335,46 @@ page_footer() {
 				/* сколько служебных записей пропущено при расчёте лампочек */
 				var lsn = document.getElementById('lamp-skip-n');
 				if (lsn && d.lamp !== undefined) lsn.textContent = d.lamp;
+				busy = false;
+				if (done) done();
 			})
-			.catch(function () {});
+			.catch(function () { busy = false; if (done) done(); });
 	}
 	window.__panelRepaint = paint;
-	setTimeout(function () { paint(); setInterval(paint, 10000); }, 1500);
+	/* на «Маршрутах» опрашиваем чаще: подсветка правила должна появляться сразу,
+	   как только по нему пошёл трафик. Роутер считает активность не чаще, чем раз
+	   в 5 секунд, поэтому чаще 4 секунд спрашивать бессмысленно. */
+	var hasRules = !!document.querySelector('tr[data-rule]');
+	/* Опрашиваем по кругу, но с оглядкой на роутер: если ответ идёт дольше
+	   двух с половиной секунд, спрашиваем реже (раз в 12 секунд). Иначе при
+	   нескольких открытых вкладках запросы копились очередью, и «Маршруты»
+	   начинали отвечать по 10–15 секунд. */
+	setTimeout(function () {
+		var timer = null, seq = 0;
+		function tick() {
+			/* Вкладка панели не на экране — не грузим роутер. Каждый опрос
+			   «Маршрутов» стоит ему 1–2 секунды, а зачем это делать, если
+			   панель просто висит открытой в фоне. Вернулись на вкладку —
+			   состояние обновляем сразу. */
+			if (document.hidden) { timer = setTimeout(tick, 5000); return; }
+			var t0 = Date.now();
+			var my = ++seq;
+			paint(function () {
+				/* если за это время запустился новый такт (например, вернулись на
+				   вкладку) — следующий шаг планирует он, а не мы */
+				if (my !== seq) return;
+				var took = Date.now() - t0;
+				var wait = took > 2500 ? 12000 : (hasRules ? 4000 : 10000);
+				timer = setTimeout(tick, wait);
+			});
+		}
+		tick();
+		document.addEventListener('visibilitychange', function () {
+			if (document.hidden) return;
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(tick, 300);
+		});
+	}, hasRules ? 800 : 1500);
 })();
 
 /* Применение конфига без перезагрузки страницы: нажали кнопку — она стала
@@ -2465,14 +3388,8 @@ page_footer() {
 
 	var box = null;
 	function say(text, cls) {
-		if (!box) {
-			var m = document.querySelector('main');
-			if (!m) return;
-			box = document.createElement('div');
-			m.insertBefore(box, m.firstChild);
-		}
-		box.className = 'msg' + (cls ? ' ' + cls : '');
-		box.textContent = text;
+		/* всплывающее сообщение вместо плашки: плашка сдвигала страницу вниз */
+		window.__toast(text, cls === 'bad');
 	}
 	function clearPending() {
 		// надпись «изменено, но ещё не применено» и пометки о неприменённом порядке
@@ -2521,25 +3438,18 @@ page_footer() {
 	function finish(rc, msg) {
 		clearPending();
 		if (rc === '0') {
-			forms.forEach(function (f) {
-				var b = f.querySelector('button');
-				if (!b) return;
-				b.disabled = false;
-				b.textContent = 'конфиг применён';
-				b.className = 'btn apply-btn done';
-			});
+			/* применяем — все кнопки на странице показывают одно и то же */
+			setApplyButtons(true);
 			say('Конфиг применён, xray перезапущен.');
 		} else {
 			restore();
-			forms.forEach(function (f) {
-				var b = f.querySelector('button');
-				if (b) b.className = 'btn apply-btn pending';
-			});
-			say('xray не поднялся с новым конфигом — вернул прежний. ' + (msg || ''), 'bad');
+			setApplyButtons(false);
+			/* об ошибке не «выскакиваем»: кнопка снова красная «применить конфиг»,
+			   а подробности лежат в журнале на странице «Конфиг» */
 		}
 	}
 	function poll(n) {
-		if (n > 80) { restore(); say('Применение идёт долго — обновите страницу и посмотрите журнал на странице «Конфиг».', 'bad'); return; }
+		if (n > 80) { restore(); return; }
 		fetch('?page=jobs&t=' + Date.now(), { cache: 'no-store' })
 			.then(function (r) { return r.json(); })
 			.then(function (d) {
@@ -2562,10 +3472,131 @@ page_footer() {
 				.then(function () { poll(0); })
 				.catch(function () {
 					restore();
-					say('Не получилось запустить применение — обновите страницу.', 'bad');
 				});
 		});
 	});
+})();
+/* Карточка «Обновление панели»: пока идёт проверка релиза, спрашиваем её сама —
+   человеку не нужно перезагружать страницу, результат появится сам. */
+(function () {
+	var tries = 0;
+	function check() {
+		var card = document.getElementById('update-card');
+		if (!card) return;
+		if (!document.getElementById('update-wait')) return;   /* проверка уже закончилась */
+		if (tries++ > 20) return;
+		setTimeout(function () {
+			fetch('?page=update_card&t=' + Date.now(), { cache: 'no-store' })
+				.then(function (r) { return r.text(); })
+				.then(function (html) {
+					var doc = new DOMParser().parseFromString(html, 'text/html');
+					var fresh = doc.querySelector('#update-card');
+					var cur = document.getElementById('update-card');
+					if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+				})
+				.catch(function () {})
+				.then(check);
+		}, 2500);
+	}
+	check();
+	window.__updateWatch = check;
+})();
+/* Блок «Готовые списки»: содержимое собирается только когда блок открыли.
+   Раньше панель считала это при каждой загрузке «Маршрутов», хотя спойлер
+   обычно свёрнут, — и страница открывалась дольше, чем нужно. */
+(function () {
+	var det = document.getElementById('geo-det');
+	var body = document.getElementById('geo-body');
+	if (!det || !body) return;
+	function load() {
+		if (body.getAttribute('data-loaded') === '1') return;
+		body.setAttribute('data-loaded', '1');
+		body.innerHTML = '<p class="muted">собираю…</p>';
+		fetch('?page=geo&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (html) { body.innerHTML = html; })
+			.catch(function () {
+				body.setAttribute('data-loaded', '0');
+				body.innerHTML = '<p class="bad">не получилось собрать — обновите страницу (Ctrl+F5)</p>';
+			});
+	}
+	det.addEventListener('toggle', function () { if (det.open) load(); });
+	if (det.open) load();
+	/* страница перерисовывает карточку после тихих действий: если блок был
+	   открыт — открываем его снова и собираем содержимое заново */
+	window.__geoReload = function (wasOpen) {
+		var d = document.getElementById('geo-det'), b = document.getElementById('geo-body');
+		if (!d || !b) return;
+		if (!wasOpen) return;
+		d.open = true;
+		d.setAttribute('open', 'open');
+		b.removeAttribute('data-loaded');
+		load();
+	};
+})();
+/* Отклик на нажатие: панель отвечает вспышкой самой кнопки, звуком и (на
+   телефоне) короткой вибрацией — чтобы было видно, что нажатие дошло, даже
+   когда сохранение идёт тихо, без перезагрузки страницы. Звук синтезирует
+   браузер: файлов в пакете нет, а вид звука и громкость выбираются в
+   «Настройках». Браузеры разрешают звук только после первого касания
+   страницы — до первого нажатия панель молчит, обойти это нельзя. */
+(function () {
+	var kind = window.__xpSound || 'off';
+	var vol = window.__xpVolume || 'mid';
+	var peak = { low: 0.035, mid: 0.08, high: 0.16 }[vol] || 0.08;
+	var ctx = null;
+	function ac() {
+		try {
+			if (!ctx) {
+				var A = window.AudioContext || window.webkitAudioContext;
+				if (!A) return null;
+				ctx = new A();
+			}
+			if (ctx.state === 'suspended' && ctx.resume) ctx.resume();
+			return ctx;
+		} catch (e) { return null; }
+	}
+	function beep(freq, dur, delay, gain, wave) {
+		var a = ac();
+		if (!a) return;
+		var o = a.createOscillator(), g = a.createGain();
+		var t = a.currentTime + (delay || 0);
+		o.type = wave || 'triangle';
+		o.frequency.value = freq;
+		g.gain.setValueAtTime(0.0001, t);
+		g.gain.linearRampToValueAtTime(peak * (gain || 1), t + 0.006);
+		g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+		o.connect(g);
+		g.connect(a.destination);
+		o.start(t);
+		o.stop(t + dur + 0.02);
+	}
+	function play(k) {
+		switch (k) {
+			case 'click': beep(1500, 0.018, 0, 1, 'square'); beep(760, 0.03, 0.004, 0.45, 'square'); break;
+			case 'tick':  beep(2600, 0.012, 0, 0.7, 'square'); break;
+			case 'blip':  beep(880, 0.07, 0, 1); break;
+			case 'up':    beep(680, 0.055, 0, 0.8); beep(1020, 0.09, 0.07, 0.9); break;
+			case 'down':  beep(520, 0.07, 0, 0.8); beep(330, 0.12, 0.085, 0.9); break;
+			default: break;
+		}
+	}
+	var last = 0;
+	document.addEventListener('click', function (ev) {
+		var t = ev.target;
+		var b = t && t.closest ? t.closest('button, a.btn, input[type=submit]') : null;
+		if (!b || b.disabled) return;
+		var now = Date.now();
+		if (now - last < 100) return;   /* дребезг: не играем звук дважды */
+		last = now;
+		var danger = /(^|\s)(danger|stop)(\s|$)/.test(String(b.className || ''));
+		if (kind !== 'off') play(danger ? 'down' : (kind === 'two' ? 'up' : kind));
+		if (navigator.vibrate) { try { navigator.vibrate(danger ? [18, 40, 18] : 12); } catch (e) {} }
+		b.classList.remove('hit');
+		void b.offsetWidth;
+		b.classList.add('hit');
+		setTimeout(function () { b.classList.remove('hit'); }, 450);
+	}, true);
 })();
 </script>
 </body></html>
@@ -2574,48 +3605,67 @@ EOF
 
 page_state() { # состояние в JSON — для тихого обновления страницы
 	printf 'Content-Type: application/json; charset=utf-8\n\n'
+	# Что именно нужно этой странице: «лампочки» правил есть только на
+	# «Маршрутах», таблица клиентов — только на «Прокси». Раньше панель считала
+	# всё сразу, и живое обновление забирало у роутера около 3 секунд каждые
+	# 10 секунд — из-за этого страницы казались вялыми. Теперь считаем только
+	# запрошенное.
+	_need=$(param need "")
+	_need_all=0
+	[ -z "$_need" ] && _need_all=1
+	case ",$_need," in *",rules,"*)   _need_rules=1   ;; *) _need_rules=$_need_all ;; esac
+	case ",$_need," in *",clients,"*) _need_clients=1 ;; *) _need_clients=$_need_all ;; esac
+	# «прочее»: состояние прозрачного режима, проверка мостов, трафик по выходам
+	# и по клиентам, хвост журнала. Это нужно «Прокси», «Реверсу», «Прозрачному
+	# режиму» и «Статусу», а на «Маршрутах» — нет. Проверка мостов (сетевая
+	# проверка каждого) стоит около секунды, поэтому на «Маршрутах» её не делаем.
+	case ",$_need," in *",misc,"*) _need_misc=1 ;; *) _need_misc=$_need_all ;; esac
+	# заодно, не чаще раза в 10 минут, держим журнал xray коротким
+	trim_access_log
 	case "$(svc_state)" in
 		running) _stxt="работает"; _sok=true ;;
 		stopped) _stxt="остановлен"; _sok=false ;;
 		*)       _stxt="служба не найдена"; _sok=false ;;
 	esac
 	# состояние прозрачного режима: правила, остаток автоотката, последний запуск и хвост журнала
-	_trules=$("$TRANS" status 2>/dev/null)
-	_left=0
-	_dl="$STATE_DIR/transparent.deadline"
-	if [ -f "$_dl" ]; then
-		_d=$(cat "$_dl" 2>/dev/null)
-		case "$_d" in ''|*[!0-9]*) _d=0 ;; esac
-		_now=$(date +%s)
-		[ "$_d" -gt "$_now" ] && _left=$((_d - _now))
+	_trules=""; _left=0; _last=""; _keep=0; _tail=""
+	if [ "$_need_misc" = 1 ]; then
+		_trules=$("$TRANS" status 2>/dev/null)
+		_dl="$STATE_DIR/transparent.deadline"
+		if [ -f "$_dl" ]; then
+			_d=$(cat "$_dl" 2>/dev/null)
+			case "$_d" in ''|*[!0-9]*) _d=0 ;; esac
+			_now=$(date +%s)
+			[ "$_d" -gt "$_now" ] && _left=$((_d - _now))
+		fi
+		[ -f "$STATE_DIR/transparent.last" ] && _last=$(cat "$STATE_DIR/transparent.last" 2>/dev/null)
+		[ -f "$STATE_DIR/transparent.keep" ] && _keep=1
+		_access="$(cfg log_dir "/var/log")/xray-access.log"
+		# читаем только хвост журнала: целиком он бывает очень большим, а живое
+		# обновление спрашивает это каждые несколько секунд
+		[ -f "$_access" ] && _tail=$(tail -n 3000 "$_access" 2>/dev/null | grep -a "transparent" | tail -5)
 	fi
-	_last=""
-	[ -f "$STATE_DIR/transparent.last" ] && _last=$(cat "$STATE_DIR/transparent.last" 2>/dev/null)
-	_keep=0
-	[ -f "$STATE_DIR/transparent.keep" ] && _keep=1
-	_access="$(cfg log_dir "/var/log")/xray-access.log"
-	_tail=""
-	# читаем только хвост журнала: целиком он бывает очень большим, а живое
-	# обновление спрашивает это каждые 10 секунд
-	[ -f "$_access" ] && _tail=$(tail -n 3000 "$_access" 2>/dev/null | grep -a "transparent" | tail -5)
 	printf '{"active":"%s","service":"%s","svcok":%s,' "$(jesc "$(effective_outbound)")" "$(jesc "$_stxt")" "$_sok"
 	printf '"transparent":{"on":"%s","rules":"%s","left":%s,"keep":%s,"last":"%s","tail":"%s"},"bridges":[' \
 		"$(jesc "$(cfg transparent 0)")" "$(jesc "$_trules")" "$_left" "$_keep" "$(jesc "$_last")" "$(jesc "$_tail")"
 	_first=1
-	for _b in $(bridge_sections); do
-		_bt=$(uci -q get "$UCI_APP.$_b.tag")
-		_bstate=$(bridge_state "$_bt" "$(uci -q get "$UCI_APP.$_b.outbound")"); _brc=$?
-		if [ "$_first" = 1 ]; then _first=0; else printf ','; fi
-		if [ "$_brc" = 0 ]; then _ok=true; else _ok=false; fi
-		_boff=false; bridge_disabled "$_b" && _boff=true
-		printf '{"tag":"%s","ok":%s,"off":%s,"state":"%s"}' "$(jesc "$_bt")" "$_ok" "$_boff" "$(jesc "$_bstate")"
-	done
+	if [ "$_need_misc" = 1 ]; then
+		for _b in $(bridge_sections); do
+			_bt=$(uci -q get "$UCI_APP.$_b.tag")
+			_bstate=$(bridge_state "$_bt" "$(uci -q get "$UCI_APP.$_b.outbound")"); _brc=$?
+			if [ "$_first" = 1 ]; then _first=0; else printf ','; fi
+			if [ "$_brc" = 0 ]; then _ok=true; else _ok=false; fi
+			_boff=false; bridge_disabled "$_b" && _boff=true
+			printf '{"tag":"%s","ok":%s,"off":%s,"state":"%s"}' "$(jesc "$_bt")" "$_ok" "$_boff" "$(jesc "$_bstate")"
+		done
+	fi
 	printf ']'
 	# трафик по клиентам — обновляем таблицу «Трафик по клиентам» без перезагрузки
 	printf ',"clients":['
+	if [ "$_need_clients" = 1 ]; then
 	_first=1
 	_cex=$(client_exits 120 2>/dev/null)
-	_ctr2=$(client_traffic 2>/dev/null)
+	_ctr2=$(client_traffic_cached 2>/dev/null)
 	# берём всех: и тех, у кого есть счётчики трафика, и тех, кого видно в журнале
 	_cips=$( { printf '%s\n' "$_ctr2" | awk 'NF { print $1 }'
 		printf '%s\n' "$_cex" | awk -F'\t' 'NF { print $1 }' ; } | LC_ALL=C sort -u )
@@ -2624,42 +3674,65 @@ page_state() { # состояние в JSON — для тихого обновл
 		_cup=$(printf '%s\n' "$_ctr2" | awk -v t="$_cip" '$1 == t { print $2; exit }')
 		_cdn=$(printf '%s\n' "$_ctr2" | awk -v t="$_cip" '$1 == t { print $3; exit }')
 		if [ "$_first" = 1 ]; then _first=0; else printf ','; fi
-		_cx=$(printf '%s\n' "$_cex" | awk -F'\t' -v t="$_cip" '$1 == t { print $2 "\t" $3 "\t" $4; exit }')
+		_cx=$(printf '%s\n' "$_cex" | awk -F'\t' -v t="$_cip" '$1 == t { print $2 "\t" $3 "\t" $4 "\t" $5; exit }')
 		_cxtag=${_cx%%	*}; _cxrest=${_cx#*	}
-		_cxage=${_cxrest%%	*}; _cxdst=${_cxrest#*	}
+		_cxage=${_cxrest%%	*}; _cxrest2=${_cxrest#*	}
+		_cxdst=${_cxrest2%%	*}; _cxother=${_cxrest2#*	}
+		[ "$_cxother" = "$_cxdst" ] && _cxother=""
 		[ -n "$_cx" ] || { _cxtag=""; _cxage=""; _cxdst=""; }
-		printf '{"ip":"%s","up":"%s","dn":"%s","tag":"%s","age":"%s","dest":"%s"}' \
+		printf '{"ip":"%s","up":"%s","dn":"%s","tag":"%s","age":"%s","dest":"%s","others":"%s"}' \
 			"$(jesc "$_cip")" "$(jesc "$(human_bytes "${_cup:-0}")")" "$(jesc "$(human_bytes "${_cdn:-0}")")" \
-			"$(jesc "${_cxtag}")" "$(jesc "${_cxage}")" "$(jesc "${_cxdst}")"
+			"$(jesc "${_cxtag}")" "$(jesc "${_cxage}")" "$(jesc "${_cxdst}")" "$(jesc "${_cxother:-}")"
 	done
+	fi
 	# какие правила работают — чтобы лампочки на «Маршрутах» обновлялись живьём
 	printf '],"rules":['
-	_first=1
-	rules_activity 2>/dev/null | while IFS="$(printf '\t')" read -r _rs _rage _rdst _rout _rtop; do
+	if [ "$_need_rules" = 1 ]; then
+		_first=1
+		_rl_txt=$(rules_activity 2>/dev/null)
+		printf '%s\n' "$_rl_txt" | while IFS="$(printf '\t')" read -r _rs _rage _rdst _rout _rtop; do
 		[ -n "$_rs" ] || continue
 		if [ "$_first" = 1 ]; then _first=0; else printf ','; fi
 		printf '{"sec":"%s","age":"%s","dest":"%s","out":"%s","top":"%s"}' \
 			"$(jesc "$_rs")" "$(jesc "${_rage:-}")" "$(jesc "${_rdst:-}")" "$(jesc "${_rout:-}")" "$(jesc "${_rtop:-}")"
 	done
+	fi
 	# через какой сервер трафик идёт прямо сейчас — для шапки страницы «Прокси»
-	_now=$(active_server_now)
-	_ntag=${_now%%	*}
-	_nage=${_now##*	}
+	_now=""
+	[ "$_need_misc" = 1 ] && _now=$(active_server_now)
+	# сработавшие записи открытого набора — живая подсветка на «Маршрутах»
+	printf '],"setitems":['
+	if [ "$_need_rules" = 1 ]; then
+		_setsel=$(cfg rules_set "")
+		if [ -n "$_setsel" ]; then
+			_first=1
+			set_items_activity "$_setsel" "$_rl_txt" 2>/dev/null | while IFS="$(printf '\t')" read -r _si _sa _sk; do
+				[ -n "$_si" ] || continue
+				if [ "$_first" = 1 ]; then _first=0; else printf ','; fi
+				printf '{"id":"%s","age":"%s","kind":"%s"}' "$(jesc "$_si")" "$(jesc "$_sa")" "$(jesc "$_sk")"
+			done
+		fi
+	fi
+	_ntag=""; _nage=""
+	if [ -n "$_now" ]; then _ntag=${_now%%	*}; _nage=${_now##*	}; fi
 	# трафик для живого обновления: строка «Трафик» в «Прозрачном режиме» и
 	# таблица «Куда идёт трафик». Считаем теми же функциями, что и сама
 	# страница, поэтому числа совпадают.
-	_tt=$(traffic_totals 2>/dev/null)
-	_tup=${_tt%% *}; _r=${_tt#* }; _tdn=${_r%% *}; _r=${_r#* }
-	_dup=${_r%% *}; _ddn=${_r##* }
-	_ct2=$(client_traffic 2>/dev/null | awk -F'\t' '{ up += $2; dn += $3 } END { printf "%d %d", up, dn }')
-	_cup=${_ct2%% *}; _cdn=${_ct2##* }
-	_exb=$(exits_period 2>/dev/null)
-	[ -n "$_exb" ] || _exb=$(exit_traffic 2>/dev/null)
-	_exj=$(printf '%s\n' "$_exb" | awk -F'\t' 'NF >= 3 && $1 != "" {
-			t = $1; gsub(/["\\]/, "", t)
-			if (n++) printf ",";
-			printf "{\"tag\":\"%s\",\"up\":%d,\"dn\":%d}", t, $2 + 0, $3 + 0
-		}')
+	_tup=0; _tdn=0; _dup=0; _ddn=0; _cup=0; _cdn=0; _exj=""
+	if [ "$_need_misc" = 1 ]; then
+		_tt=$(traffic_totals 2>/dev/null)
+		_tup=${_tt%% *}; _r=${_tt#* }; _tdn=${_r%% *}; _r=${_r#* }
+		_dup=${_r%% *}; _ddn=${_r##* }
+		_ct2=$(client_traffic_cached 2>/dev/null | awk -F'\t' '{ up += $2; dn += $3 } END { printf "%d %d", up, dn }')
+		_cup=${_ct2%% *}; _cdn=${_ct2##* }
+		_exb=$(exits_period 2>/dev/null)
+		[ -n "$_exb" ] || _exb=$(exit_traffic 2>/dev/null)
+		_exj=$(printf '%s\n' "$_exb" | awk -F'\t' 'NF >= 3 && $1 != "" {
+				t = $1; gsub(/["\\]/, "", t)
+				if (n++) printf ",";
+				printf "{\"tag\":\"%s\",\"up\":%d,\"dn\":%d}", t, $2 + 0, $3 + 0
+			}')
+	fi
 	# сколько служебных записей пропущено при расчёте лампочек правил
 	_lampn=$(cat "$STATE_DIR/lamp-skip.count" 2>/dev/null)
 	case "$_lampn" in ''|*[!0-9]*) _lampn=0 ;; esac
@@ -2707,23 +3780,33 @@ page_status() {
 </p></div>
 <p class="muted">«Применить конфиг» — собрать конфиг xray из настроек панели, проверить его и перезапустить службу. «Откат конфига» — вернуть прежний конфиг из единственной копии, которую панель сохраняет перед применением.</p>
 EOF
+	# Обновление самой панели: ищем новую версию в релизах GitHub и предлагаем
+	# поставить её кнопкой. Проверка идёт фоном, ответ кладётся в состояние —
+	# поэтому страница открывается сразу, а карточка потом обновляется сама.
+	printf '<div class="card" id="update-card">'
+	update_card_html
+	printf '</div>\n'
 	# смена версии панели: понижение или повышение без ssh
 	printf '<div class="card"><h2>Смена версии панели</h2>'
 	printf '<p class="muted">Можно поставить другую версию панели, не заходя по ssh: положите файл <b>.ipk</b> на роутер (например в <code>/tmp</code>) или загрузите его кнопкой ниже. Настройки, серверы и правила при этом не трогаются — меняется только сама панель, xray не перезапускается.</p>'
 	_pk=$(panel_ipk_list 2>/dev/null)
 	if [ -n "$_pk" ]; then
-		printf '<table class="responsive"><tr><th>Пакет</th><th>Версия</th><th>Размер</th><th></th></tr>'
+		# список сборок прячем под спойлер и выбираем из выпадающего списка:
+		# пакетов стало много, простыня мешала странице
+		printf '<details class="pick"><summary>поставить другую версию панели — найдено пакетов: %s</summary>' "$(printf '%s\n' "$_pk" | grep -c .)"
+		printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="panel_install"><label>Выберите пакет</label><select name="file">'
 		printf '%s\n' "$_pk" | while IFS="$(printf '\t')" read -r _pf _pv _psz; do
 			[ -n "$_pf" ] || continue
 			if [ "$_pv" = "$(panel_version)" ]; then
-				_pact='<span class="tagmark active">стоит сейчас</span>'
+				printf '<option value="%s" disabled>%s — версия %s (стоит сейчас)</option>' \
+					"$(h "$_pf")" "$(h "$(basename "$_pf")")" "$(h "$_pv")"
 			else
-				_pact=$(printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="panel_install"><input type="hidden" name="file" value="%s"><button class="btn">поставить</button></form>' "$(h "$_pf")")
+				printf '<option value="%s">%s — версия %s, %s</option>' \
+					"$(h "$_pf")" "$(h "$(basename "$_pf")")" "$(h "$_pv")" "$(h "$(human_bytes "${_psz:-0}")")"
 			fi
-			printf '<tr><td data-label="Пакет">%s</td><td data-label="Версия">%s</td><td data-label="Размер">%s</td><td>%s</td></tr>\n' \
-				"$(h "$_pf")" "$(h "$_pv")" "$(h "$(human_bytes "${_psz:-0}")")" "$_pact"
 		done
-		printf '</table><p class="muted">Проверяются папки: <code>%s</code>. Их можно поменять командой <code>uci set xraypanel.settings.panel_ipk_dirs=\"/tmp /etc/xraypanel/versions\"</code>.</p>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
+		printf '</select> <button class="btn">поставить выбранный</button></form>'
+		printf '<p class="muted">Проверяются папки: <code>%s</code>. Их можно поменять командой <code>uci set xraypanel.settings.panel_ipk_dirs=\"/tmp /etc/xraypanel/versions\"</code>.</p></details>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	else
 		printf '<p class="muted">Пакетов не нашлось. Проверенные папки: <code>%s</code>. Загрузите файл — он попадёт в <code>/etc/xraypanel/versions</code> и появится здесь.</p>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	fi
@@ -2768,7 +3851,7 @@ EOF
 # обновления — страница «Серверы» перерисовывает её без перезагрузки
 servers_table_html() {
 	_actv=$(effective_outbound)
-	printf '<table class="responsive"><tr><th>Имя</th><th>Тег</th><th>Адрес</th><th>Проверка</th><th>Пинг</th><th></th></tr>'
+	printf '<table class="responsive"><tr><th>Имя</th><th>Тег</th><th>Адрес</th><th title="время реального запроса через сервер — именно по нему работает автовыбор «по лучшему пингу»">Проверка (прокси)</th><th title="пинг сети до сервера, без учёта его канала">Пинг (сеть)</th><th></th></tr>'
 	for _s in $(server_sections); do
 		_tag=$(server_tag "$_s")
 		_style=""; _mark=""
@@ -2798,11 +3881,41 @@ servers_table_html() {
 			fi
 		fi
 		_res=$(url_test_saved "$_tag")
+		# в столбце «Проверка» — только «123 мс» или «нет ответа»: длинная
+		# причина не помещалась и ломала вид таблицы, поэтому её убираем в
+		# подсказку при наведении
+		_rtitle=""
+		_rtitle_attr=""
+		_rtime=""
 		case "$_res" in
-			*"нет ответа"*) _rstyle=' class="bad"' ;;
-			'')             _rstyle=' class="muted"'; _res="не проверялся" ;;
-			*)              _rstyle=' class="ok"' ;;
+			*'('*')'*)
+				# в сохранённом значении время проверки в скобках: показываем
+				# его рядом с миллисекундами, а в подсказке — целиком
+				_rtime=$(printf '%s' "$_res" | sed 's/.*(\(.*\)).*/\1/')
+				_rtitle="$_res"
+				_res=$(printf '%s' "$_res" | sed 's/ *(.*//')
+				;;
 		esac
+		[ -n "$_rtitle" ] && _rtitle_attr=" title=\"$(h "$_rtitle")\""
+		# причина отказа: сохраняется вместе с результатом проверки и попадает
+		# в подсказку при наведении на «нет ответа»
+		_reason=$(url_test_saved_reason "$_tag")
+		if [ -n "$_reason" ]; then
+			if [ -n "$_rtitle" ]; then _rtitle="$_rtitle — $_reason"; else _rtitle="$_res — $_reason"; fi
+			_rtitle_attr=" title=\"$(h "$_rtitle")\""
+		fi
+		# время проверки — маленьким шрифтом сразу после миллисекунд
+		_rtime_html=""
+		[ -n "$_rtime" ] && _rtime_html=" <span class=\"muted\" style=\"font-size:11px\">$_rtime</span>"
+		# классы собираем вместе с «clip»: два атрибута class в одном теге
+		# браузеры читают по-разному, поэтому склеиваем в один
+		case "$_res" in
+			*"нет ответа"*) _rcls='clip bad' ;;
+			'')             _rcls='clip muted'; _res="не проверялся" ;;
+			*)              _rcls='clip ok' ;;
+		esac
+		_tagcls='clip'
+		[ -n "$_mark" ] && _tagcls='clip tagmark active'
 		# пинг считаем только по кнопке «замерить пинг» — иначе каждая загрузка
 		# страницы дёргала бы сеть
 		if [ "$(param ping)" = 1 ]; then
@@ -2816,11 +3929,21 @@ servers_table_html() {
 		# сервер, занятый реверс-мостом, помечаем синим: он выход для моста
 		_rev=""
 		server_is_reverse "$_tag" && _rev=' style="font-weight:700;color:#2563eb"'
-		printf '<tr data-tag="%s"%s><td data-label="Имя"%s>%s%s</td><td data-label="Тег"><span%s%s>%s</span></td><td data-label="Адрес"%s>%s:%s%s</td><td data-label="Проверка"><span%s>%s</span></td><td data-label="Пинг">%s</td><td data-label="Действия"><a class="btn sec" href="%s?page=server&amp;sec=%s">изменить</a> <button type="button" class="btn sec urltest-one" data-tag="%s">проверить</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> %s</td></tr>\n' \
-			"$(h "$_tag")" "$_style" "$_rev" "$(h "$_s")" "$_offmark" "$_mark" "$_rev" "$(h "$_tag")" "$_rev" "$(h "$(uci -q get "$UCI_APP.$_s.address")")" "$(h "$(uci -q get "$UCI_APP.$_s.port")")" \
-			"$_ep" "$_rstyle" "$(h "$_res")" "$_ping_txt" "$SCRIPT_NAME" "$(h "$_s")" "$(h "$_tag")" "$(h "$_s")" "$_tcls" "$_ttitle" "$_ticon" "$_btn_def"
+		# адрес с портом — одним куском: в подсказке и в самой ячейке
+		_addrhp="$(h "$(uci -q get "$UCI_APP.$_s.address")"):$(h "$(uci -q get "$UCI_APP.$_s.port")")"
+		# длинные значения (имя, тег, адрес) держим в одной строке: хвост
+		# обрезается, полный текст виден при наведении мышки
+		printf '<tr data-tag="%s"%s><td data-label="Имя"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Тег"><span class="%s" title="%s"%s>%s</span></td><td data-label="Адрес"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="Проверка"><span class="%s"%s>%s</span>%s</td><td data-label="Пинг">%s</td><td data-label="Действия"><a class="btn sec" href="%s?page=server&amp;sec=%s">изменить</a> <button type="button" class="btn sec urltest-one" data-tag="%s">проверить</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> %s</td></tr>\n' \
+			"$(h "$_tag")" "$_style" "$_rev" "$(h "$_tag")" "$(h "$_s")" "$_offmark" \
+			"$_tagcls" "$(h "$_tag")" "$_rev" "$(h "$_tag")" \
+			"$_rev" "$_addrhp" "$_addrhp" "$_ep" \
+			"$_rcls" "$_rtitle_attr" "$(h "$_res")" "$_rtime_html" \
+			"$_ping_txt" "$SCRIPT_NAME" "$(h "$_s")" "$(h "$_tag")" "$(h "$_s")" "$_tcls" "$_ttitle" "$_ticon" "$_btn_def"
 	done
 	printf '</table>'
+	# пояснение к столбцам: новичку «пинг» и «проверка» кажутся одним и тем же,
+	# а автовыбор смотрит именно на время запроса через прокси
+	printf '<p class="muted">Автовыбор «по лучшему пингу» смотрит на столбец <b>«Проверка (прокси)»</b> — это время реального запроса через сервер (его меряет сам xray каждые %s с). Столбец <b>«Пинг (сеть)»</b> показывает только сеть до сервера и для выбора не используется: сервер с малым пингом может оказаться медленным, если у него плохой канал или маршрут к сайтам.</p>' "$(h "$(cfg probe_interval 15)")"
 	# что ответила последняя проверка: причина словами и журнал под спойлером
 	if [ -f "$STATE_DIR/last-test.log" ]; then
 		_lwhy=$(url_test_reason 2>/dev/null)
@@ -2912,18 +4035,28 @@ page_server() {
 	printf '<option value="trojan" %s>Trojan</option>' "$([ "$_pr" = trojan ] && echo selected)"
 	printf '<option value="wireguard" %s>WireGuard</option>' "$([ "$_pr" = wireguard ] && echo selected)"
 	printf '</select></div>'
-	for _pair in "tag:Тег выхода:$_t" "address:Адрес сервера (IP или домен):$_a" "port:Порт:$_p" "uuid:UUID:$_u" \
-		"flow:Flow:$_f" "sni:SNI (serverName):$_n" "publickey:Public key (Reality):$_k" "shortid:Short ID:$_i" "fingerprint:Fingerprint:$_g"; do
-		_name=${_pair%%:*}; _rest=${_pair#*:}; _label=${_rest%%:*}; _val=${_rest#*:}
-		printf '<div class="f-vless"><label>%s</label><input name="%s" value="%s"></div>' "$(h "$_label")" "$_name" "$(h "$_val")"
+	# Поля показываются в зависимости от протокола (переключает скрипт ниже).
+	# «f-common» — общие для всех (тег, адрес, порт): раньше они были помечены
+	# как «только для VLESS» и у остальных протоколов пропадали, поэтому сервер
+	# кроме VLESS через форму было просто не создать. UUID нужен ещё и VMess,
+	# SNI — VMess и Trojan.
+	for _pair in "tag:Тег выхода:$_t:f-common" "address:Адрес сервера (IP или домен):$_a:f-common" \
+		"port:Порт:$_p:f-common" "uuid:UUID:$_u:f-vless f-vmess" "flow:Flow (только VLESS+Reality):$_f:f-vless" \
+		"sni:SNI (serverName):$_n:f-vless f-vmess f-trojan f-hysteria" \
+		"publickey:Public key (Reality):$_k:f-vless" "shortid:Short ID:$_i:f-vless" \
+		"fingerprint:Fingerprint:$_g:f-vless"; do
+		_name=${_pair%%:*}; _rest=${_pair#*:}; _label=${_rest%%:*}; _rest=${_rest#*:}; _val=${_rest%%:*}; _cls=${_rest#*:}
+		printf '<div class="%s"><label>%s</label><input name="%s" value="%s"></div>' "$_cls" "$(h "$_label")" "$_name" "$(h "$_val")"
 	done
 	printf '<div class="f-ss"><label>Метод шифрования (можно выбрать из списка)</label><input name="method" value="%s" list="ss-methods" placeholder="aes-256-gcm или 2022-blake3-aes-256-gcm"><datalist id="ss-methods">' "$(h "$_m")"
+	# «none» из списка убран: xray такого метода не знает
+	# («infra/conf: unknown cipher method: none») — остальные проверены на живом xray
 	for _mm in aes-128-gcm aes-256-gcm chacha20-ietf-poly1305 xchacha20-ietf-poly1305 \
-		2022-blake3-aes-128-gcm 2022-blake3-aes-256-gcm 2022-blake3-chacha20-poly1305 none; do
+		2022-blake3-aes-128-gcm 2022-blake3-aes-256-gcm 2022-blake3-chacha20-poly1305; do
 		printf '<option value="%s"></option>' "$_mm"
 	done
 	printf '</datalist></div>'
-	printf '<p class="f-ss muted">Все эти методы работают на xray 24.12 и новее. У методов 2022-blake3 ключ должен быть base64 нужной длины: 16 байт у aes-128, 32 байта у aes-256 и chacha20.</p>'
+	printf '<p class="f-ss muted">Все методы из списка проверены на живом xray. У методов 2022-blake3 ключ должен быть base64 нужной длины: 16 байт у aes-128, 32 байта у aes-256 и chacha20; метод <code>none</code> xray не поддерживает.</p>'
 	printf '<div class="f-ss f-hysteria f-trojan"><label>Пароль</label><input name="password" value="%s"></div>' "$(h "$_pw")"
 	printf '<div class="f-vmess f-vless"><label>Сеть (tcp или ws)</label><input name="network" value="%s" placeholder="tcp"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.network")")"
 	printf '<div class="f-vmess f-vless"><label>Путь (для ws)</label><input name="path" value="%s" placeholder="/ws"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.path")")"
@@ -2940,7 +4073,7 @@ page_server() {
 	printf '<div class="f-wg"><label>MTU</label><input name="mtu" value="%s" placeholder="1420"></div>' "$(h "$_mtu")"
 	printf '</div><p><button>Сохранить</button></p></form>'
 	# показываем только поля выбранного протокола
-	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-vless,.f-ss,.f-hysteria,.f-wg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=false;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
+	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить сервер</button></form>' "$(h "$_sec")"
 	[ -n "$_sec" ] && printf ' <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s">%s</button></form>' \
 		"$(h "$_sec")" "$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo start || echo stop)" \
@@ -2949,21 +4082,45 @@ page_server() {
 }
 
 page_bridges() {
-	# в новых сборках xray (25.x+) старый реверс удалён — говорим об этом прямо
-	case "$(reverse_style 2>/dev/null)" in
-		new)
-			printf '<div class="card"><h2 class="bad">Реверс выключен: этот xray не умеет старый способ</h2>'
-			printf '<p>Начиная с xray 25.x старый реверс (<code>reverse.bridges</code>) удалён, вместо него сделали «VLESS Reverse Proxy». Панель временно не добавляет старые мосты в конфиг — иначе xray вообще отказался бы запускаться (проверено на 26.7.28: <code>The feature "legacy reverse" has been removed</code>).</p>'
-			printf '<p>Чтобы мосты заработали, нужно настроить по-новому <b>и сервер-портал</b>: у нужного клиента в VLESS-входе добавляется <code>"reverse": {"tag": "имя-выхода"}</code>, и трафик для моста направляется на этот тег. Пока проще держать на роутере xray 24.x — тогда старый способ работает как раньше.</p></div>'
+	# Что умеет установленная сборка xray — видно прямо тут: от этого зависит,
+	# какие мосты вообще могут работать. Панель сама подстраивает конфиг под
+	# бинарник, но человеку это надо понимать (и знать, что поставить).
+	_cap=$(reverse_bin_support 2>/dev/null)
+	_binver=$("$(xray_bin)" version 2>/dev/null | head -1)
+	[ -n "$_binver" ] || _binver="не найден"
+	_style=$(reverse_style 2>/dev/null)
+	printf '<div class="card"><h2>Какие реверсы умеет ваша сборка</h2>'
+	case "$_cap" in
+		both)
+			printf '<p>Установленный xray: <b>%s</b>. Он понимает <b>оба</b> способа реверса — и старый (по домену), и новый (VLESS Reverse Proxy). Значит, мосты обоих видов могут работать одновременно.</p>' "$(h "$_binver")"
 			;;
-		off)
-			printf '<div class="card"><h2 class="bad">Реверс выключен</h2><p>Этот xray не поддерживает ни старый способ, ни новый — мосты работать не будут.</p></div>'
+		new)
+			printf '<p>Установленный xray: <b>%s</b>. Он понимает <b>только новый</b> способ — VLESS Reverse Proxy по тегу. Старый реверс (<code>reverse.bridges</code>, по домену) в этой сборке удалён.</p>' "$(h "$_binver")"
+			;;
+		*)
+			printf '<p class="bad">Установленный xray: %s — не удалось определить, какой реверс он умеет. Проверьте путь к бинарнику на странице «Настройки».</p>' "$(h "$_binver")"
 			;;
 	esac
+	printf '<p>Общий способ для мостов, у которых выбрано «как у роутера»: <b>%s</b>.</p>' "$([ "$_style" = legacy ] && echo 'старый (по домену)' || ([ "$_style" = new ] && echo 'новый (по тегу)' || echo 'не выбран'))"
+	printf '<form method="post"><input type="hidden" name="action" value="rev_style">'
+	printf '<div class="row"><div><label>Сменить общий способ</label><select name="style">'
+	printf '<option value="legacy"%s%s>старый — по домену (нужна сборка xray до 26.4.18)</option>' "$([ "$_style" = legacy ] && echo ' selected')" "$([ "$_cap" != both ] && echo ' disabled')"
+	printf '<option value="new"%s%s>новый — VLESS Reverse Proxy по тегу (сборка 25.9.11+)</option>' "$([ "$_style" = new ] && echo ' selected')" "$([ "$_cap" = none ] && echo ' disabled')"
+	printf '</select></div></div><p><button class="btn sec">сохранить способ</button> <span class="muted">после этого нажмите «применить конфиг»</span></p></form>'
+	printf '<details class="pick"><summary>Кратко: какой реверс с какой сборкой работает</summary>'
+	printf '<table><tr><th>Способ</th><th>Что это</th><th>Какие сборки xray понимают</th></tr>'
+	printf '<tr><td>старый</td><td>по домену, <code>reverse.bridges</code></td><td>до 26.4.18: 24.12.31, 26.4.17 и подобные. В 26.4.25 его уже нет</td></tr>'
+	printf '<tr><td>новый</td><td>VLESS Reverse Proxy по тегу, <code>"reverse": {"tag": …}</code> у выхода моста</td><td>25.9.11 и новее: 26.4.25, 26.9.9 и подобные</td></tr>'
+	printf '</table>'
+	printf '<p class="muted">Панель определяет возможности установленного бинарника сама: даёт ему тестовый конфиг и запоминает ответ, пока бинарник не заменят. В конфиг попадает только тот способ, который сборка понимает, — поэтому служба не падает и менять настройки вручную не нужно.</p>'
+	printf '<p class="muted">Для нового способа важно, чтобы версии xray на роутере и на портале были совместимы. Проверено 26.09.2026: портал 26.9.9 с мостом 26.4.17 не работает — соединение в панели есть, а ответы не возвращаются. Держите на портале и на роутере близкие версии.</p>'
+	printf '<p class="muted">Хотите оба способа сразу — нужна сборка, которая понимает и старый, и новый (последняя из проверенных — 26.4.17), и портал, совместимый с её новым реверсом. Если на портале свежий xray, надёжнее держать свежий и на роутере и работать только новым способом.</p>'
+	printf '<p class="muted">Способ у отдельного моста задаётся в его форме, поле «Способ реверса»; «как у роутера» — значит берётся общий способ, выбранный выше.</p>'
+	printf '</details></div>'
 	cat <<EOF
 <div class="card"><h2>Реверс-мосты</h2>
 <p class="muted">Мост — это обратный туннель: роутер сам подключается к серверу-порталу, и через него к тебе «заходят» сервисы роутера (LuCI, SSH и т.п.).</p>
-<table class="responsive"><tr><th>Имя</th><th>Тег моста</th><th>Домен</th><th>Выход (сервер)</th><th>Состояние</th><th></th></tr>
+<table class="responsive"><tr><th>Имя</th><th>Тег моста</th><th>Способ</th><th>Домен</th><th>Выход (сервер)</th><th title="время ответа выходного сервера (живой замер при открытии страницы)">Отклик</th><th>Состояние</th><th></th></tr>
 EOF
 	for _b in $(bridge_sections); do
 		_bt=$(uci -q get "$UCI_APP.$_b.tag")
@@ -2971,18 +4128,42 @@ EOF
 		_boffmark=""
 		if bridge_disabled "$_b"; then
 			# выключенный мост остаётся в списке, но в конфиг не попадает
-			_bstyle=' class="muted"'; _bmark=""
+			_bstyle=' class="muted"'; _bcls='clip'
 			_boffmark=' <span class="bad">выключен</span>'
 			_bticon="▶"; _btcls="start"; _bttitle="включить мост"
 		elif [ "$_brc" = 0 ]; then
-			_bstyle=' class="row-ok"'; _bmark=' class="tagmark active"'
+			_bstyle=' class="row-ok"'; _bcls='clip tagmark active'
 			_bticon="⏸"; _btcls="stop"; _bttitle="выключить мост (останется в списке)"
 		else
-			_bstyle=' class="row-bad"'; _bmark=' class="tagmark bad"'
+			_bstyle=' class="row-bad"'; _bcls='clip tagmark bad'
 			_bticon="⏸"; _btcls="stop"; _bttitle="выключить мост (останется в списке)"
 		fi
-		printf '<tr data-bridge="%s"%s><td data-label="Имя">%s%s</td><td data-label="Тег моста"><span%s>%s</span></td><td data-label="Домен">%s</td><td data-label="Выход">%s</td><td data-label="Состояние" class="muted bnote">%s</td><td data-label="Действия"><a class="btn sec" href="%s?page=bridge&sec=%s">изменить</a> ' \
-			"$(h "$_bt")" "$_bstyle" "$(h "$_b")" "$_boffmark" "$_bmark" "$(h "$_bt")" "$(h "$(uci -q get "$UCI_APP.$_b.domain")")" "$(h "$(uci -q get "$UCI_APP.$_b.outbound")")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
+		# каким способом собран этот мост — видно прямо в списке
+		case "$(bridge_style "$_b" 2>/dev/null)" in
+			new) _bstxt='<span class="clip ok" title="новый способ — VLESS Reverse Proxy, связь по тегу моста">новый</span>' ;;
+			*)   _bstxt='<span class="clip" title="старый способ — порталы и мосты по домену">старый</span>' ;;
+		esac
+		_bdom=$(uci -q get "$UCI_APP.$_b.domain")
+		_bout=$(uci -q get "$UCI_APP.$_b.outbound")
+		# отклик выходного сервера — живой замер: сразу видно, живой ли канал
+		# до сервера моста (для выключенного моста смысла нет)
+		_bms='—'
+		if ! bridge_disabled "$_b"; then
+			_bos=$(tag_to_section "$_bout")
+			_boa=""
+			[ -n "$_bos" ] && _boa=$(uci -q get "$UCI_APP.$_bos.address")
+			if [ -n "$_boa" ]; then
+				_bpv=$(ping_host "$_boa" 1)
+				if [ -n "$_bpv" ]; then _bms="$_bpv мс"; else _bms='<span class="bad">нет ответа</span>'; fi
+			fi
+		fi
+		# длинные значения держим в одной строке: хвост обрезается, полный
+		# текст виден при наведении мышки (title)
+		printf '<tr data-bridge="%s"%s><td data-label="Имя"><span class="clip" title="%s">%s</span>%s</td><td data-label="Тег моста"><span class="%s" title="%s">%s</span></td><td data-label="Способ">%s</td><td data-label="Домен"><span class="clip" title="%s">%s</span></td><td data-label="Выход"><span class="clip" title="%s">%s</span></td><td data-label="Отклик">%s</td><td data-label="Состояние" class="muted bnote"><span class="clip" title="%s">%s</span></td><td data-label="Действия"><a class="btn sec" href="%s?page=bridge&sec=%s">изменить</a> ' \
+			"$(h "$_bt")" "$_bstyle" "$(h "$_b")" "$(h "$_b")" "$_boffmark" \
+			"$_bcls" "$(h "$_bt")" "$(h "$_bt")" "$_bstxt" \
+			"$(h "$_bdom")" "$(h "$_bdom")" "$(h "$_bout")" "$(h "$_bout")" \
+			"$_bms" "$(h "$_bstate")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
 		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">удалить</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
 	done
 	printf '</table><p class="muted">Работающие мосты — зелёным, отвалившиеся — красным. Причина написана в столбце «Состояние»: панель сначала смотрит, есть ли у роутера живое соединение с сервером моста, а если не видно — насколько свежие записи моста в журнале xray.</p>\n<p><a class="btn sec" href="%s?page=bridge">добавить мост</a> ' "$SCRIPT_NAME"
@@ -3000,7 +4181,8 @@ EOF
 <div class="card"><h2>Как заполнять</h2>
 <table>
 <tr><th>Тег моста</th><td>имя моста, оно должно совпадать с тем, что прописано на сервере-портале (в старом конфиге было <code>router-lucy</code>)</td></tr>
-<tr><th>Домен</th><td>домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>)</td></tr>
+<tr><th>Способ реверса</th><td><b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.25); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.</td></tr>
+<tr><th>Домен</th><td>домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>) — нужен только старому способу</td></tr>
 <tr><th>Выход</th><td>тег сервера, через который роутер подключается к порталу; чтобы ходить напрямую, укажите <code>direct</code></td></tr>
 </table></div>
 EOF
@@ -3012,14 +4194,25 @@ page_bridge() {
 	_bd=$(uci -q get "$UCI_APP.$_sec.domain")
 	_bo=$(uci -q get "$UCI_APP.$_sec.outbound")
 	_bn=$(uci -q get "$UCI_APP.$_sec.net_outbound")
-	[ -n "$_bn" ] || _bn="direct"
+	[ -n "$_bn" ] || _bn="lan"
 	printf '<div class="card"><h2>%s</h2><form method="post"><input type="hidden" name="action" value="save_bridge">' \
 		"$([ -n "$_sec" ] && echo "Мост $_sec" || echo "Новый реверс-мост")"
 	[ -n "$_sec" ] && printf '<input type="hidden" name="sec" value="%s">' "$(h "$_sec")"
 	printf '<div class="row">'
 	[ -z "$_sec" ] && printf '<div><label>Имя раздела (латиницей, необязательно)</label><input name="sec" placeholder="lucy"></div>'
 	printf '<div><label>Тег моста</label><input name="tag" value="%s" placeholder="router-lucy"></div>' "$(h "$_bt")"
-	printf '<div><label>Домен</label><input name="domain" value="%s" placeholder="router-lucy.reverse.xui"></div>' "$(h "$_bd")"
+	# способ реверса: старый (порталы/мосты по домену) или новый — VLESS
+	# Reverse Proxy по тегу (xray 25.9.11 и новее). Пусто — как у роутера.
+	_bstyle=$(uci -q get "$UCI_APP.$_sec.style" 2>/dev/null)
+	_global_style=$(reverse_style 2>/dev/null)
+	case "$_global_style" in new) _glbl="новый" ;; off) _glbl="не поддерживается" ;; *) _glbl="старый" ;; esac
+	printf '<div><label>Способ реверса</label><select name="style">'
+	printf '<option value="" %s>как у роутера (сейчас: %s)</option>' "$([ -z "$_bstyle" ] && echo selected)" "$_glbl"
+	printf '<option value="legacy" %s>старый — по домену (xray до 26.4.25)</option>' "$([ "$_bstyle" = legacy ] && echo selected)"
+	printf '<option value="new" %s>новый — VLESS Reverse Proxy по тегу (xray 25.9.11+)</option>' "$([ "$_bstyle" = new ] && echo selected)"
+	printf '</select></div>'
+	printf '<div><label>Домен <span class="muted">(нужен только старому способу)</span></label><input name="domain" value="%s" placeholder="router-lucy.reverse.xui"></div>' "$(h "$_bd")"
+	printf '<p class="muted">Новый способ: на сервере-портале у клиента VLESS-входа должен стоять <code>"reverse": {"tag": "имя"}</code> — тогда трафик, предназначенный мосту, уйдёт в этот тег. А в поле «Выход» ниже выбирайте сервер, у которого в UUID прописан именно этот клиент портала.</p>'
 	# выход выбирается списком: так тег не перепутать и сразу видно адрес сервера
 	printf '<div><label>Выход (через какой сервер подключаться к порталу)</label><select name="outbound">'
 	if [ -n "$_bo" ] && [ "$_bo" != direct ] && [ -z "$(tag_to_section "$_bo")" ]; then
@@ -3034,8 +4227,9 @@ page_bridge() {
 			"$(server_disabled "$_os" && echo ' (выключен)')"
 	done
 	printf '</select></div>'
-	printf '<div><label>Интернет из туннеля (куда выпускать клиентов)</label><select name="net_outbound">'
-	printf '<option value="direct" %s>direct — через интернет самого роутера</option>' "$([ "$_bn" = direct ] && echo selected)"
+	printf '<div><label>Куда выпускать трафик из туннеля</label><select name="net_outbound">'
+	printf '<option value="lan" %s>домашняя сеть и интернет — роутер, локальные устройства и выход в интернет через домашний канал</option>' "$([ "$_bn" = lan ] && echo selected)"
+	printf '<option value="direct" %s>только интернет — домашняя сеть закрыта (ни роутер, ни локальные устройства недоступны)</option>' "$([ "$_bn" = direct ] && echo selected)"
 	printf '<option value="blocked" %s>blocked — заблокировать</option>' "$([ "$_bn" = blocked ] && echo selected)"
 	for _os in $(server_sections); do
 		_ot=$(server_tag "$_os")
@@ -3045,7 +4239,7 @@ page_bridge() {
 	done
 	printf '</select></div>'
 	printf '</div>'
-	printf '<p class="muted">«Выход» — через какой сервер роутер подключается к порталу. «Интернет из туннеля» — куда уходит трафик клиента, который пришёл по реверсу: <code>direct</code> значит через интернет самого роутера, то есть клиент будет видеть внешний адрес роутера.</p>'
+	printf '<p class="muted">«Выход» — через какой сервер роутер подключается к порталу. «Куда выпускать трафик из туннеля» — куда уходит трафик клиента, который пришёл по реверсу: <b>домашняя сеть и интернет</b> — доступны и роутер с локальными устройствами, и выход в интернет через домашний канал; <b>только интернет</b> — домашняя сеть закрыта, клиент увидит внешний адрес роутера; <code>blocked</code> — не выпускать никуда; либо выбранный сервер.</p>'
 	printf '<p class="muted">В списке выходов видны все серверы с их адресами — выбирайте из списка, вручную тег писать не нужно. «Выключен» рядом с сервером означает, что он не попадёт в конфиг, пока его не включат на странице «Серверы».</p>'
 	printf '<p><button>Сохранить мост</button></p></form>'
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">Удалить мост</button></form>' "$(h "$_sec")"
@@ -3064,8 +4258,10 @@ file_date() {
 }
 
 # тип значения: панель сама подставит нужный префикс
-rule_type_select() { # $1 = выбранный тип
-	printf '<select name="type" id="rule-type">'
+rule_type_select() { # $1 = выбранный тип, $2 = имя поля, $3 = id (для списка записей)
+	_nm=${2:-type}
+	_id=${3:-rule-type}
+	printf '<select name="%s" id="%s">' "$_nm" "$_id"
 	for _pair in \
 		"ip|IP-адрес или сеть — 10.0.0.0/8, 8.8.8.8" \
 		"domain|Домен и все поддомены — youtube.com" \
@@ -3086,9 +4282,13 @@ geo_datalist() {
 	_c=$(geo_tags_cache)
 	[ -s "$_c" ] || return 0
 	printf '<datalist id="geo-names">'
-	awk -F'\t' '{ print $2 }' "$_c" 2>/dev/null | LC_ALL=C sort -u | while IFS= read -r _n; do
-		[ -n "$_n" ] && printf '<option value="%s"></option>' "$(h "$_n")"
-	done
+	# одним awk: раньше на каждое название запускался отдельный sed, и на 1800
+	# названиях сборка страницы «Маршруты» растягивалась на несколько секунд
+	awk -F'\t' 'NF >= 2 && $2 != "" && !seen[$2]++ {
+		s = $2
+		gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); gsub(/"/, "\\&quot;", s)
+		print "<option value=\"" s "\"></option>"
+	}' "$_c" 2>/dev/null
 	printf '</datalist>'
 }
 
@@ -3247,270 +4447,6 @@ geo_block_html() {
 	fi
 	printf '</details></div>\n'
 }
-
-page_rules_old() {
-	# куда уходит всё, что не попало под правила — самый частый вопрос
-	if [ "$(cfg auto_best 0)" = 1 ]; then
-		_rest_txt='Режим <b>глобально</b>: включён автовыбор по лучшему пингу, поэтому весь трафик, который не попал под правила ниже, уходит через балансировщик — то есть через самый быстрый сервер.'
-		_rest_add=''
-	elif [ -n "$(cfg default_outbound "")" ]; then
-		_rest_txt="Режим <b>маршрутизация</b>: правила ниже уводят только указанный трафик, а всё остальное идёт через выход по умолчанию — <b>$(h "$(cfg default_outbound)")</b>."
-		_rest_add='<p class="muted">Выход по умолчанию меняется на странице «Статус» или кнопкой «основной» у сервера.</p>'
-	else
-		_rest_txt='Режим <b>маршрутизация</b>: правила ниже уводят только указанный трафик, а всё остальное идёт <b>напрямую</b>, мимо прокси.'
-		_rest_add='<p class="muted">Если нужно, чтобы остальное тоже шло через сервер — задайте выход по умолчанию на странице «Статус» или включите автовыбор по пингу на «Прокси».</p>'
-	fi
-	# DNS уходит своим путём, правила на него не влияют — пишем это прямо здесь,
-	# чтобы не искать причину на другой странице
-	_dt=$(cfg dns_tunnel 0); _dr=$(cfg dns_router "$_dt")
-	if [ "$_dt" = 1 ] || [ "$_dr" = 1 ]; then
-		_dns_line="DNS-запросы идут отдельно от этих правил: резолверы $(h "$(dns_resolver_list | tr '\n' ' ')"), $(h "$(dns_eff_text "$(dns_effective_out)")"). Изменить — на странице «Прокси»."
-	else
-		_dns_line='DNS-запросы идут отдельно от этих правил: перехват выключен, имена разбирает роутер как обычно. Включить — на странице «Прокси».'
-	fi
-	printf '<div class="card" style="order:5"><h2>Куда идёт остальное</h2><p>%s</p>%s<p class="muted">%s</p></div>\n' "$_rest_txt" "$_rest_add" "$_dns_line"
-	cat <<EOF
-<div class="card" style="order:1"><h2>Правила маршрутизации</h2>
-<table class="responsive"><tr><th>Устройство</th><th>Куда идём</th><th>Через что</th><th>Работает</th><th>Порядок и действия</th></tr>
-EOF
-	# имена устройств — чтобы в списке правил было видно не только адрес
-	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
-	# что из правил сейчас работает — по журналу xray (кто, куда, через какой выход)
-	_ract=$(rules_activity 2>/dev/null)
-	_seen_lines=""
-	# правила показываем тремя группами — как в PassWall/HomeProxy:
-	# сперва «Заблокировать», затем «Напрямую», затем «Через прокси»
-	for _cat in block direct proxy; do
-	_cat_n=0
-	for _r in $(rule_sections); do
-		[ "$(rule_category "$_r")" = "$_cat" ] || continue
-		_cat_n=$((_cat_n + 1))
-		[ "$_cat_n" = 1 ] && printf '<tr class="cat-row" data-cat="%s"><td colspan="5">%s</td></tr>\n' "$_cat" "$(h "$(rule_category_title "$_cat")")"
-		_parts=$(rule_parts "$_r")
-		_rs=$(printf '%s' "$_parts" | cut -f1)
-		_rv=$(printf '%s' "$_parts" | cut -f3)
-		# в списке показываем правило так, как его понимает xray
-		_rv=$(rule_matcher_value "$(printf '%s' "$_parts" | cut -f2)" "$_rv")
-		_ro=$(uci -q get "$UCI_APP.$_r.outbound")
-		if [ -n "$_rs" ]; then
-			_cnm=$(printf '%s\n' "$_cnames" | awk -F= -v ip="$_rs" '$1 == ip { print $2 }' | head -1)
-			if [ -n "$_cnm" ]; then _src_txt="$_cnm ($_rs)"; else _src_txt="$_rs"; fi
-		else
-			_src_txt="все устройства"
-		fi
-		[ -n "$_rv" ] || _rv="куда угодно"
-		case "$_ro" in
-			iface:*) _out_txt="через интерфейс ${_ro#iface:} (мимо прокси)" ;;
-			auto)    _out_txt="по пингу (самый быстрый сервер)" ;;
-			*)
-				_out_txt="$_ro"
-				;;
-		esac
-		# выключенное правило видно, но помечено — его нет в конфиге
-		if rule_disabled "$_r"; then
-			_off=' class="muted"'; _offmark=' <span class="bad">выключено</span>'
-		else
-			_off=""; _offmark=""
-		fi
-		# лампочка «работает»: когда и куда последний раз ушёл трафик правила
-		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $3; exit }')
-		if [ -n "$_seen" ]; then
-			_seen_age=${_seen%%	*}
-			_seen_dst=${_seen##*	}
-		else
-			_seen_age=""
-		fi
-		# выход, через который трафик правила реально ушёл (третья колонка)
-		_seen_out=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $4; exit }')
-		# какие адреса поймало это правило (пятая колонка: «домен (сколько)»)
-		_seen_top=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $5; exit }')
-		case "$_seen_age" in
-			''|*[!0-9]*) _dotcls="dot"; _seentxt="нет записей" ;;
-			*)
-				if [ "$_seen_age" -lt 30 ]; then _dotcls="dot live"
-				elif [ "$_seen_age" -lt 300 ]; then _dotcls="dot warm"
-				else _dotcls="dot"; fi
-				# показываем именно тот выход, через который трафик реально ушёл
-				if [ -n "$_seen_out" ]; then
-					[ -n "$_seen_top" ] || _seen_top="$_seen_dst"
-					# в колонке — только один адрес (чтобы не расползалась),
-					# остальные видны в подсказке при наведении
-					_seen_one=$(printf '%s' "$_seen_top" | sed -e 's/,.*$//' -e 's/ ([0-9][0-9]*)$//')
-					_seentxt="<span class=\"ok\">$(h "$_seen_out")</span> · $(h "$(human_age "$_seen_age")") · $(h "$_seen_one")"
-					_seenfull="выход $_seen_out, $(human_age "$_seen_age") назад; за 10 минут: $_seen_top"
-				else
-					[ -n "$_seen_top" ] || _seen_top="$_seen_dst"
-					_seentxt="$(h "$(human_age "$_seen_age")") · $(h "$_seen_top")"
-					_seenfull="$_seen_top"
-				fi
-				;;
-		esac
-		# видимый список «что поймало правило» — печатается под таблицей,
-		# чтобы имена сайтов были видны без наведения мышью
-		if [ -n "$_seen_age" ] && [ -n "$_seen_top" ]; then
-			_seen_lines="${_seen_lines}$(printf '%s → %s: %s · %s' "$_rv" "${_seen_out:-—}" "$_seen_top" "$(human_age "$_seen_age")")
-"
-		fi
-		# в колонке «Работает» оставляем только лампочку: она мигает, когда по
-		# правилу недавно шёл трафик (подробности — в подсказке при наведении)
-		printf '<tr data-rule="%s" data-cat="%s"%s><td data-label="Устройство">%s</td><td data-label="Куда идём">%s%s</td><td data-label="Через что">%s</td><td data-label="Работает" title="%s"><span class="%s" id="rule-dot-%s"></span></td><td data-label="Действия">' \
-			"$(h "$_r")" "$_cat" "$_off" "$(h "$_src_txt")" "$(h "$_rv")" "$_offmark" "$(h "$_out_txt")" \
-			"$(h "${_seenfull:-}")" "$_dotcls" "$(h "$_r")"
-		if rule_disabled "$_r"; then
-			_ticon="▶"; _tcls="start"; _ttitle="включить правило"
-		else
-			_ticon="⏸"; _tcls="stop"; _ttitle="выключить правило (останется в списке, но уйдёт из конфига)"
-		fi
-		printf '<span class="acts">'
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="top"><button class="btn rule-move top" title="на самый верх">⤒</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="up"><button class="btn rule-move up" title="поднять выше">↑</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="down"><button class="btn rule-move down" title="опустить ниже">↓</button></form>' "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_move"><input type="hidden" name="sec" value="%s"><input type="hidden" name="dir" value="bottom"><button class="btn rule-move bottom" title="в самый низ">⤓</button></form>' "$(h "$_r")"
-		printf '<a class="btn sec" href="%s?page=rule&amp;sec=%s" title="изменить правило">✎</a>' "$SCRIPT_NAME" "$(h "$_r")"
-		printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form>' "$(h "$_r")" "$_tcls" "$_ttitle" "$_ticon"
-		printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger" title="удалить правило">✕</button></form>' "$(h "$_r")"
-		printf '</span>'
-		printf '</td></tr>\n'
-	done
-	done
-	printf '</table><p class="muted">Правила собраны в три группы и проверяются так: сперва <b>Заблокировать</b>, затем <b>Напрямую</b>, затем <b>Через прокси</b>; внутри каждой группы — сверху вниз. Первое подходящее правило и решает, куда пойдёт трафик. Кнопки ↑ и ↓ двигают правило внутри его группы, ⤒ и ⤓ — в начало или конец группы. Кнопка «выключить» не удаляет правило: оно остаётся в списке (серым), но из конфига уходит.</p></div>\n'
-	# что именно попало в лампочки: служебный трафик панель отсекает, и об этом
-	# честно пишем — иначе кажется, что лампочки «не работают»
-	if [ "$(cfg lamp_filter 1)" = 1 ]; then
-		_lskip=$(cat "$STATE_DIR/lamp-skip.count" 2>/dev/null)
-		case "$_lskip" in ''|*[!0-9]*) _lskip=0 ;; esac
-		printf '<p class="muted">Лампочки считаются по настоящему трафику: служебные записи панель пропускает — <span id="lamp-skip-n">%s</span> за последние проверки (это проверки связи, обращения к панели и к самим серверам). Отключить фильтр можно в «Настройках».</p>\n' "$(h "$_lskip")"
-	fi
-	# Проверка правил по именам сайтов — одной полосой: кнопка, число собранных
-	# имён справа от неё и правее список «сейчас в работе». Никаких длинных
-	# абзацев: место над таблицей правил должно оставаться свободным.
-	if [ "$(dns_log_state)" = on ]; then
-		_dcnt=$(dns_log_count)
-		_dlines=$(dns_log_lines)
-		printf '<div class="names-row"><form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_off"><button class="btn sec" title="выключить запись запросов dnsmasq и вернуть прежние настройки">выключить запись запросов</button></form>'
-		printf '<b class="names-count" title="имён сайтов собрано из журнала dnsmasq">%s</b>' "$(h "${_dcnt:-0}")"
-		if [ "${_dlines:-0}" = 0 ]; then
-			printf '<span class="bad">в журнале нет строк dnsmasq</span><form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_repair"><button class="btn" title="после перезапуска системного журнала dnsmasq теряет с ним связь — эта кнопка перезапускает dnsmasq">починить (перезапустить dnsmasq)</button></form>'
-		fi
-		if [ -n "$_seen_lines" ]; then
-			printf '<div class="names-list" title="что поймали правила за последние 10 минут (по именам сайтов)">'
-			printf '%s\n' "$_seen_lines" | while IFS= read -r _sl; do
-				[ -n "$_sl" ] || continue
-				printf '<span class="seen-item">%s</span>' "$(h "$_sl")"
-			done
-			printf '</div>'
-		fi
-		printf '</div>\n'
-	else
-		printf '<div class="names-row"><form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_on"><button class="btn" title="попросить dnsmasq записывать разобранные имена в системный журнал — тогда правила по домену, слову и шаблону панель проверяет по имени сайта, а не «по выходу»">включить проверку по именам</button></form><span class="muted names-hint">имена берутся у dnsmasq; нужны только те, что разбирают клиенты через роутер</span></div>\n'
-	fi
-	printf '<p class="muted" id="rule-moved" style="display:none">Порядок правил изменён — нажмите «Подтвердить конфиг», чтобы он попал в конфиг xray.</p>\n'
-	# подбор правила по домену — как проверка в PassWall
-	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
-	printf '<p class="muted">Впишите домен (можно с www, можно ссылкой целиком) — панель посмотрит, в каких готовых списках он есть и какое ваше правило его поймает. Проверка идёт несколько секунд: она читает файлы со списками на роутере.</p>'
-	printf '<div class="row">'
-	printf '<div><label>Домен — где он есть и какое правило его поймает</label><input name="rule_find_name" placeholder="youtube.com" autocomplete="off"></div>'
-	printf '<div><label>Или что входит в список (наоборот)</label><input name="list_find_name" placeholder="vk, rutube, youtube" autocomplete="off"></div>'
-	printf '</div>'
-	printf '<p><button type="button" class="btn rule-find">проверить домен</button> <button type="button" class="btn sec list-show">показать домены списка</button> <span class="muted" id="rule-find-out"></span></p>'
-	printf '<div class="report" id="rule-find-report"></div></div>\n'
-
-	# что именно уходит в xray — видно, как панель записала условия правила
-	printf '<div class="card" style="order:6"><details class="pick"><summary>Что именно уходит в xray (разбор правил)</summary><pre>%s</pre><p class="muted">Так строчки выглядят уже для самого xray: «domain» — правило по имени сайта, «ip» — по адресу. Если правило по домену не срабатывает, смотрите порядок: правило выше, которое подходит первым, забирает трафик себе.</p></details></div>\n' \
-		"$(rules_matcher_dump 2>/dev/null | h_in)"
-	# подсказка по значениям спрятана под спойлер, чтобы не занимать экран
-	cat <<'EOF'
-<div class="card" style="order:7"><details class="pick"><summary>Подсказка: что можно писать в правиле</summary>
-<table>
-<tr><th>Устройство</th><td>
-  пусто — правило для всех,<br>
-  <code>192.168.11.111</code> — одно устройство, <code>192.168.11.0/24</code> — вся сеть
-</td></tr>
-<tr><th>Тип ip</th><td>
-  <code>8.8.8.8</code> — один адрес,<br>
-  <code>10.0.0.0/8</code> — сеть,<br>
-  <code>geoip:ru</code> — все российские адреса, <code>geoip:private</code> — локальные
-</td></tr>
-<tr><th>Тип domain</th><td>
-  <code>full:example.com</code> — ровно этот домен,<br>
-  <code>domain:example.com</code> — этот домен и все поддомены,<br>
-  <code>keyword:google</code> — где встречается слово,<br>
-  <code>regexp:.*\.ru$</code> — по шаблону,<br>
-  <code>geosite:category-ads-all</code>, <code>geosite:openai</code> — готовые списки доменов
-</td></tr>
-<tr><th>Через что выходим</th><td>тег сервера (выход через него), <b>по пингу</b> — самый быстрый сервер, <code>direct</code> — напрямую, <code>blocked</code> — заблокировать</td></tr>
-</table>
-<p class="muted">Тип выбирается в списке рядом с полем значения — панель сама подставит нужный префикс. Названия готовых списков берутся из файлов роутера (блок «Готовые списки» ниже).</p>
-</details></div>
-EOF
-	printf '<div class="card" style="order:2"><h2>Добавить правило</h2><form method="post"><input type="hidden" name="action" value="save_rule">'
-	# 1) кто идёт — только список устройств, вписывать руками не нужно
-	printf '<div class="row">'
-	printf '<div><label>Устройство (кто идёт)</label>'
-	rule_source_select ""
-	printf '</div>'
-	# 2) тип значения — отдельное окно перед адресом
-	printf '<div><label>Тип</label>'
-	rule_type_select domain
-	printf '</div>'
-	# 3) куда идём — только само значение, без префиксов
-	printf '<div><label>Куда идём</label><input name="value" id="rule-value" list="client-list" placeholder="youtube.com, 10.0.0.0/8 или 8.8.8.8"><datalist id="client-list">'
-	for _c in $(lan_clients 2>/dev/null); do
-		printf '<option value="%s"></option>' "$(h "$_c")"
-	done
-	printf '</datalist><p class="muted" id="geo-hint" style="display:none">Название списка выбирается из подсказки — начните печатать, например <code>yo</code> или <code>ru</code>. <button type="button" class="btn sec geo-check">проверить название</button> <span id="geo-check-out"></span></p></div>'
-	# 3) категория: напрямую / через прокси / заблокировать (модель 0.62)
-	printf '<div><label>Категория</label>'
-	rule_category_select proxy
-	printf '</div>'
-	printf '<div><label>Если «через прокси» — какой выход</label>'
-	rule_proxy_select auto
-	printf '</div>'
-	printf '<div><label>Если «напрямую» — через интерфейс (необязательно)</label>'
-	rule_iface_select ""
-	printf '</div></div>'
-	printf '<p><button>Добавить правило</button></p></form>'
-	printf '<p class="muted">Заполнять нужно не всё: только устройство — «этот клиент идёт туда, куда сказано ниже по умолчанию»; только «куда идём» — правило для всех; и то и другое — «этот клиент на этот адрес». Тип выбирается рядом: панель сама подставит нужный префикс (domain:, full:, geosite: и так далее). «Через интерфейс» — это уже не прокси, а маршрутизация ядра (как в pbr).</p>'
-	# кнопка подтверждения конфига прямо здесь, чтобы не бегать на «Статус»
-	printf '<form method="post"><input type="hidden" name="action" value="apply"><input type="hidden" name="back" value="rules"><button>Подтвердить конфиг</button> <span class="muted">применить правила и перезапустить xray</span></form></div>\n'
-	# подсказки с названиями готовых списков (если их уже собирали)
-	geo_datalist
-	geo_block_html
-	# названий ещё нет, а файлы со списками на месте — собираем сами в фоне.
-	# Тяжёлый разбор запускаем не чаще раза в час, чтобы не крутить его впустую.
-	_tried="$STATE_DIR/geo-tags.tried"
-	_recent=""
-	if [ -f "$_tried" ]; then
-		_t0=$(cat "$_tried" 2>/dev/null)
-		_now=$(date +%s)
-		case "$_t0" in
-			''|*[!0-9]*) ;;
-			*) [ "$((_now - _t0))" -lt 3600 ] && _recent=1 ;;
-		esac
-	fi
-	# собираем, если списка названий нет вовсе (но не чаще раза в час, чтобы не
-	# крутить тяжёлый разбор впустую) или если файлы с тех пор изменились
-	_need=""
-	if ! geo_cache_ready; then
-		_need=1
-		[ -n "$_recent" ] && _need=""
-	elif ! geo_cache_fresh; then
-		_need=1
-	fi
-	if [ -n "$_need" ] && [ "$(job_state geo-tags)" != running ] && [ -n "$(geo_files geosite)$(geo_files geoip)" ]; then
-		date +%s > "$_tried" 2>/dev/null
-		bg_run "$GEO_ENV sh '$GEO_SCRIPT'" "$STATE_DIR/geo-tags.log"
-		_geo_started=1
-		printf '<p class="muted">Собираю названия списков в фоне — это разово, занимает до пары минут. Страница обновится сама.</p>\n'
-	fi
-	# пока идёт сбор — тихо спрашиваем, закончился ли он, и обновляем страницу.
-	# «seen» нужен потому, что задание стартует в фоне с задержкой в секунду:
-	# иначе панель приняла бы «ещё не началось» за «уже закончилось».
-	if [ "$(job_state geo-tags)" = running ] || [ -n "$_geo_started" ]; then
-		printf '<script>(function(){var n=0,seen=false;var t=setInterval(function(){n++;if(n>80){clearInterval(t);return}fetch("?page=jobs&t="+Date.now(),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d.geo==="running"){seen=true;return}if(seen){clearInterval(t);location.reload()}}).catch(function(){})},4000)})()</script>\n'
-	fi
-}
-
 # --- страница «Маршруты» в модели 0.62: наборы + правила ---------------------
 rule_source_multi() { # $1 = источники через запятую
 	_cur=" $1 "
@@ -3551,22 +4487,26 @@ rule_out_select() { # $1 = текущий выход, $2 = имя поля (по
 	_cur="$1"
 	_nm="${2:-outbound}"
 	printf '<select name="%s">' "$_nm"
-	printf '<option value="auto"%s>по пингу — самый быстрый сервер</option>' "$([ "$_cur" = auto ] && echo ' selected')"
-	printf '<option value="direct"%s>напрямую (WAN, мимо прокси)</option>' "$([ "$_cur" = direct ] && echo ' selected')"
-	printf '<option value="blocked"%s>заблокировать</option>' "$([ "$_cur" = blocked ] && echo ' selected')"
+	printf '<option value="auto"%s>по лучшему пингу</option>' "$([ "$_cur" = auto ] && echo ' selected')"
+	printf '<option value="direct"%s>напрямую</option>' "$([ "$_cur" = direct ] && echo ' selected')"
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		server_is_reverse "$_t" && continue
 		printf '<option value="%s"%s>сервер %s</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$_t")"
 	done
-	for _b in $(bridge_sections); do
-		_bt=$(uci -q get "$UCI_APP.$_b.tag" 2>/dev/null)
-		[ -n "$_bt" ] || continue
-		printf '<option value="%s"%s>реверс-мост %s</option>' "$(h "$_bt")" "$([ "$_cur" = "$_bt" ] && echo ' selected')" "$(h "$_bt")"
-	done
-	for _if in $(lan_ifaces); do
-		printf '<option value="iface:%s"%s>через интерфейс %s</option>' "$(h "$_if")" "$([ "$_cur" = "iface:$_if" ] && echo ' selected')" "$(h "$_if")"
-	done
+	# если в правиле остался выход, которого нет в списке (заблокировать,
+	# реверс-мост, интерфейс) — показываем его отдельной строкой, чтобы
+	# при сохранении он не потерялся
+	case "$_cur" in
+		''|auto|direct) ;;
+		*)
+			_known=0
+			for _s in $(server_sections); do
+				[ "$(server_tag "$_s")" = "$_cur" ] && _known=1
+			done
+			[ "$_known" = 1 ] || printf '<option value="%s" selected>%s (текущий)</option>' "$(h "$_cur")" "$(h "$(out_text "$_cur")")"
+			;;
+	esac
 	printf '</select>'
 }
 
@@ -3632,7 +4572,7 @@ rule_who_pick() { # $1 = текущий источник, $2 = имя поля
 rule_sets_pick() { # $1 = текущий набор, $2 = имя поля
 	_cur="$1"
 	printf '<select name="%s">' "$2"
-	printf '<option value=""%s>— ничего не выбрано —</option>' "$([ -z "$_cur" ] && echo ' selected')"
+	printf '<option value=""%s>весь трафик (без набора)</option>' "$([ -z "$_cur" ] && echo ' selected')"
 	for _st in $(set_sections); do
 		_cnt=$(set_item_sections "$_st" | wc -l | tr -d ' ')
 		printf '<option value="%s"%s>%s (%s)</option>' "$(h "$_st")" "$([ "$_cur" = "$_st" ] && echo ' selected')" "$(h "$(set_name "$_st")")" "$_cnt"
@@ -3646,20 +4586,28 @@ page_rules() {
 	if [ -n "$_bak" ]; then
 		printf '<div class="msg">Правила перенесены в новую модель: адреса и домены разложены по наборам, из пар «кто + выход» собраны правила. Копия прежних настроек: <code>%s</code></div>\n' "$(h "$_bak")"
 	fi
-	# куда уходит остальное
-	if [ "$(cfg auto_best 0)" = 1 ]; then
-		_rest_txt='Всё, что не попало ни в один набор, уходит через <b>автовыбор по пингу</b> — то есть через самый быстрый сервер.'
-	elif [ -n "$(cfg default_outbound "")" ]; then
-		_rest_txt="Всё, что не попало ни в один набор, идёт через выход по умолчанию — <b>$(h "$(cfg default_outbound)")</b>."
-	else
-		_rest_txt='Всё, что не попало ни в один набор, идёт <b>напрямую</b>, мимо прокси.'
-	fi
-	printf '<div class="card" style="order:6"><h2>Куда идёт остальное</h2><p>%s</p><p class="muted">Меняется на странице «Прокси» (куда заворачивать) или кнопкой «основной» у сервера. DNS-запросы идут отдельно от этих правил.</p></div>\n' "$_rest_txt"
-
 	# 1) правила — правятся прямо в таблице, сохраняются одной кнопкой
 	_cnames=$(lan_clients_named 2>/dev/null | awk -F'\t' '{ print $2 "=" $1 }')
 	_ract=$(rules_activity 2>/dev/null)
 	printf '<div class="card" style="order:1" id="rules-card"><h2>Правила</h2>'
+	# Честность лампочек: панель узнаёт, какое правило поймало трафик, по именам
+	# сайтов из журнала запросов dnsmasq. Если имён нет, условия правил проверить
+	# нечем — и лампочки начинают показывать не те строки. Об этом надо сказать
+	# прямо, а причину по возможности починить самому.
+	case "$(dns_names_state)" in
+		off)
+			printf '<p class="bad">Запись запросов DNS выключена, поэтому панель не знает имён сайтов: лампочки могут показывать не то правило. '
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_on"><button class="btn sec">включить запись запросов DNS</button></form></p>'
+			;;
+		silent)
+			printf '<p class="bad">dnsmasq перестал писать в системный журнал роутера (так бывает после сбоя журнала). Из-за этого панель не знает имён сайтов, и лампочки могут показывать не то правило. Перезапускаю dnsmasq сам — имена вернутся через несколько минут. '
+			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="dnslog_repair"><button class="btn sec">починить сейчас</button></form></p>'
+			dns_try_repair
+			;;
+		nolog)
+			printf '<p class="bad">dnsmasq не работает — имена сайтов панель получать не может, лампочки могут показывать не то правило. Загляните на страницу «Прокси» (состояние службы).</p>'
+			;;
+	esac
 	printf '<div id="rules-form"><input type="hidden" name="newrows" id="newrows" value="">'
 	printf '<table class="responsive" id="rules-table"><tr><th></th><th>Кто идёт</th><th>Куда (наборы)</th><th>Через что</th><th>Активность</th><th>Действия</th></tr>'
 	for _r in $(rule_sections); do
@@ -3670,7 +4618,7 @@ page_rules() {
 		rule_disabled "$_r" && _off=' style="opacity:.55"'
 		# активность: время и подсветка, как в клиентах
 		_seen=$(printf '%s\n' "$_ract" | awk -F'\t' -v s="$_r" '$1 == s { print $2 "\t" $4 "\t" $5; exit }')
-		_rowcls=""; _tip="нет свежих записей"; _acttxt='<span class="muted">—</span>'; _outcls=""
+		_rowcls=""; _rowst=""; _tip="нет свежих записей"; _acttxt='<span class="muted">—</span>'; _outcls=""
 		if [ -n "$_seen" ]; then
 			_age=$(printf '%s' "$_seen" | cut -f1)
 			_top=$(printf '%s' "$_seen" | cut -f3)
@@ -3679,11 +4627,17 @@ page_rules() {
 				*)
 					_tip="за 10 минут: $_top"
 					_acttxt="<span class=\"muted\">$(h "$(human_age "$_age")") назад</span>"
-					if [ "$_age" -lt 300 ]; then _rowcls=' row-live'; _outcls=' class="tagmark active"'; fi
+					# лампочка правила: вспыхнула ярко и гаснет за 30 секунд — тем
+					# же окном, что и запись набора (LAMP_SECONDS)
+					if [ "$_age" -lt "$LAMP_SECONDS" ]; then
+						_rowcls=' lamp-on'
+						_rowst=" style=\"animation-delay:-${_age}s\""
+						_outcls=' class="tagmark active"'
+					fi
 					;;
 			esac
 		fi
-		printf '<tr data-rule="%s" class="%s">' "$(h "$_r")" "${_rowcls# }"
+		printf '<tr data-rule="%s" class="%s"%s>' "$(h "$_r")" "${_rowcls# }" "$_rowst"
 		printf '<td class="drag-cell"><span class="drag-handle" data-drag-handle title="зажмите правило на секунду и потяните">⠿</span></td>'
 		printf '<td data-label="Кто идёт">'
 		rule_who_pick "$_src" "src_$_r"
@@ -3694,7 +4648,9 @@ page_rules() {
 		printf '<td data-label="Через что">'
 		rule_out_select "$_ro" "out_$_r"
 		printf '</td>'
-		printf '<td data-label="Активность" title="%s">%s</td>' "$(h "$_tip")" "$_acttxt"
+		# id нужен для живого обновления: пока по правилу идёт трафик, строка
+		# подсвечивается и мигает, а надпись «N назад» обновляется сама
+		printf '<td data-label="Активность" id="rule-act-%s" title="%s">%s</td>' "$(h "$_r")" "$(h "$_tip")" "$_acttxt"
 		printf '<td data-label="Действия"><span class="acts">'
 		if rule_disabled "$_r"; then
 			printf '<form method="post"><input type="hidden" name="action" value="rule_toggle"><input type="hidden" name="sec" value="%s"><button class="btn start" title="включить правило">▶</button></form>' "$(h "$_r")"
@@ -3704,6 +4660,23 @@ page_rules() {
 		printf '<form method="post"><input type="hidden" name="action" value="del_rule"><input type="hidden" name="sec" value="%s"><button class="btn danger" title="удалить правило">✕</button></form>' "$(h "$_r")"
 		printf '</span></td></tr>\n'
 	done
+	# Шаблон пустой строки: кнопка «добавить правило» копирует его, а не
+	# последнее правило. Так пустое правило можно добавить всегда — раньше
+	# при пустом списке копировать было нечего и правило не добавлялось.
+	printf '<tr id="rule-tpl" data-tpl="1" style="display:none">'
+	printf '<td class="drag-cell"><span class="drag-handle">⠿</span></td>'
+	printf '<td data-label="Кто идёт">'
+	rule_who_pick "" "src_tpl"
+	printf '</td>'
+	printf '<td data-label="Куда">'
+	rule_sets_pick "" "sets_tpl"
+	printf '</td>'
+	printf '<td data-label="Через что">'
+	rule_out_select "" "out_tpl"
+	printf '</td>'
+	printf '<td data-label="Активность"></td>'
+	printf '<td data-label="Действия"><span class="muted">новая строка — сохранится кнопкой «применить конфиг»</span></td>'
+	printf '</tr>\n'
 	printf '</table>'
 	# кнопка такая же, как «применить конфиг» на других страницах: пока есть
 	# неприменённые изменения — красная «применить конфиг», после применения —
@@ -3715,6 +4688,17 @@ page_rules() {
 	fi
 	printf '<p><button type="button" class="btn sec add-rule">добавить правило</button> <button type="button" class="%s rules-apply">%s</button> <span class="muted">сохраняет правила и применяет конфиг</span></p></div>' "$_acls" "$_albl"
 	printf '<p class="muted">Правила проверяются сверху вниз: первое подходящее решает, куда пойдёт трафик. Строку можно утащить на другое место — зажмите её на секунду. Наборы адресов — в блоке ниже.</p></div>\n'
+	# карточки страницы: правила собраны выше, наборы и готовые списки —
+	# отдельными функциями. Наборы вынесены, чтобы страница могла перерисовать
+	# только их (переключение набора не требует пересборки всей страницы)
+	sets_card_html
+	rules_lists_html
+}
+
+# Карточка наборов адресов и доменов. Вынесена отдельно: её одну перерисовывает
+# страница при переключении набора и правке записей, а не всю страницу целиком
+# (полная сборка «Маршрутов» занимает несколько секунд).
+sets_card_html() {
 	# 2) наборы
 	_cur_set=$(param set)
 	# набор, открытый в прошлый раз, помним в настройках: так он не сбрасывается
@@ -3725,7 +4709,24 @@ page_rules() {
 		[ "$_s" = "$_cur_set" ] && _known=1
 	done
 	[ "$_known" = 1 ] || _cur_set=$(set_sections | head -1)
-	printf '<div class="card" style="order:2" id="sets-card"><h2>Наборы адресов и доменов</h2><details class="pick" open><summary>показать наборы и их содержимое</summary>'
+	# кнопки управления наборами — над заголовком карточки, до спойлера:
+	# так к ним ближе, и они видны, даже когда содержимое свёрнуто
+	printf '<div class="card" style="order:2" id="sets-card">'
+	printf '<div class="newset">'
+	printf '<form method="post"><input type="hidden" name="action" value="set_new">'
+	printf '<div><label>Новый набор</label><input name="setname" placeholder="например: Прямые"></div>'
+	printf '<button>Создать набор</button></form>'
+	if [ -n "$_cur_set" ]; then
+		printf '<form method="post"><input type="hidden" name="action" value="set_rename"><input type="hidden" name="set" value="%s">' "$(h "$_cur_set")"
+		printf '<div><label>Переименовать «%s»</label><input name="newname" value="%s"></div>' "$(h "$(set_name "$_cur_set")")" "$(h "$(set_name "$_cur_set")")"
+		printf '<button class="btn sec">Переименовать</button></form>'
+		printf '<form method="post"><input type="hidden" name="action" value="set_toggle"><input type="hidden" name="set" value="%s"><button class="btn %s">%s набор</button></form>' \
+			"$(h "$_cur_set")" "$(set_disabled "$_cur_set" && echo 'start' || echo 'stop')" "$(set_disabled "$_cur_set" && echo 'включить' || echo 'выключить')"
+		printf '<form method="post"><input type="hidden" name="action" value="set_del"><input type="hidden" name="set" value="%s"><button class="btn danger">удалить набор</button></form>' "$(h "$_cur_set")"
+		printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec" title="разобрать готовые списки этого набора: по разобранному списку лампочка в наборе загорается точно так же, как в правиле">разобрать списки набора</button></form>'
+	fi
+	printf '</div>'
+	printf '<h2>Наборы адресов и доменов</h2><details class="pick" open><summary>показать наборы и их содержимое</summary>'
 	if [ -z "$(set_sections)" ]; then
 		printf '<p class="muted">Наборов пока нет. Создайте первый — обычно это «Прямые», «Прокси» и «Блок».</p>'
 	else
@@ -3741,13 +4742,47 @@ page_rules() {
 			printf '<h3>%s</h3>' "$(h "$(set_name "$_cur_set")")"
 			printf '<table class="responsive"><tr><th>Что</th><th>Значение</th><th>Действия</th></tr>'
 			_ic=0
+			# подсветка сработавших записей: считается один раз на набор
+			_iact=$(set_items_activity "$_cur_set" "$_ract" 2>/dev/null)
 			for _it in $(set_item_sections "$_cur_set"); do
 				_ic=$((_ic + 1))
 				_it_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
 				_it_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
 				_offi=""; item_disabled "$_it" && _offi=' style="opacity:.55"'
-				printf '<tr%s><td data-label="Что">%s</td><td data-label="Значение"><code>%s</code></td><td data-label="Действия"><span class="acts">' \
-					"$_offi" "$(h "$(set_item_type_title "$_it_t")")" "$(h "$_it_v")"
+				# сработала ли запись: свежая — ярким, до минуты — бледнее,
+				# готовый список без кэша имён — пометка «вероятно»
+				_icl=""; _ist=""; _ictip=""
+				_ia=$(printf '%s\n' "$_iact" | awk -F'\t' -v i="$_it" '$1 == i { print $2 "\t" $3; exit }')
+				if [ -n "$_ia" ]; then
+					_iaa=${_ia%%	*}; _iak=${_ia##*	}
+					case "$_iak" in
+						maybe)
+							_icl="item-maybe"
+							_ictip=" вероятно, сработала эта запись: готовый список ещё не разобран, а другие записи набора не совпали. Точную проверку включает кнопка «разобрать списки набора»" ;;
+						*)
+							case "$_iaa" in ''|*[!0-9]*) _iaa=999 ;; esac
+							# то же окно, что у правил: ярко вспыхнула и гаснет за 30 секунд
+							if [ "$_iaa" -lt "$LAMP_SECONDS" ]; then
+								_icl="lamp-on"
+								_ist=" style=\"animation-delay:-${_iaa}s\""
+								_ictip=" сработала $_iaa сек назад — гаснет за $LAMP_SECONDS секунд"
+							fi ;;
+					esac
+				fi
+				# готовый список без разобранного файла доменов: объясняем, почему
+				# срабатывание по нему видно только «вероятно»
+				if [ -z "$_icl" ]; then
+					_dfil=$(item_domains_file "$_it")
+					if [ -n "$_dfil" ] && [ ! -s "$_dfil" ]; then
+						_ictip=" готовый список $_it_v ещё не разобран: пока его нет, панель может сказать про эту запись только «вероятно». Нажмите «разобрать списки набора» — разбор идёт фоном, несколько секунд"
+					fi
+				fi
+				# запись можно поправить прямо здесь: «по какому принципу»
+				# (тип) и само значение, как у правил наверху
+				printf '<tr data-item="%s" class="%s"%s%s><td data-label="Что">' "$(h "$_it")" "$_icl" "$_ist" "$_offi"
+				rule_type_select "$_it_t" "ittype_$_it" "ittype_$_it"
+				printf '</td><td data-label="Значение" title="%s"><input name="itvalue_%s" value="%s"></td><td data-label="Действия"><span class="acts">' \
+					"$(h "$_ictip")" "$(h "$_it")" "$(h "$_it_v")"
 				printf '<form method="post"><input type="hidden" name="action" value="item_toggle"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn sec" title="включить или выключить запись">%s</button></form>' \
 					"$(h "$_cur_set")" "$(h "$_it")" "$(item_disabled "$_it" && echo '▶' || echo '⏸')"
 				printf '<form method="post"><input type="hidden" name="action" value="item_del"><input type="hidden" name="set" value="%s"><input type="hidden" name="item" value="%s"><button class="btn danger" title="удалить запись">✕</button></form>' \
@@ -3756,42 +4791,228 @@ page_rules() {
 			done
 			if [ "$_ic" = 0 ]; then printf '<tr><td colspan="3" class="muted">в наборе пусто</td></tr>'; fi
 			printf '</table>'
+			# Готовые списки (geosite) проверяются по файлу доменов. Пока файла
+			# нет, про запись можно сказать только «вероятно» — и лампочка в
+			# наборе не загорается, хотя правило сработало. Файл собираем сами,
+			# фоном: несколько секунд на список, результат кэшируется.
+			_unbuilt=""
+			for _it2 in $(set_item_sections "$_cur_set"); do
+				_df2=$(item_domains_file "$_it2")
+				[ -n "$_df2" ] || continue
+				[ -s "$_df2" ] && continue
+				_vn2=$(uci -q get "$UCI_APP.$_it2.value" 2>/dev/null)
+				_unbuilt="$_unbuilt$_vn2 "
+			done
+			_unbuilt=$(printf '%s\n' $_unbuilt | awk 'NF' | LC_ALL=C sort -u | tr '\n' ' ')
+			if [ -n "$_unbuilt" ]; then
+				printf '<p class="muted">Готовые списки набора ещё не разобраны: <b>%s</b>. Пока их нет, панель может показать срабатывание только «вероятно» (серым пунктиром) — лампочка в наборе станет точной, как в правиле, после разбора. Разбор идёт фоном, несколько секунд на список.</p>' "$(h "$_unbuilt")"
+				# запускаем сами, один раз: если разбор уже идёт, скрипт выйдет сразу
+				[ -f "$STATE_DIR/geo-item.running" ] || bg_run "$GEO_ITEM_ENV sh '$GEO_ITEM'" "$STATE_DIR/geo-item.log"
+			fi
+			# сохранение правок записей: тише, без перезагрузки страницы
+			printf '<p><button type="button" class="btn sec items-save">сохранить изменения записей</button> <span class="muted" id="items-note">правьте тип и значение прямо в таблице</span></p>'
 			printf '<form method="post" style="margin-top:8px"><input type="hidden" name="action" value="item_add"><input type="hidden" name="set" value="%s"><div class="row">' "$(h "$_cur_set")"
 			printf '<div><label>Что добавляем</label>'
-			rule_type_select domain
-			printf '</div>'
+			# по умолчанию — готовый список доменов: в 99% случаев нужен он
+			rule_type_select geosite
+			# кнопка добавления — здесь же, под выбором типа: она относится ко всей
+			# строке, и раньше её приходилось искать в самом низу формы
+			printf '<p style="margin:8px 0 0"><button>Добавить в «%s»</button></p></div>' "$(h "$(set_name "$_cur_set")")"
 			printf '<div><label>Значение (можно несколько, каждое с новой строки)</label><textarea name="value" rows="3" placeholder="youtube.com, 8.8.8.8, geosite:youtube"></textarea></div>'
-			printf '</div><p><button>Добавить в «%s»</button></p></form>' "$(h "$(set_name "$_cur_set")")"
-			printf '<p>'
-			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_toggle"><input type="hidden" name="set" value="%s"><button class="btn sec">%s набор</button></form>' "$(h "$_cur_set")" "$(set_disabled "$_cur_set" && echo 'включить' || echo 'выключить')"
-			printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="set_del"><input type="hidden" name="set" value="%s"><button class="btn danger">удалить набор</button></form>' "$(h "$_cur_set")"
-			printf '</p>'
+			# конструктор шаблона: пишем домены, панель сама собирает выражение —
+			# руками в шаблоне легко ошибиться в экранировании точки или в скобках
+			printf '<div style="margin-top:6px"><label>Собрать шаблон из сайтов (если нужен шаблон)</label>'
+			printf '<div style="display:flex;gap:6px"><input id="tmpl-sites" placeholder="vkvideo.ru, rutube.ru" autocomplete="off">'
+			printf '<button type="button" class="btn sec" id="tmpl-build">собрать шаблон</button></div>'
+			printf '<p class="tmpl-hint" id="tmpl-hint" style="margin:4px 0 0">Напиши домены через запятую — панель соберёт <code>(^|\\.)(домен1|домен2)$</code>, переключит тип на «Шаблон» и подставит выражение в «Значение».</p></div>'
+			# проверка домена — тут же, рядом с полем «Значение»: найденный домен
+			# можно сразу положить в набор (удержание плашки) или скопировать
+			printf '<div><label>Проверка домена: где он есть и какое правило поймает</label>'
+			printf '<input name="rule_find_name" placeholder="youtube.com" autocomplete="off">'
+			printf '<p style="margin:6px 0 0"><button type="button" class="btn small rule-find">проверить домен</button> <button type="button" class="btn small sec list-show">что в списке</button> <span class="muted" id="rule-find-out"></span></p>'
+			printf '<input name="list_find_name" list="geo-names" placeholder="список: vk, rutube, youtube, category-ru" autocomplete="off" style="margin-top:6px">'
+			printf '</div>'
+			printf '</div></form>'
+			printf '<div class="report" id="rule-find-report"></div>'
 		fi
 	fi
-	printf '<form method="post" style="margin-top:10px"><input type="hidden" name="action" value="set_new"><label>Новый набор</label><input name="setname" placeholder="например: Германия-YouTube"><p><button>Создать набор</button></p></form>'
 	printf '</details></div>\n'
+}
 
-	# 3) подобрать правило для домена
-	printf '<div class="card" style="order:3"><h2>Подобрать правило для домена</h2>'
-	printf '<p class="muted">Впишите домен — панель покажет, в какие наборы он попадает и какое правило сработает.</p>'
-	printf '<div class="row">'
-	printf '<div><label>Домен — какое правило его поймает</label><input name="rule_find_name" placeholder="youtube.com" autocomplete="off"></div>'
-	printf '<div><label>Или что входит в готовый список</label><input name="list_find_name" placeholder="vk, rutube, youtube" autocomplete="off"></div>'
-	printf '</div><p><button type="button" class="btn rule-find">проверить домен</button> <button type="button" class="btn sec list-show">что в списке</button> <span class="muted" id="rule-find-out"></span></p>'
-	printf '<div id="rule-find-report" class="report"></div></div>\n'
+# Готовые списки и подсказка названий — отдельная функция: в лёгком режиме
+# (когда страница перерисовывает только наборы) этот блок не нужен.
+rules_lists_html() {
+	# 4) готовые списки. Блок свёрнут, а его содержимое собирается только когда
+	# его открыли (?page=geo): раньше панель считала всё это при каждой загрузке
+	# «Маршрутов», хотя блоки со спойлером обычно свёрнуты. Сама подсказка
+	# названий (datalist) остаётся в странице — она лёгкая и нужна полю «Значение».
+	printf '<div class="card" style="order:4" id="geo-card">'
+	printf '<details class="pick" id="geo-det"><summary>Готовые списки доменов и адресов (geosite / geoip)</summary>'
+	printf '<div id="geo-body"><p class="muted">Нажмите на заголовок — покажу файлы со списками, состояние разбора по наборам, обновление из интернета и журналы. Расчёты панель делает только при открытии, чтобы «Маршруты» открывались быстрее.</p></div>'
+	printf '</details>'
+	geo_datalist
+	printf '</div>\n'
+}
 
-	# 4) готовые списки — под спойлером и по кнопке: сам разбор файлов со
-	# списками тяжёлый, а на этой странице он был главным тормозом
-	printf '<div class="card" style="order:4"><details class="pick"><summary>Готовые списки доменов и адресов (geosite / geoip)</summary>'
-	_dcnt=$(( $(geo_tags_count geosite 2>/dev/null) + $(geo_tags_count geoip 2>/dev/null) ))
-	if [ "${_dcnt:-0}" -gt 0 ]; then
-		printf '<p class="muted">Названий в подсказке: %s. В поле «Значение» можно вписать название списка — панель подставит префикс сама.</p>' "$(h "$_dcnt")"
-	else
-		printf '<p class="muted">Файлы со списками на роутере есть, названия ещё не собраны. Собрать можно кнопкой ниже — это фоном, пара минут.</p>'
+# Содержимое блока готовых списков (без спойлера): что лежит на роутере, что уже
+# разобрано и когда, откуда качается обновление и как включить автообновление.
+# Отдаётся отдельной страницей (?page=geo) — только когда блок открыли.
+geo_body_html() {
+	_sf=$(geo_files geosite)
+	_if=$(geo_files geoip)
+	# отпечаток файлов со списками считаем ОДИН раз на карточку: он нужен и для
+	# «файлы менялись после сбора», и для состояний списков наборов (иначе
+	# карточка считала бы его дважды — это лишняя работа для роутера)
+	_gsig=$(geo_signature 2>/dev/null)
+	if [ -z "$_sf$_if" ]; then
+		printf '<p class="bad">Файлов со списками (geosite.dat, geoip.dat) на роутере нет — правила с готовыми списками работать не будут.</p>'
+		printf '<p class="muted">Их ставят пакеты v2ray-geosite и v2ray-geoip. Кнопка ниже поставит их в фоне.</p>'
+		printf '<form method="post"><input type="hidden" name="action" value="geo_pkg"><button class="btn sec">поставить пакеты со списками</button></form>'
+		return 0
 	fi
-	printf '<form method="post"><input type="hidden" name="action" value="geo_build"><button class="btn sec">собрать названия списков</button></form>'
-	printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="geo_update"><button class="btn sec">обновить списки из интернета</button></form>'
-	printf '</details></div>\n'
+	# --- 1. сами файлы со списками
+	printf '<h3>1. Файлы со списками на роутере</h3>'
+	printf '<p class="muted">Панель берёт названия списков прямо из этих файлов — значит, подсказка в поле «Значение» совпадает с тем, что умеет ваш xray.</p>'
+	printf '<table><tr><th>Файл</th><th>Что внутри</th><th>Размер</th><th>Изменён</th><th>Названий разобрано</th></tr>'
+	# /usr/share/xray/geosite.dat обычно ссылка на /usr/share/v2ray/geosite.dat:
+	# показываем такой файл один раз, иначе таблица дублируется зря
+	_seenreal=""
+	printf '%s\n%s\n' "$_sf" "$_if" | while IFS="$(printf '\t')" read -r _f _n; do
+		[ -n "$_f" ] || continue
+		_real=$(readlink -f "$_f" 2>/dev/null)
+		[ -n "$_real" ] || _real="$_f"
+		case " $_seenreal " in *" $_real "*) continue ;; esac
+		_seenreal="$_seenreal $_real"
+		case "$_n" in
+			*geoip*) _what="адреса" ;;
+			*)       _what="домены" ;;
+		esac
+		_got=$(geo_files_report 2>/dev/null | awk -F'\t' -v f="$_f" '$1 == f { print $3 }' | head -1)
+		# если файл найден по ссылке, отчёт может быть записан на её настоящий
+		# путь — тогда берём число оттуда
+		[ -n "$_got" ] || _got=$(geo_files_report 2>/dev/null | while IFS="$(printf '\t')" read -r _rf _rk _rc; do
+			_rr=$(readlink -f "$_rf" 2>/dev/null)
+			[ "$_rr" = "$_real" ] && { printf '%s\n' "$_rc"; break; }
+		done)
+		case "$_got" in
+			''|*[!0-9]*) _gtxt='<span class="muted">ещё не разбирали</span>' ;;
+			0)           _gtxt='<span class="bad">0 — не разобрался</span>' ;;
+			*)           _gtxt="<b>$_got</b>" ;;
+		esac
+		printf '<tr><td class="url">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+			"$(h "$_f")" "$_what" "$(h "$(human_bytes "$(file_size "$_f")")")" \
+			"$(h "$(file_date "$_f")")" "$_gtxt"
+	done
+	printf '</table>'
+	_ng=$(geo_tags_count geosite 2>/dev/null); _ni=$(geo_tags_count geoip 2>/dev/null)
+	if geo_cache_ready; then
+		printf '<p>Названий для выбора в поле «Значение»: доменов <b>%s</b>, адресов <b>%s</b> — собрано %s.</p>' \
+			"${_ng:-0}" "${_ni:-0}" "$(h "$(file_date "$(geo_tags_cache)")")"
+		if ! geo_cache_fresh "$_gsig"; then
+			printf '<p class="bad">Файлы со списками менялись после сбора — нажмите «собрать названия заново».</p>'
+		fi
+		if [ -n "$_sf" ] && [ "${_ng:-0}" = 0 ]; then
+			printf '<p class="bad">Списки доменов не разобрались, хотя файл есть — смотрите «Журнал сбора названий» внизу.</p>'
+		fi
+	else
+		printf '<p class="muted">Названия списков ещё не собраны. Это разово и занимает до пары минут — панель делает это фоном, страницу держать открытой не нужно.</p>'
+	fi
+	printf '<form method="post"><input type="hidden" name="action" value="geo_build"><button class="btn sec">собрать названия заново</button></form>'
+	# --- 2. списки, которые стоят в наборах
+	printf '<h3>2. Списки из правил и наборов</h3>'
+	printf '<p class="muted">По разобранному списку панель точно понимает, какое правило поймало трафик: лампочка в правиле и в наборе загорается верно. Без разбора условие проверяется только «по выходу».</p>'
+	_sr=$(geo_items_status "$_gsig" 2>/dev/null)
+	if [ -z "$_sr" ]; then
+		printf '<p class="muted">В правилах и наборах нет записей с готовыми списками — разбирать нечего.</p>'
+	else
+		printf '<table><tr><th>Список</th><th>Что внутри</th><th>Записей</th><th>Разобран</th><th>Состояние</th></tr>'
+		printf '%s\n' "$_sr" | while IFS="$(printf '\t')" read -r _n _ty _c _d _st; do
+			[ -n "$_n" ] || continue
+			case "$_ty" in
+				geoip)   _what="адреса" ;;
+				*)       _what="домены" ;;
+			esac
+			case "$_st" in
+				актуален) _sc='<span class="ok">актуален</span>' ;;
+				"надо разобрать заново") _sc='<span class="bad">надо разобрать заново</span>' ;;
+				*) _sc='<span class="muted">не разобран</span>' ;;
+			esac
+			printf '<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n' \
+				"$(h "$_n")" "$_what" "$(h "$_c")" "$(h "$_d")" "$_sc"
+		done
+		printf '</table>'
+	fi
+	printf '<p class="muted">Разбирать нужно <b>один раз</b>. После обновления баз панель разбирает заново сама — вручную повторять ничего не надо. Списки адресов (geoip) нужны, чтобы правило вида <code>geoip:ru</code> проверялось по адресу.</p>'
+	printf '<form method="post"><input type="hidden" name="action" value="geo_items"><button class="btn sec">разобрать списки</button></form>'
+	# --- 3. обновление из интернета
+	printf '<h3>3. Обновление из интернета</h3>'
+	printf '<p class="muted">Файлы берутся из релизов на GitHub. Старые сохраняются рядом как <code>.bak</code>, затем панель сама пересобирает названия, разбирает списки наборов и перезапускает xray.</p>'
+	printf '<form method="post"><input type="hidden" name="action" value="geo_update">'
+	_cur_src=$(cfg geo_auto_src loyalsoldier)
+	printf '<div class="row"><div><label>Откуда брать</label><select name="geo_src">'
+	for _s in loyalsoldier v2fly russia; do
+		case "$_s" in
+			loyalsoldier) _lb="Loyalsoldier — как в PassWall" ;;
+			v2fly)        _lb="v2fly — официальные (dlc.dat)" ;;
+			russia)       _lb="runetfreedom — российские, файлы большие" ;;
+		esac
+		printf '<option value="%s"%s>%s</option>' "$_s" "$([ "$_cur_src" = "$_s" ] && echo ' selected')" "$_lb"
+	done
+	printf '</select></div></div>'
+	printf '<p class="muted">Адреса загрузки<br>'
+	printf '<b>Loyalsoldier</b>: <code>github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat</code> и <code>geoip.dat</code><br>'
+	printf '<b>v2fly</b>: <code>github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat</code> и <code>github.com/v2fly/geoip/releases/latest/download/geoip.dat</code><br>'
+	printf '<b>runetfreedom</b>: <code>github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download/geosite.dat</code> и <code>geoip.dat</code></p>'
+	printf '<p><button class="btn">обновить списки сейчас</button> <span class="muted">фоном: скачивание и разбор — минута-две</span></p></form>'
+	# что было в прошлый раз: видно, обновилось ли и что именно
+	_lu=$(geo_update_last 2>/dev/null)
+	if [ -n "$_lu" ]; then
+		_ld=$(printf '%s\n' "$_lu" | awk -F'\t' '$1 == "date" { print $2 }')
+		_ln=$(printf '%s\n' "$_lu" | awk -F'\t' '$1 == "name" { print $2 }')
+		_lf=$(printf '%s\n' "$_lu" | awk -F'\t' '$1 == "file" { printf "%s %s (%s названий); ", ($2 == "geoip.dat" ? "адреса" : "домены"), $3, $5 }')
+		if [ -n "$_ld" ]; then
+			printf '<p>Последнее обновление: <b>%s</b>, источник %s.<br>Поставлено: %s</p>' "$(h "$_ld")" "$(h "$_ln")" "$(h "$_lf")"
+		fi
+	fi
+	# --- 4. автообновление
+	_au=$(cfg geo_auto 0); _asrc=$(cfg geo_auto_src loyalsoldier)
+	printf '<h4>Автоматическое обновление</h4>'
+	printf '<form method="post"><input type="hidden" name="action" value="geo_auto">'
+	printf '<div class="row"><div><label>Обновлять базы</label><select name="geo_auto">'
+	printf '<option value="0"%s>выключено</option>' "$([ "$_au" = 0 ] && echo ' selected')"
+	printf '<option value="7"%s>раз в неделю — по понедельникам, в 4 утра</option>' "$([ "$_au" = 7 ] && echo ' selected')"
+	printf '<option value="30"%s>раз в месяц — 1-го числа, в 4 утра</option>' "$([ "$_au" = 30 ] && echo ' selected')"
+	printf '</select></div>'
+	printf '<div><label>Источник для автообновления</label><select name="geo_auto_src">'
+	for _s in loyalsoldier v2fly russia; do
+		case "$_s" in
+			loyalsoldier) _lb="Loyalsoldier (как в PassWall)" ;;
+			v2fly)        _lb="v2fly (официальные)" ;;
+			russia)       _lb="runetfreedom (российские)" ;;
+		esac
+		printf '<option value="%s"%s>%s</option>' "$_s" "$([ "$_asrc" = "$_s" ] && echo ' selected')" "$_lb"
+	done
+	printf '</select></div></div>'
+	printf '<p><button class="btn sec">сохранить</button> '
+	case "$_au" in
+		7)  printf '<span class="muted">сейчас: включено — раз в неделю (понедельник, 4 утра)</span>' ;;
+		30) printf '<span class="muted">сейчас: включено — раз в месяц (1-е число, 4 утра)</span>' ;;
+		*)  printf '<span class="muted">сейчас: выключено</span>' ;;
+	esac
+	printf '</p></form>'
+	# --- 5. журналы: три отдельных, чтобы было видно, где что происходит
+	_gulog="$STATE_DIR/geo-update.log"
+	if [ -f "$_gulog" ]; then
+		printf '<details class="pick"><summary>Журнал обновления из интернета</summary><pre>%s</pre></details>' "$(tail -n 25 "$_gulog" | h_in)"
+	fi
+	_gtlog="$STATE_DIR/geo-tags.log"
+	if [ -f "$_gtlog" ]; then
+		printf '<details class="pick"><summary>Журнал сбора названий</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gtlog" | h_in)"
+	fi
+	_gilog="$STATE_DIR/geo-item.log"
+	if [ -f "$_gilog" ]; then
+		printf '<details class="pick"><summary>Журнал разбора списков наборов</summary><pre>%s</pre></details>' "$(tail -n 20 "$_gilog" | h_in)"
+	fi
 }
 
 page_rule_old() {
@@ -3876,6 +5097,10 @@ explain_failure() { # $1 — хвост журналов: объясняем п�
 	_lines=$(printf '%s\n' "$1" | awk 'NF { n++; l[n] = $0 } END { for (i = n; i >= 1; i--) print l[i] }')
 	while IFS= read -r _ln; do
 		[ -n "$_ln" ] || continue
+		# предупреждения проверки связи — не причина отказа входа, пропускаем
+		case "$_ln" in
+			*"app/observatory"*|*"is dead"*) continue ;;
+		esac
 		case "$_ln" in
 			*"address already in use"*)
 				_why="нужный порт уже занят другой программой"
@@ -3898,9 +5123,6 @@ explain_failure() { # $1 — хвост журналов: объясняем п�
 			*"not supported"*|*"unsupported"*)
 				_why="эта сборка xray или ядро роутера не умеет такой режим перехвата"
 				_what="попробуйте обычный redirect вместо tproxy — tproxy поддерживают не все ядра" ;;
-			*"network is unreachable"*|*"i/o timeout"*|*"no such host"*|*"context deadline"*)
-				_why="нет доступа в интернет до сервера-выхода"
-				_what="проверьте интернет на роутере и адрес сервера, после чего нажмите «Применить конфиг»" ;;
 			*"too many open files"*)
 				_why="у системы закончились свободные дескрипторы файлов"
 				_what="перезагрузите роутер — после перезагрузки лимиты и счётчики сбрасываются" ;;
@@ -3914,14 +5136,16 @@ $_lines
 EOL
 	if [ -n "$_why" ]; then
 		printf '<p><b>Причина:</b> %s.</p>' "$_why"
-		printf '<p class="muted">Строка из журнала:</p><pre>%s</pre>' "$(printf '%s' "$_line" | h_in)"
 		printf '<p><b>Что сделать:</b> %s.</p>' "$_what"
 	else
-		printf '<p class="muted">Знакомой причины в журнале не нашлось — ниже строки xray и панели как есть.</p>'
+		printf '<p class="muted">Знакомой причины в журнале не нашлось — строки панели есть ниже.</p>'
 	fi
 }
 
 page_transparent() {
+	# держим журнал xray коротким (не чаще раза в 10 минут) — от него зависят
+	# «активный выход», «идёт через» и «что ходило»
+	trim_access_log
 	_pt=$(cfg transparent_port 12345)
 	_ps=$(cfg transparent_scope "lan")
 	_pc=$(cfg transparent_clients "")
@@ -3987,7 +5211,7 @@ page_transparent() {
 	_tup=${_tt%% *}; _rest=${_tt#* }; _tdn=${_rest%% *}; _rest=${_rest#* }
 	_dup=${_rest%% *}; _ddn=${_rest##* }
 	# и то же по счётчикам самого роутера: они работают даже когда API xray молчит
-	_ct=$(client_traffic 2>/dev/null | awk -F'\t' '{ up += $2; dn += $3 } END { printf "%d %d", up, dn }')
+	_ct=$(client_traffic_cached 2>/dev/null | awk -F'\t' '{ up += $2; dn += $3 } END { printf "%d %d", up, dn }')
 	_cup=${_ct%% *}; _cdn=${_ct##* }
 	_tt_parts=""
 	if [ "${_cup:-0}" != 0 ] || [ "${_cdn:-0}" != 0 ]; then
@@ -4008,7 +5232,7 @@ page_transparent() {
 <table style="order:-3">
 <tr><th>Правила фаервола</th><td id="t-rules" class="$_sc">$_sv</td></tr>
 <tr><th>Режим в настройках</th><td>$_ev</td></tr>
-<tr><th>Порт перехвата</th><td>$_pt — $([ "$_lst" = yes ] && echo '<span class="ok">слушает</span>' || echo '<span class="bad">не слушает: xray не поднял вход</span>')</td></tr>
+<tr><th>Порт перехвата</th><td>$_pt — $( if [ "$_lst" = yes ]; then echo '<span class="ok">слушает</span>'; elif [ "$_en" = 1 ]; then echo '<span class="bad">не слушает: xray не поднял вход</span>'; else echo '<span class="muted">не слушает (режим выключен)</span>'; fi )</td></tr>
 <tr><th>Автооткат</th><td id="t-revert">$_rev</td></tr>
 <tr><th>Трафик</th><td id="t-traffic">$_tt_line</td></tr>
 <tr><th>Куда уходит трафик</th><td>$_eff</td></tr>
@@ -4027,26 +5251,25 @@ EOF
 		printf '<p class="muted">Кнопка ниже переименует их в <code>.bak-дата</code> — xray их больше не увидит, а сами файлы останутся рядом.</p>'
 		printf '<form method="post"><input type="hidden" name="action" value="confdir_clean"><button class="btn danger">Убрать лишние .json из каталога конфига</button></form></div>\n'
 	fi
-	# если вход перехвата не поднялся — сразу показываем, что писали панель и xray
-	if [ "$_lst" = no ]; then
+	# Если вход перехвата не поднялся — ничего не «выскакивает» на странице:
+	# в таблице состояния уже написано «не слушает», а причина и журнал лежат
+	# ниже, в свёрнутом спойлере «Проверка». Предупреждения xray о проверке
+	# связи (app/observatory … is dead) ошибкой не считаем: они появляются,
+	# когда у роутера самого нет сети, например при перезагрузке.
+	_fail_html=""; _fail_raw=""
+	if [ "$_lst" = no ] && [ "$_en" = 1 ]; then
 		# частая причина именно на новом роутере: служба xray в OpenWrt выключена
 		_xdis=$(uci -q show xray 2>/dev/null | sed -n "s/^xray\.\([^.]*\)\.enabled='0'\$/\1/p")
 		if [ -n "$_xdis" ]; then
-			printf '<p class="bad">Служба xray в настройках OpenWrt выключена (<code>xray.%s.enabled=0</code>) — поэтому вход и не поднимается. Панель включит её при следующем применении конфига. Вручную: <code>uci set xray.%s.enabled=1; uci commit xray; /etc/init.d/xray restart</code></p>' "$(h "$_xdis")" "$(h "$_xdis")"
+			_fail_html="<p>Служба xray в настройках OpenWrt выключена (<code>xray.$_xdis.enabled=0</code>) — поэтому вход и не поднимается. Панель включит её при следующем применении конфига.</p>"
 		fi
 		_alog=$(tail -n 40 "$STATE_DIR/apply.log" 2>/dev/null)
-		_elog=$(tail -n 40 "$(cfg log_dir "/var/log")/xray-error.log" 2>/dev/null)
+		_elog=$(tail -n 40 "$(cfg log_dir "/var/log")/xray-error.log" 2>/dev/null | grep -av "app/observatory" | grep -av "is dead")
 		_alllog=$(printf '%s\n%s' "$_alog" "$_elog")
 		if [ -n "$(printf '%s' "$_alllog" | tr -d ' \t\n')" ]; then
-			printf '<div class="card"><h2 class="bad">Почему вход перехвата не поднялся</h2>'
-			# объясняем конкретную строку из журнала, а не «возможные причины»
-			explain_failure "$_alllog"
-			printf '<details class="pick"><summary>показать строки журнала целиком</summary><pre>%s</pre></details></div>\n' \
-				"$(printf '%s' "$_alllog" | h_in)"
+			_fail_html="$_fail_html$(explain_failure "$_alllog")"
+			_fail_raw=$(printf '%s' "$_alllog" | h_in)
 		fi
-	fi
-	if [ "$_warn" = 1 ]; then
-		printf '<div class="msg"><b>Выход не выбран.</b> Перехват работает, но трафик уходит напрямую — внешний адрес не изменится. Укажите тег сервера в поле «Куда направлять» ниже либо задайте сервер по умолчанию на странице «Статус».</div>\n'
 	fi
 	# блок с кнопкой отрисовываем всегда, а видимость включаем скриптом —
 	# тогда кнопка появляется сама, без перезагрузки страницы
@@ -4119,24 +5342,64 @@ EOF
 	done
 	printf '<option value="direct" %s>direct — напрямую</option>' "$([ "$_po" = direct ] && echo selected)"
 	opt_select_close "куда идёт трафик, который не попал под правила со страницы «Маршруты» (правила всегда важнее)"
+	opt_html_open "Автовыбор сервера"
+	printf '<label class="chk"><input type="checkbox" name="auto_calm" value="1" style="width:auto" %s> спокойный режим — не менять сервер из-за мелкой разницы по пингу</label>' \
+		"$([ "$(cfg auto_calm 1)" = 1 ] && echo checked)"
+	opt_html_close "работает при выборе «по лучшему пингу»: сервер меняется только если другой заметно быстрее или текущий перестал отвечать"
 
 	# DNS через туннель
 	printf '<h2>DNS через туннель</h2>'
-	opt_html_open "Перехват DNS"
-	printf '<label class="chk"><input type="checkbox" name="dns_tunnel" value="1" style="width:auto" %s> у клиентов</label> <label class="chk"><input type="checkbox" name="dns_router" value="1" style="width:auto" %s> и у самого роутера</label>' \
-		"$([ "$(cfg dns_tunnel 0)" = 1 ] && echo checked)" "$([ "$(cfg dns_router "$(cfg dns_tunnel 0)")" = 1 ] && echo checked)"
-	opt_html_close "первая галочка заворачивает DNS клиентов, вторая переводит на тот же путь dnsmasq роутера"
-	opt_select_open "Куда заворачивать DNS клиентов" dns_client_via
-	printf '<option value="xray" %s>в xray — запросы уходят через туннель</option>' "$([ "$(cfg dns_client_via xray)" != router ] && echo selected)"
-	printf '<option value="router" %s>в роутерный резолвер — с откатом на другие серверы (DoH)</option>' "$([ "$(cfg dns_client_via xray)" = router ] && echo selected)"
-	opt_select_close "в xray — напрямую в туннель; в роутерный резолвер — с откатом на другие серверы"
+	# 1) куда уходит DNS клиентов
+	_dt=$(cfg dns_tunnel 0); _dvia=$(cfg dns_client_via xray)
+	if [ "$_dt" != 1 ]; then _dcli="none"
+	elif [ "$_dvia" = router ]; then _dcli="router"
+	else _dcli="tunnel"; fi
+	opt_select_open "Заворачивать DNS клиентов" dns_clients
+	printf '<option value="none" %s>не заворачивать</option>' "$([ "$_dcli" = none ] && echo selected)"
+	printf '<option value="tunnel" %s>в туннель — напрямую в xray</option>' "$([ "$_dcli" = tunnel ] && echo selected)"
+	printf '<option value="router" %s>в роутерный резолвер (dnsmasq)</option>' "$([ "$_dcli" = router ] && echo selected)"
+	opt_select_close "в туннель — запрос сразу уходит через сервер; в роутерный резолвер — запрос разбирает dnsmasq (панель видит имена для правил, работают локальные имена и кэш)"
+	# 2) чем отвечает роутерный резолвер — и вот здесь панель ставит свои
+	# серверы в dnsmasq (127.0.0.1#5353 и далее), а при выключении возвращает
+	_dr=$(cfg dns_router 0)
+	_dports=$(dns_tunnel_ports | tr '\n' ' ')
+	opt_select_open "Чем отвечает роутерный резолвер" dns_resolver_up
+	printf '<option value="own" %s>своими серверами (DoH или обычный DNS)</option>' "$([ "$_dr" != 1 ] && echo selected)"
+	printf '<option value="tunnel" %s>через туннель — панель ставит 127.0.0.1#%s</option>' "$([ "$_dr" = 1 ] && echo selected)" "$(h "${_dports% }")"
+	opt_select_close "свои серверы — как настроено в dnsmasq (например DoH); через туннель — панель сама прописывает входы xray и включает noresolv"
+	# 3) отдельная галочка про сам роутер
+	opt_html_open "DNS самого роутера"
+	printf '<label class="chk"><input type="checkbox" name="dns_router_own" value="1" id="dns-own" style="width:auto" %s> и у самого роутера — тем же путём</label>' "$([ "$_dr" = 1 ] && echo checked)"
+	opt_html_close "роутерный резолвер один на всех: если он уходит в туннель, DNS самого роутера идёт тем же путём — галочка ставится сама"
+	# шифрованный DNS — чтобы клиент не обошёл наш резолвер своим
+	opt_html_open "Шифрованный DNS у клиентов"
+	printf '<label class="chk"><input type="checkbox" name="block_dot" value="1" style="width:auto" %s> закрывать DoT (порт 853) — «приватный DNS» на телефонах и в браузерах</label><br>' \
+		"$([ "$(cfg block_dot 1)" = 1 ] && echo checked)"
+	printf '<label class="chk"><input type="checkbox" name="block_doh" value="1" style="width:auto" %s> закрывать DoH (443) по списку адресов ниже</label>' \
+		"$([ "$(cfg block_doh 0)" = 1 ] && echo checked)"
+	# поле со списком адресов стоит сразу под галочкой DoH: видно, к чему оно
+	printf '<div style="margin:6px 0 0 22px;max-width:560px"><div class="muted" style="font-size:12px">адреса DoH для блокировки (через запятую или пробел) — работает только с галочкой выше</div><input name="doh_block_list" value="%s" placeholder="1.1.1.1 8.8.8.8" style="width:100%%"></div>' \
+		"$(h "$(cfg doh_block_list "1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 9.9.9.9 9.9.9.10 94.140.14.14 94.140.15.15 208.67.222.222 208.67.220.220 76.76.2.0 76.76.10.0 185.228.168.9 185.228.169.9 156.154.70.1 156.154.71.1")")"
+	opt_html_close "первое закрывает «приватный DNS» (DoT), второе — жёсткий режим: перекрывает известные DoH-серверы. QUIC (UDP 443) панель закрывает всегда, пока клиент завёрнут"
+	printf '<label class="chk"><input type="checkbox" name="dns_canary" value="1" style="width:auto" %s> просить браузеры и Apple не использовать свой шифрованный DNS («канарейки»)</label>' \
+		"$([ "$(cfg dns_canary 1)" = 1 ] && echo checked)"
+	printf '<div class="muted" style="margin:2px 0 0 0">три записи в профиле роутера: use-application-dns.net (Firefox выключает свой DoH) и два mask-домена (Apple выключает приватный релей)</div>'
+	printf '<label class="chk"><input type="checkbox" name="dns_bootstrap" value="1" style="width:auto" %s> раскрутка имён серверов через вышестоящий DNS</label>' \
+		"$([ "$(cfg dns_bootstrap 0)" = 1 ] && echo checked)"
+	printf '<div class="muted" style="margin:2px 0 0 0">нужна только если после перезапуска dnsmasq туннель не поднимается: имена своих серверов разрешаются напрямую, минуя туннель. По умолчанию выключено — иначе имена ваших серверов видит провайдер</div>'
 	opt_select_open "Как разрешать имена серверов" dns_server_mode
 	printf '<option value="doh" %s>шифрованно (DoH) — провайдер не видит запрос</option>' "$([ "$(cfg dns_server_mode doh)" != plain ] && echo selected)"
 	printf '<option value="plain" %s>обычным DNS (по 53-му порту)</option>' "$([ "$(cfg dns_server_mode doh)" = plain ] && echo selected)"
 	opt_select_close "как панель разрешает имена своих серверов (шифрованно или обычным DNS)"
 	opt_select_open "Выход для DNS" dns_out
-	printf '<option value="" %s>как у прозрачного режима — сейчас: %s</option>' \
-		"$([ -z "$(cfg dns_out "")" ] && echo selected)" "$(h "$(dns_eff_text "$(dns_effective_out)")")"
+	# по умолчанию — по лучшему пингу: запрос уходит через самый быстрый сейчас
+	# сервер, а не жёстко через один выбранный
+	_do=$(cfg dns_out "")
+	printf '<option value="auto" %s>по лучшему пингу — через самый быстрый сервер</option>' \
+		"$([ -z "$_do" ] || [ "$_do" = auto ] && echo selected)"
+	printf '<option value="same" %s>как у прозрачного режима — сейчас: %s</option>' \
+		"$([ "$_do" = same ] && echo selected)" "$(h "$(dns_eff_text "$(dns_effective_out)")")"
+	printf '<option value="direct" %s>direct — напрямую, без прокси</option>' "$([ "$_do" = direct ] && echo selected)"
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		server_is_reverse "$_t" && continue
@@ -4193,7 +5456,7 @@ EOF
 	[ "$_st" = "on" ] && _acting=1
 	_cltitle="Кого заворачивать: список адресов"
 	printf '<div id="clients-box" style="order:-1%s"><h2>%s</h2>' "$_cl_hide" "$(h "$_cltitle")"
-	_ctr=$(client_traffic 2>/dev/null)
+	_ctr=$(client_traffic_cached 2>/dev/null)
 	# через какой выход идёт трафик каждого клиента (по свежим записям журнала)
 	_cex=$(client_exits 120 2>/dev/null)
 	# сброс счётчиков — как кнопка в x-ui
@@ -4240,18 +5503,24 @@ EOF
 			_ctraf="—"
 			[ -n "$_cup$_cdn" ] && _ctraf="↑ $(human_bytes "${_cup:-0}") / ↓ $(human_bytes "${_cdn:-0}")"
 			# куда уходит трафик именно этого клиента
-			_cx=$(printf '%s\n' "$_cex" | awk -F'\t' -v t="$_ip" '$1 == t { print $2 "\t" $3 "\t" $4; exit }')
+			_cx=$(printf '%s\n' "$_cex" | awk -F'\t' -v t="$_ip" '$1 == t { print $2 "\t" $3 "\t" $4 "\t" $5; exit }')
 			if [ -n "$_cx" ]; then
 				_cxtag=${_cx%%	*}
 				_cxrest=${_cx#*	}
 				_cxage=${_cxrest%%	*}
-				_cxdst=${_cxrest#*	}
+				_cxrest2=${_cxrest#*	}
+				_cxdst=${_cxrest2%%	*}
+				_cxother=${_cxrest2#*	}
+				[ "$_cxother" = "$_cxdst" ] && _cxother=""
 				case "$_cxtag" in
 					direct)  _cxhtml='<b>напрямую</b>' ;;
 					blocked) _cxhtml='<b>заблокировано</b>' ;;
 					*)       _cxhtml="<span class=\"ok\">$(h "$_cxtag")</span>" ;;
 				esac
 				_cxhtml="$_cxhtml <span class=\"muted\">$(h "$(human_age "$_cxage")") назад · $(h "$_cxdst")</span>"
+				# в этом же окне клиент ходил и другими выходами — показываем их,
+				# чтобы «напрямую» рядом с «wg» не выглядело ошибкой
+				[ -n "$_cxother" ] && _cxhtml="$_cxhtml <span class=\"muted\">(ещё: $(h "$_cxother"))</span>"
 			else
 				_cxhtml='<span class="muted">нет свежих записей</span>'
 			fi
@@ -4287,8 +5556,13 @@ EOF
 	done
 	[ -n "$_unknown" ] && printf '<p class="muted">В настройках остались адреса, которых сейчас нет среди подключённых (%s) — при сохранении они будут убраны.</p>' "$(h "$_unknown" | sed 's/, $//')"
 	printf '</div>\n'
-	# список показывается только для режимов, где он нужен
-	printf '<script>(function(){var s=document.querySelector("select[name=transparent_scope]"),b=document.getElementById("clients-box");if(!s||!b)return;function u(){var v=s.value;b.style.display=(v==="router")?"none":""}s.addEventListener("change",u);u()})()</script>\n'
+	# список клиентов нужен ровно в одном режиме — «только клиенты из списка».
+	# Показ и скрытие живёт в общем коде страницы (page_footer): раньше скрипт
+	# стоял здесь, внутри блока, который панель подменяет после сохранений, —
+	# поэтому после первого сохранения он переставал работать до перезагрузки.
+	# Живая подсказка: показывает, кто и куда пойдёт, ещё ДО включения режима.
+	# Текст собирает скрипт страницы из того, что выбрано в окошках выше.
+	printf '<h2>Что получится</h2><div id="dns-preview" class="muted">Считаю по выбранным настройкам…</div>\n'
 	printf '<p class="muted">Кнопки управления — вверху страницы, в блоке «Управление». Правила ставятся «на пробу» на 5 минут: если не подтвердить, они снимутся сами.</p></div>\n'
 	_tlog="$STATE_DIR/transparent.log"
 
@@ -4347,6 +5621,12 @@ EOF
 	# всё, что нужно при разборе полётов, — под спойлером: на странице и без
 	# него много всего
 	printf '<div class="card"><details class="pick"><summary><b>Проверка</b> — что видит панель: DNS, мост, правила, журнал</summary>'
+	# почему не поднялся вход перехвата (если так было) — тоже здесь, свёрнуто
+	if [ -n "$_fail_html" ] || [ -n "$_fail_raw" ]; then
+		printf '<details class="pick"><summary>Почему вход перехвата не поднялся</summary>%s' "$_fail_html"
+		[ -n "$_fail_raw" ] && printf '<details class="pick"><summary>строки журнала целиком</summary><pre>%s</pre></details>' "$_fail_raw"
+		printf '</details>'
+	fi
 	_dt=$(cfg dns_tunnel 0); _dr=$(cfg dns_router "$_dt")
 	if [ "$_dt" = 1 ] || [ "$_dr" = 1 ]; then
 		if [ "$(cfg dns_mode relay)" = module ]; then
@@ -4474,8 +5754,95 @@ page_settings() {
 	# самим серверам) можно не учитывать — иначе одна лампочка горит постоянно
 	printf '<div><label>Лампочки в правилах</label><label class="chk"><input type="checkbox" name="lamp_filter" value="1" style="width:auto" %s> не учитывать служебный трафик (проверки панели, обращения к серверам, вход в панель)</label></div>' \
 		"$([ "$(cfg lamp_filter 1)" = 1 ] && echo checked)"
+	printf '<div><label>Подсветка в наборах</label><label class="chk"><input type="checkbox" name="set_highlight" value="1" style="width:auto" %s> подсвечивать сработавшие записи в открытом наборе (вспыхивает ярко и гаснет за 30 секунд — как лампочка правила выше)</label></div>' \
+		"$([ "$(cfg set_highlight 1)" = 1 ] && echo checked)"
+	# звук кнопок: звук синтезирует сам браузер, файлов в пакете нет
+	printf '<div><label>Звук кнопок</label><select name="sound">'
+	_cur_snd=$(cfg sound click)
+	for _s in off click tick blip two; do
+		case "$_s" in
+			off)   _lbl="выключен" ;;
+			click) _lbl="щелчок (короткий, по умолчанию)" ;;
+			tick)  _lbl="тик (самый тихий)" ;;
+			blip)  _lbl="блип (мягкий гудок)" ;;
+			two)   _lbl="два тона (вверх — обычные, вниз — удаление)" ;;
+		esac
+		printf '<option value="%s" %s>%s</option>' "$_s" "$([ "$_cur_snd" = "$_s" ] && echo selected)" "$_lbl"
+	done
+	printf '</select></div>'
+	printf '<div><label>Громкость звука</label><select name="volume">'
+	_cur_vol=$(cfg volume mid)
+	for _v in low mid high; do
+		case "$_v" in
+			low)  _lbl="тихо" ;;
+			mid)  _lbl="средне" ;;
+			high) _lbl="громко" ;;
+		esac
+		printf '<option value="%s" %s>%s</option>' "$_v" "$([ "$_cur_vol" = "$_v" ] && echo selected)" "$_lbl"
+	done
+	printf '</select></div>'
+	# проверка новых версий панели (самообновление)
+	printf '<div><label>Обновления панели: репозиторий GitHub</label><input name="update_repo" value="%s" placeholder="владелец/репозиторий"></div>' "$(h "$(cfg update_repo "Petr700/xraypanel")")"
+	printf '<div><label>Токен GitHub <span class="muted">(нужен только для приватного репозитория)</span></label><input name="update_token" value="%s" placeholder="необязательно"></div>' "$(h "$(cfg update_token "")")"
+	printf '<div><label>Проверять обновления</label><select name="update_auto">'
+	printf '<option value="1"%s>раз в сутки (и при открытии «Статуса»)</option>' "$([ "$(cfg update_auto 1)" = 1 ] && echo ' selected')"
+	printf '<option value="0"%s>вручную, только по кнопке</option>' "$([ "$(cfg update_auto 1)" = 0 ] && echo ' selected')"
+	printf '</select></div>'
 	printf '</div><p><button>Сохранить настройки</button></p></form>'
 	printf '<p class="muted">Файл настроек: /etc/config/xraypanel. Изменения применяются кнопкой «Применить конфиг» на странице «Статус».</p></div>\n'
+}
+
+# Карточка «Обновление панели»: что нашли в последнем релизе GitHub, кнопка
+# «проверить сейчас», «что нового» и «обновить». Отдаётся и отдельной страницей
+# (?page=update_card), чтобы страница обновляла её без перезагрузки.
+update_card_html() {
+	_repo=$(cfg update_repo "Petr700/xraypanel")
+	_cver=$(panel_version)
+	printf '<h2>Обновление панели</h2>'
+	if [ -z "$_repo" ]; then
+		printf '<p class="muted">Проверка новых версий выключена: не указан репозиторий. Его можно вписать на странице «Настройки».</p>'
+		return 0
+	fi
+	_nver=$(update_field version 2>/dev/null)
+	_ago=$(update_checked_ago 2>/dev/null)
+	_auto=$(cfg update_auto 1)
+	# давно не проверяли — запускаем проверку фоном прямо сейчас
+	if [ "$_auto" = 1 ] && [ "$(param nocache)" != 1 ] && { [ -z "$_ago" ] || [ "${_ago:-999999}" -gt 43200 ]; }; then
+		[ -f "$STATE_DIR/update.running" ] || bg_run "$UPDATE_ENV sh '$UPDATE_CHECK'" "$STATE_DIR/update.log"
+		_ago=""
+	fi
+	if [ -n "$_ago" ]; then
+		printf '<p class="muted">Проверяли %s назад (репозиторий <code>%s</code>).</p>' "$(h "$(human_age "$_ago")")" "$(h "$_repo")"
+	elif [ -s "$STATE_DIR/update.error" ]; then
+		printf '<p class="bad">Проверить не удалось: %s</p>' "$(h "$(cat "$STATE_DIR/update.error" 2>/dev/null)")"
+		printf '<p class="muted">Если репозиторий приватный, впишите токен GitHub на странице «Настройки».</p>'
+	else
+		printf '<p class="muted" id="update-wait">Проверяю новые версии… это занимает несколько секунд, страницу перезагружать не нужно.</p>'
+	fi
+	if [ -n "$_nver" ] && [ "$(ver_newer "$_nver" "$_cver")" = yes ]; then
+		_geturl=$(update_field url 2>/dev/null)
+		_page=$(update_field page 2>/dev/null)
+		printf '<p class="ok"><b>Доступна новая версия %s</b> (сейчас стоит %s).</p>' "$(h "$_nver")" "$(h "$_cver")"
+		if [ -n "$_geturl" ]; then
+			printf '<form method="post"><input type="hidden" name="action" value="update_install"><button class="btn">обновить до %s</button> <span class="muted">скачает пакет и поставит его; настройки, серверы и правила не тронутся</span></form>' "$(h "$_nver")"
+		else
+			printf '<p class="bad">В релизе нет файла пакета .ipk — поставить кнопкой не получится.</p>'
+		fi
+		if [ -n "$_page" ]; then
+			printf '<p class="muted">Страница релиза: <a href="%s" target="_blank">%s</a></p>' "$(h "$_page")" "$(h "$_page")"
+		fi
+		_notes=$(update_notes 2>/dev/null)
+		if [ -n "$_notes" ]; then
+			printf '<details class="pick"><summary>что нового в версии %s</summary><pre>%s</pre></details>' "$(h "$_nver")" "$(printf '%s' "$_notes" | h_in)"
+		fi
+	elif [ -n "$_nver" ]; then
+		printf '<p class="ok">Установлена последняя версия: %s.</p>' "$(h "$_cver")"
+	fi
+	printf '<form method="post" style="margin-top:6px"><input type="hidden" name="action" value="update_check"><button class="btn sec">проверить обновление сейчас</button></form>'
+	_ulog="$STATE_DIR/update.log"
+	if [ -f "$_ulog" ]; then
+		printf '<details class="pick"><summary>журнал проверок обновления</summary><pre>%s</pre></details>' "$(tail -n 15 "$_ulog" | h_in)"
+	fi
 }
 
 page_backup() {
@@ -4503,11 +5870,42 @@ if [ "$(param page)" = state ]; then
 	exit 0
 fi
 
+# карточка «Обновление панели» отдельным куском: страница обновляет её сама,
+# пока идёт проверка релиза (без перезагрузки)
+if [ "$(param page)" = update_card ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n'
+	printf 'Cache-Control: no-store, no-cache, must-revalidate\n\n'
+	printf '<div class="card" id="update-card">'
+	update_card_html
+	printf '</div>\n'
+	exit 0
+fi
+
 # таблица серверов отдельным куском: страница «Серверы» обновляет её без
 # перезагрузки (проверка узлов, обновление подписки)
 if [ "$(param page)" = servers_table ]; then
 	printf 'Content-Type: text/html; charset=utf-8\n\n'
 	servers_table_html
+	exit 0
+fi
+
+# лёгкий режим «Маршрутов»: отдать только карточку наборов. Её подменяет
+# страница при переключении набора и правке записей — так не нужно каждый раз
+# пересобирать всю страницу (полная сборка занимает 5–6 секунд)
+if [ "$(param page)" = rules ] && [ "$(param part)" = sets ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n'
+	printf 'Cache-Control: no-store, no-cache, must-revalidate\n\n'
+	_ract=$(rules_activity 2>/dev/null)
+	sets_card_html
+	exit 0
+fi
+
+# содержимое блока «Готовые списки» — страница просит его только когда блок
+# открыли, поэтому при обычной загрузке «Маршрутов» эта работа не делается
+if [ "$(param page)" = geo ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n'
+	printf 'Cache-Control: no-store, no-cache, must-revalidate\n\n'
+	geo_body_html
 	exit 0
 fi
 

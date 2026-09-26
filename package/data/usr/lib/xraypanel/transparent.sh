@@ -163,6 +163,13 @@ DNS_PORT=$(cfg dns_port); [ -n "$DNS_PORT" ] || DNS_PORT=5353
 # (тогда запросы попадают на dnsmasq и он сам выбирает, куда их отправить —
 # при мёртвом туннеле уходит на другие серверы из своего списка)
 DNS_CLIENT_VIA=$(cfg dns_client_via); [ -n "$DNS_CLIENT_VIA" ] || DNS_CLIENT_VIA=xray
+# Заставляем клиентов пользоваться нашим DNS: закрываем шифрованный DNS,
+# иначе «приватный DNS» на телефоне (DoT, порт 853) или DoH в браузере
+# уводят запросы мимо перехвата.
+BLOCK_DOT=$(cfg block_dot 1); [ -n "$BLOCK_DOT" ] || BLOCK_DOT=1
+BLOCK_DOH=$(cfg block_doh 0); [ -n "$BLOCK_DOH" ] || BLOCK_DOH=0
+DOH_LIST=$(cfg doh_block_list "1.1.1.1 1.0.0.1 8.8.8.8 8.8.4.4 9.9.9.9 9.9.9.10 94.140.14.14 94.140.15.15 208.67.222.222 208.67.220.220 76.76.2.0 76.76.10.0 185.228.168.9 185.228.169.9 156.154.70.1 156.154.71.1")
+DOH_SET=$(printf '%s' "$DOH_LIST" | tr ', ' '\n' | awk 'NF {gsub(/"/, ""); if (n++) s = s ", "; s = s $0} END {print s}')
 DNS_MARK=83
 DNS_TABLE=83
 
@@ -280,9 +287,18 @@ nft_on() {
 			# без списка = «все клиенты»: считаются и DHCP, и статика, и новые
 			client_counters ""
 			nftr add rule ip "$TABLE" pre iifname { $IF_LIST } meta l4proto tcp counter redirect to :"$PORT" || return 1
-			nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } udp dport 443 drop ;;
+			nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } udp dport 443 drop
+			[ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ] && {
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } tcp dport 853 drop
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } udp dport 853 drop
+			}
+			[ "$BLOCK_DOH" = 1 ] && [ -n "$DOH_SET" ] && \
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } ip daddr "{ $DOH_SET }" tcp dport 443 drop
+			;;
 		list)
-			[ -n "$CLIENTS" ] || return 1
+			# пустой список = заворачивать некого: говорим об этом прямо,
+			# иначе непонятно, почему режим не поднялся
+			[ -n "$CLIENTS" ] || { log "режим «только клиенты из списка», а список пуст — отметьте клиентов в панели"; return 1; }
 			[ "$_dns_guard" = 1 ] && nftr_soft add rule ip "$TABLE" pre ct status dnat return
 			# счётчики — в отдельных цепочках (иначе за перехватчиком их не видно)
 			client_counters "$CLIENTS"
@@ -291,6 +307,12 @@ nft_on() {
 				[ -n "$_c" ] || continue
 				nftr add rule ip "$TABLE" pre ip saddr "$_c" meta l4proto tcp redirect to :"$PORT" || return 1
 				nftr_soft add rule ip "$TABLE" fw ip saddr "$_c" udp dport 443 drop
+				if [ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ]; then
+					nftr_soft add rule ip "$TABLE" fw ip saddr "$_c" tcp dport 853 drop
+					nftr_soft add rule ip "$TABLE" fw ip saddr "$_c" udp dport 853 drop
+				fi
+				[ "$BLOCK_DOH" = 1 ] && [ -n "$DOH_SET" ] && \
+					nftr_soft add rule ip "$TABLE" fw ip saddr "$_c" ip daddr "{ $DOH_SET }" tcp dport 443 drop
 			done ;;
 		both)
 			[ "$_dns_guard" = 1 ] && nftr_soft add rule ip "$TABLE" pre ct status dnat return
@@ -299,13 +321,33 @@ nft_on() {
 			client_counters ""
 			nftr add rule ip "$TABLE" pre iifname { $IF_LIST } meta l4proto tcp counter redirect to :"$PORT" || return 1
 			nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } udp dport 443 drop
+			[ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ] && {
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } tcp dport 853 drop
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } udp dport 853 drop
+			}
+			[ "$BLOCK_DOH" = 1 ] && [ -n "$DOH_SET" ] && \
+				nftr_soft add rule ip "$TABLE" fw iifname { $IF_LIST } ip daddr "{ $DOH_SET }" tcp dport 443 drop
 			[ "$_dns_guard" = 1 ] && nftr_soft add rule ip "$TABLE" out ct status dnat return
 			nftr add rule ip "$TABLE" out meta l4proto tcp counter redirect to :"$PORT" || return 1
-			nftr_soft add rule ip "$TABLE" outf udp dport 443 drop ;;
+			nftr_soft add rule ip "$TABLE" outf udp dport 443 drop
+			[ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ] && {
+				nftr_soft add rule ip "$TABLE" outf tcp dport 853 drop
+				nftr_soft add rule ip "$TABLE" outf udp dport 853 drop
+			}
+			[ "$BLOCK_DOH" = 1 ] && [ -n "$DOH_SET" ] && \
+				nftr_soft add rule ip "$TABLE" outf ip daddr "{ $DOH_SET }" tcp dport 443 drop
+			;;
 		router)
 			[ "$_dns_guard" = 1 ] && nftr_soft add rule ip "$TABLE" out ct status dnat return
 			nftr add rule ip "$TABLE" out meta l4proto tcp counter redirect to :"$PORT" || return 1
-			nftr_soft add rule ip "$TABLE" outf udp dport 443 drop ;;
+			nftr_soft add rule ip "$TABLE" outf udp dport 443 drop
+			[ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ] && {
+				nftr_soft add rule ip "$TABLE" outf tcp dport 853 drop
+				nftr_soft add rule ip "$TABLE" outf udp dport 853 drop
+			}
+			[ "$BLOCK_DOH" = 1 ] && [ -n "$DOH_SET" ] && \
+				nftr_soft add rule ip "$TABLE" outf ip daddr "{ $DOH_SET }" tcp dport 443 drop
+			;;
 	esac
 
 	# Перехват DNS-запросов клиентов (53-й порт) и передача их в xray.
@@ -400,6 +442,29 @@ ipt_on() {
 	case "$SCOPE" in
 		router|both) iptr -t filter -A XRAYTP_QUICOUT -p udp --dport 443 -j DROP ;;
 	esac
+	# заставляем клиентов пользоваться нашим DNS: закрываем шифрованный DNS
+	if [ "$DNS_TUNNEL" = 1 ] && [ "$BLOCK_DOT" = 1 ]; then
+		case "$SCOPE" in
+			lan|both) for _if in $(printf '%s' "$LAN_IF" | tr ', ' '\n' | awk 'NF'); do
+						iptr -t filter -A XRAYTP_QUIC -i "$_if" -p tcp --dport 853 -j DROP
+						iptr -t filter -A XRAYTP_QUIC -i "$_if" -p udp --dport 853 -j DROP
+					done ;;
+			list)     for _ip in $CLIENTS; do
+						iptr -t filter -A XRAYTP_QUIC -s "$_ip" -p tcp --dport 853 -j DROP
+						iptr -t filter -A XRAYTP_QUIC -s "$_ip" -p udp --dport 853 -j DROP
+					done ;;
+		esac
+		case "$SCOPE" in
+			router|both) iptr -t filter -A XRAYTP_QUICOUT -p tcp --dport 853 -j DROP
+				     iptr -t filter -A XRAYTP_QUICOUT -p udp --dport 853 -j DROP ;;
+		esac
+	fi
+	if [ "$BLOCK_DOH" = 1 ]; then
+		for _ip in $(printf '%s' "$DOH_LIST" | tr ', ' '\n' | awk 'NF'); do
+			iptr -t filter -A XRAYTP_QUIC -d "$_ip" -p tcp --dport 443 -j DROP
+			iptr -t filter -A XRAYTP_QUICOUT -d "$_ip" -p tcp --dport 443 -j DROP
+		done
+	fi
 	iptr -t filter -C FORWARD -j XRAYTP_QUIC 2>/dev/null || iptr -t filter -A FORWARD -j XRAYTP_QUIC
 	iptr -t filter -C OUTPUT -j XRAYTP_QUICOUT 2>/dev/null || iptr -t filter -A OUTPUT -j XRAYTP_QUICOUT
 	return 0

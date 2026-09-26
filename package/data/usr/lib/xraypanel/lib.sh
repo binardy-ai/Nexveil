@@ -6,6 +6,11 @@ UCI_APP="xraypanel"
 STATE_DIR="${XRAYPANEL_STATE:-/etc/xraypanel}"
 INITD="${XRAYPANEL_INITD:-/etc/init.d}"
 
+# Сколько секунд горит лампочка сработавшего правила и сработавшей записи
+# набора: вспыхнула максимально ярко — и плавно гаснет. Окно одно на всю
+# панель, поэтому правила и наборы показывают одно и то же время.
+LAMP_SECONDS="${XRAYPANEL_LAMP_SECONDS:-30}"
+
 cfg() { # cfg ключ [по умолчанию]
 	_v=$(uci -q get "$UCI_APP.settings.$1" 2>/dev/null)
 	if [ -n "$_v" ]; then printf '%s' "$_v"; else printf '%s' "${2:-}"; fi
@@ -408,11 +413,10 @@ dnsmasq_tunnel_on() {
 	# убираем, чтобы от повторных включений не копились дубли.
 	_first=""
 	_n=0
-	# Чужие строки (DoH и любые другие) запоминаем и возвращаем после своих:
-	# свои строки ставим В НАЧАЛО списка. При включённом строгом порядке
-	# (strict-order) dnsmasq опрашивает их первыми, а остальные остаются
-	# запасным путём. Без строгого порядка порядок роли не играет — dnsmasq
-	# всё равно выбирает по времени ответа.
+	# Пока режим включён, в первом профиле должны стоять ТОЛЬКО сервера панели:
+	# чужой сервер (например перенаправление на профиль DoH) убираем, но
+	# запоминаем и вернём при выключении. Иначе при сбое туннеля имя ушло бы
+	# к чужому резолверу мимо панели.
 	_others=$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)
 	uci -q delete dhcp.@dnsmasq[0].server 2>/dev/null
 	for _p in $(dns_tunnel_ports); do
@@ -422,10 +426,51 @@ dnsmasq_tunnel_on() {
 		printf 'our=%s\n' "$_line" >> "$DNSMASQ_STATE" 2>/dev/null
 		uci -q add_list dhcp.@dnsmasq[0].server="$_line" 2>/dev/null
 	done
+	# «Канарейки»: браузеры и устройства Apple сами отключают свой шифрованный
+	# DNS, если получат пустой ответ на эти имена. Так DoH не обходит панель,
+	# и при этом не нужно перечислять адреса DoH-серверов.
+	if [ "$(cfg dns_canary 1)" = 1 ]; then
+		for _c in use-application-dns.net mask.icloud.com mask-h2.icloud.com; do
+			_line="/$_c/"
+			printf 'our=%s\n' "$_line" >> "$DNSMASQ_STATE" 2>/dev/null
+			uci -q add_list dhcp.@dnsmasq[0].server="$_line" 2>/dev/null
+			log "канарейка для браузеров добавлена: $_line"
+		done
+	fi
+	# Раскрутка: имена наших же серверов должны разбираться БЕЗ туннеля.
+	# Иначе получается петля: xray не может подключиться к серверу, пока не
+	# узнает его адрес, а DNS мы отправили в туннель — и режим не поднимается.
+	# По умолчанию ВЫКЛЮЧЕНА: обращение к вышестоящему DNS раскрывает имена
+	# наших серверов, а это лишнее. Включается галочкой, если туннель не
+	# поднимается после перезапуска dnsmasq (нужен «толчок» для имён).
+	if [ "$(cfg dns_bootstrap 0)" = 1 ]; then
+	_bootdns=""
+	if [ -f /tmp/resolv.conf.d/resolv.conf.auto ]; then
+		_bootdns=$(sed -n 's/^nameserver //p' /tmp/resolv.conf.d/resolv.conf.auto 2>/dev/null | head -1)
+	fi
+	[ -n "$_bootdns" ] || _bootdns=$(cfg dns_bootstrap_server "8.8.8.8")
+	_bootseen=" "
+	for _s in $(server_sections); do
+		_a=$(uci -q get "$UCI_APP.$_s.address" 2>/dev/null)
+		# только доменные имена: у адресов вида 1.2.3.4 раскрутка не нужна
+		case "$_a" in *[A-Za-z]*) ;; *) continue ;; esac
+		case "$_bootseen" in *" $_a "*) continue ;; esac
+		_bootseen="$_bootseen$_a "
+		_line="/$_a/$_bootdns"
+		printf 'our=%s\n' "$_line" >> "$DNSMASQ_STATE" 2>/dev/null
+		uci -q add_list dhcp.@dnsmasq[0].server="$_line" 2>/dev/null
+		log "имя нашего сервера разбираем напрямую: $_line"
+	done
+	fi
 	for _o in $_others; do
 		[ -n "$_o" ] || continue
-		serv_done "$_o" && continue
-		uci -q add_list dhcp.@dnsmasq[0].server="$_o" 2>/dev/null
+		# свои же строки не запоминаем как чужие
+		_skip=0
+		for _p in $(dns_tunnel_ports); do
+			[ "$_o" = "127.0.0.1#$_p" ] && _skip=1
+		done
+		[ "$_skip" = 1 ] && continue
+		printf 'other=%s\n' "$_o" >> "$DNSMASQ_STATE" 2>/dev/null
 	done
 	uci -q commit dhcp 2>/dev/null
 	/etc/init.d/dnsmasq restart >/dev/null 2>&1
@@ -440,7 +485,7 @@ dnsmasq_tunnel_on() {
 		echo "dnsmasq не поднялся с настройками туннеля — вернул прежние, DNS у роутера работает как обычно"
 		return 1
 	fi
-	echo "dnsmasq переведён на DNS-вход xray (порт $_first, серверов $_n); остальные серверы оставлены как запасной путь"
+	echo "dnsmasq переведён на DNS-вход xray (порт $_first, серверов $_n); чужие сервера убраны из первого профиля и вернутся при выключении режима"
 }
 
 dnsmasq_tunnel_off() {
@@ -455,6 +500,13 @@ dnsmasq_tunnel_off() {
 	done
 	# на случай старого файла без списка своих строк — убираем основной порт
 	uci -q del_list dhcp.@dnsmasq[0].server="127.0.0.1#$_port" 2>/dev/null
+	# возвращаем чужие сервера, которые убрали на время работы режима
+	# (например перенаправление 127.0.0.1#5453 на профиль DoH)
+	sed -n 's/^other=//p' "$DNSMASQ_STATE" 2>/dev/null | while IFS= read -r _o; do
+		[ -n "$_o" ] || continue
+		serv_done "$_o" && continue
+		uci -q add_list dhcp.@dnsmasq[0].server="$_o" 2>/dev/null
+	done
 	# если список оказался пустым (так делали прежние версии панели — стирали
 	# чужие строки), возвращаем то, что было сохранено
 	if [ -z "$(uci -q get dhcp.@dnsmasq[0].server 2>/dev/null)" ]; then
@@ -581,6 +633,20 @@ dns_log_lines() {
 	_n=$(logread 2>/dev/null | grep -c dnsmasq 2>/dev/null)
 	case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
 	printf '%s' "$_n"
+}
+
+# В порядке ли источник имён сайтов (по ним панель понимает, какое правило
+# поймало трафик, — без имён лампочки могут показывать не то правило):
+#   ok      — имена собираются
+#   off     — запись запросов DNS выключена
+#   nolog   — dnsmasq не работает
+#   silent  — dnsmasq работает, но в системном журнале его строк нет
+#             (так бывает после сбоя системного журнала роутера — logd)
+dns_names_state() {
+	[ "$(dns_log_state)" = on ] || { printf 'off'; return 0; }
+	dns_log_alive || { printf 'nolog'; return 0; }
+	[ "$(dns_log_lines)" = 0 ] && { printf 'silent'; return 0; }
+	printf 'ok'
 }
 
 # «починить»: перезапустить dnsmasq, чтобы он снова писал в журнал.
@@ -814,10 +880,12 @@ bridge_state() { # $1 = тег моста, $2 = тег выхода (серве�
 	fi
 	if [ "$_can_check" = 1 ]; then
 		if tcp_conn_to "$_a" "$_p" || tcp_conn_proc "$_a_ip" "$_p"; then
-			printf 'соединение с %s:%s есть' "$_a" "$_p"
+			# текст короткий намеренно: адрес и порт видно в столбце «Выход»,
+			# а длинная строка растягивала строку таблицы и ломала вид страницы
+			printf 'подключён — соединение живо'
 			return 0
 		fi
-		printf 'соединения с %s:%s нет — мост не подключён' "$_a" "$_p"
+		printf 'не подключён — соединения с сервером нет'
 		return 1
 	fi
 	# 2) если соединений не видно — смотрим свежесть записей моста в журнале
@@ -834,7 +902,7 @@ bridge_state() { # $1 = тег моста, $2 = тег выхода (серве�
 					printf 'активность меньше 2 минут назад'
 					return 0
 				fi
-				printf 'соединения не видно, последняя запись: %s' "$_ts"
+				printf 'мост молчит, последняя запись: %s' "$_ts"
 				return 1
 			fi
 			printf 'журнал есть, время сверить не удалось'
@@ -842,9 +910,9 @@ bridge_state() { # $1 = тег моста, $2 = тег выхода (серве�
 		fi
 	fi
 	if [ -n "$_a" ] && [ -n "$_p" ]; then
-		printf 'нет соединения с %s:%s' "$_a" "$_p"
+		printf 'соединения нет'
 	elif [ -z "$_a" ]; then
-		printf 'у моста не указан выход (сервер)'
+		printf 'не указан выход (сервер)'
 	else
 		printf 'нет данных'
 	fi
@@ -935,6 +1003,34 @@ rule_sections() {
 "
 	done
 	printf '%s' "$_list" | sort | awk 'NF { print $3 }'
+}
+
+# Шаблон (regexp) должен быть рабочим: xray собирает регулярные выражения при
+# загрузке конфига и с битым шаблоном вообще не запускается («error parsing
+# regexp: missing closing ): ...»). Поэтому такие значения панель не сохраняет,
+# а сразу говорит об ошибке.
+regexp_problem() { # $1 = шаблон; печатает причину, почему его нельзя сохранять
+	[ -n "$1" ] || { printf 'шаблон пустой'; return 0; }
+	printf 'x\n' | grep -Eq -- "$1" 2>/dev/null
+	_r=$?
+	if [ "$_r" -gt 1 ]; then
+		printf 'шаблон не разбирается — проверьте скобки, квадратные скобки и экранирование точки (\\.)'
+		return 0
+	fi
+	case "$1" in
+		*'\|'*) printf 'в шаблоне есть \\| — это лишний слэш: для «или» пишите просто |'; return 0 ;;
+	esac
+	# «ловит всё подряд»: если шаблон совпадает со строкой без букв и точек,
+	# то в правилах он поймает любой домен — обычно это ошибка
+	if printf '###@@@\n' | grep -Eq -- "$1" 2>/dev/null; then
+		printf 'шаблон совпадает со всем подряд (как «kino|.») — правило поймает все домены; для «весь трафик» есть отдельный пункт в „Куда“'
+		return 0
+	fi
+	return 0
+}
+
+regexp_ok() { # $1 = шаблон; 0 — годится, 1 — не годится
+	[ -z "$(regexp_problem "$1")" ]
 }
 
 # какой тип у значения правила: ip, domain, full, keyword, regexp, geosite, geoip
@@ -1153,6 +1249,223 @@ recent_dests() { # «имя<TAB>сколько секунд назад» — ч�
 		printf '%s' "$_now0" > "$_t" 2>/dev/null
 	fi
 	printf '%s' "$_res"
+}
+
+# файл доменов записи набора (для готовых списков geosite): по нему панель
+# точно понимает, попал адрес в список или нет. Пусто — файла нет (список ещё
+# не разобран), тогда про такую запись честно пишется только «вероятно».
+item_domains_file() { # $1 = раздел записи: файл разобранного списка (домены или адреса)
+	_t=$(uci -q get "$UCI_APP.$1.type" 2>/dev/null)
+	_v=$(uci -q get "$UCI_APP.$1.value" 2>/dev/null)
+	[ -n "$_v" ] || return 0
+	case "$_t" in
+		geosite) printf '%s/geosite.%s.domains' "$STATE_DIR" "$_v" ;;
+		geoip)   printf '%s/geoip.%s.cidr' "$STATE_DIR" "$_v" ;;
+	esac
+}
+
+# Состояние разобранных готовых списков: печатает
+# «имя<TAB>тип<TAB>записей<TAB>когда разобран<TAB>актуален|надо разобрать заново|не разобран».
+# Так видно, что разбор делать не нужно каждый раз: он повторяется сам только
+# после обновления самих файлов со списками. Тип: geosite (домены) или geoip
+# (диапазоны адресов).
+geo_items_status() { # $1 = отпечаток файлов со списками (необязательно)
+	_sig="${1:-}"
+	[ -n "$_sig" ] || _sig=$(geo_signature 2>/dev/null)
+	# что вообще используется в правилах и наборах
+	if type rule_conditions >/dev/null 2>&1; then
+		_conds=$(rule_conditions 2>/dev/null | awk -F'\t' 'NF >= 4 && $4 != "" && ($3 == "geosite" || $3 == "geoip") { print $3 "\t" $4 }' | LC_ALL=C sort -u)
+	else
+		_conds=""
+		for _i in $(uci -q show "$UCI_APP" 2>/dev/null | sed -n "s/^$UCI_APP\.\([^.]*\)=item\$/\1/p"); do
+			_conds="$_conds$(uci -q get "$UCI_APP.$_i.type" 2>/dev/null)	$(uci -q get "$UCI_APP.$_i.value" 2>/dev/null)
+"
+		done
+		_conds=$(printf '%s\n' "$_conds" | awk -F'\t' 'NF >= 2 && ($1 == "geosite" || $1 == "geoip") && $2 != "" { print }' | LC_ALL=C sort -u)
+	fi
+	printf '%s\n' "$_conds" | while IFS="$(printf '\t')" read -r _t _n; do
+		[ -n "$_n" ] || continue
+		case "$_t" in
+			geosite) _f="$STATE_DIR/geosite.$_n.domains"; _sigf="$STATE_DIR/geosite.$_n.sig" ;;
+			geoip)   _f="$STATE_DIR/geoip.$_n.cidr";    _sigf="$STATE_DIR/geoip.$_n.sig" ;;
+			*) continue ;;
+		esac
+		_c=0
+		[ -s "$_f" ] && _c=$(grep -c . "$_f" 2>/dev/null)
+		case "$_c" in ''|*[!0-9]*) _c=0 ;; esac
+		_old=$(cat "$_sigf" 2>/dev/null)
+		if [ -s "$_f" ] && [ -n "$_sig" ] && [ "$_old" = "$_sig" ]; then
+			_st="актуален"
+		elif [ -s "$_f" ]; then
+			_st="надо разобрать заново"
+		else
+			_st="не разобран"
+		fi
+		_dt=""
+		[ -s "$_f" ] && _dt=$(date -r "$_f" '+%d.%m.%Y %H:%M' 2>/dev/null)
+		[ -n "$_dt" ] || _dt=$(ls -l "$_f" 2>/dev/null | awk '{ print $6 " " $7 " " $8 }')
+		[ -n "$_dt" ] || _dt="—"
+		printf '%s\t%s\t%s\t%s\t%s\n' "$_n" "$_t" "$_c" "$_dt" "$_st"
+	done
+}
+
+# что было при последнем обновлении списков из интернета (файл пишет
+# geo-update.sh): строки «ключ<TAB>значение…»
+geo_update_last() {
+	_f="$STATE_DIR/geo-update.last"
+	[ -s "$_f" ] || return 0
+	cat "$_f" 2>/dev/null
+}
+
+# Подсветка сработавших записей набора: печатает «раздел<TAB>секунд<TAB>точность»,
+# где точность exact — совпадение найдено точно, maybe — вероятно (готовый
+# список, который целиком не разбираем). Считается ОДНИМ проходом awk по уже
+# закэшированным свежим назначениям, поэтому страницу не тормозит.
+set_items_activity() { # $1 = раздел набора, $2 = (необязательно) готовый вывод rules_activity
+	_st="$1"
+	[ "$(cfg set_highlight 1)" = 1 ] || return 0
+	[ -n "$_st" ] || return 0
+	# адреса, которые сработали у ПРАВИЛ ЭТОГО набора (карту пишет rules_activity).
+	# Раньше брались просто свежие адреса из журнала — и лампочка загоралась в
+	# наборе, к которому трафик отношения не имеет.
+	_rd=""
+	_dm="$STATE_DIR/rules-dests.tsv"
+	if [ -s "$_dm" ]; then
+		for _r in $(rule_sections); do
+			case ",$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)," in
+				*",$_st,"*) ;;
+				*) continue ;;
+			esac
+			_rd="$_rd$(awk -F'\t' -v r="$_r" '$2 == r { print $1 "\t" $3 }' "$_dm" 2>/dev/null)
+"
+		done
+	fi
+	[ -n "$_rd" ] || _rd=$(recent_dests)
+	[ -n "$_rd" ] || return 0
+	_items=""
+	for _it in $(set_item_sections "$_st"); do
+		item_disabled "$_it" && continue
+		_t=$(uci -q get "$UCI_APP.$_it.type" 2>/dev/null)
+		_v=$(uci -q get "$UCI_APP.$_it.value" 2>/dev/null)
+		[ -n "$_v" ] || continue
+		_f=$(item_domains_file "$_it")
+		if [ -z "$_f" ] || [ ! -f "$_f" ]; then _f=""; fi
+		_items="$_items$_it	$_t	$_v	$_f
+"
+	done
+	[ -n "$_items" ] || return 0
+	# сработало ли правило, которое ссылается на этот набор: нужно для пометки
+	# «вероятно» у готовых списков — их сами не разбираем
+	_ruleage=""
+	_rl="${2:-}"
+	[ -n "$_rl" ] || _rl=$(rules_activity 2>/dev/null)
+	for _r in $(rule_sections); do
+		case ",$(uci -q get "$UCI_APP.$_r.sets" 2>/dev/null)," in
+			*",$_st,"*) ;;
+			*) continue ;;
+		esac
+		_a=$(printf '%s\n' "$_rl" | awk -F'\t' -v s="$_r" '$1 == s { print $2; exit }')
+		[ -n "$_a" ] && { _ruleage="$_a"; break; }
+	done
+	_fi="/tmp/.xraypanel-items.$$"
+	_fd="/tmp/.xraypanel-dests.$$"
+	printf '%s\n' "$_items" > "$_fi" 2>/dev/null
+	printf '%s\n' "$_rd" > "$_fd" 2>/dev/null
+	LC_ALL=C awk -F'\t' -v ruleage="$_ruleage" '
+		function dom_ok(a, b,   x) {
+			if (a == b) return 1
+			x = length(a) - length(b)
+			if (x > 0 && substr(a, x) == "." b) return 1
+			return 0
+		}
+		# адрес в виде числа: нужно, чтобы проверить список диапазонов (geoip)
+		function ip2n(s,   a, n, i) {
+			n = split(s, a, ".")
+			if (n != 4) return -1
+			for (i = 1; i <= 4; i++) if (a[i] !~ /^[0-9]+$/ || a[i] > 255) return -1
+			return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4]
+		}
+		FNR == NR {
+			n++
+			id[n] = $1; typ[n] = $2; low[n] = tolower($3)
+			cf = $4
+			if (cf != "") {
+				opened = ((getline ln < cf) >= 0)
+				if (opened) {
+					loaded[n] = 1
+					if (ln != "") {
+						sub(/\r$/, "", ln)
+						if (typ[n] == "geoip") {
+							split(ln, a, "/"); base = ip2n(a[1]); pre = a[2] + 0
+							if (base >= 0 && pre >= 0 && pre <= 32) net[n "\t" (32 - pre) ":" int(base / 2 ^ (32 - pre))] = 1
+						} else geo[n "\t" tolower(ln)] = 1
+					}
+					while ((getline ln < cf) > 0) {
+						sub(/\r$/, "", ln)
+						if (ln == "") continue
+						if (typ[n] == "geoip") {
+							split(ln, a, "/"); base = ip2n(a[1]); pre = a[2] + 0
+							if (base >= 0 && pre >= 0 && pre <= 32) net[n "\t" (32 - pre) ":" int(base / 2 ^ (32 - pre))] = 1
+						} else geo[n "\t" tolower(ln)] = 1
+					}
+					close(cf)
+				}
+			}
+			next
+		}
+		{
+			nm = tolower($1); age = $2 + 0
+			for (i = 1; i <= n; i++) {
+				if (typ[i] == "geosite") {
+					if (!loaded[i]) continue
+					s = nm; ok = 0
+					while (s != "") {
+						if ((i "\t" s) in geo) { ok = 1; break }
+						p = index(s, ".")
+						if (p == 0) break
+						s = substr(s, p + 1)
+					}
+					if (!ok) continue
+				} else if (typ[i] == "geoip") {
+					# список адресов: проверяем, входит ли адрес (если в журнале
+					# стоит имя сайта, а не адрес — проверить нечем)
+					if (!loaded[i]) continue
+					an = ip2n(nm)
+					if (an < 0) continue
+					ok = 0
+					for (sh = 0; sh <= 32; sh++)
+						if ((i "\t" sh ":" int(an / 2 ^ sh)) in net) { ok = 1; break }
+					if (!ok) continue
+				} else if (typ[i] == "full") {
+					if (nm != low[i]) continue
+				} else if (typ[i] == "domain") {
+					if (!dom_ok(nm, low[i])) continue
+				} else if (typ[i] == "keyword") {
+					if (index(nm, low[i]) == 0) continue
+				} else if (typ[i] == "regexp") {
+					if (match(nm, low[i]) == 0) continue
+				} else if (typ[i] == "ip") {
+					if (nm != low[i]) continue
+				} else {
+					continue
+				}
+				if (!(i in best) || age < best[i]) best[i] = age
+			}
+		}
+		END {
+			for (i = 1; i <= n; i++) {
+				if (i in best) printf "%s\t%d\texact\n", id[i], best[i]
+				# «вероятно» пишем только про то, что и правда нельзя проверить:
+				# готовый список, который ещё не разобран в файл (домены или
+				# адреса). Если файл есть, а совпадения не было — эта запись не
+				# срабатывала (раньше тут загоралась лампочка сразу у всего
+				# готового списка).
+				else if ((typ[i] == "geosite" || typ[i] == "geoip") && !loaded[i] && ruleage != "")
+					printf "%s\t%s\tmaybe\n", id[i], ruleage
+			}
+		}
+	' "$_fi" "$_fd" 2>/dev/null
+	rm -f "$_fi" "$_fd" 2>/dev/null
 }
 
 set_item_hit() { # $1 = раздел записи -> сколько секунд назад сработала (пусто)
@@ -1458,6 +1771,41 @@ reverse_style() {
 	esac
 }
 
+# Что умеет УСТАНОВЛЕННЫЙ бинарник xray: печатает
+#   both — и старый реверс (по домену), и новый (VLESS Reverse Proxy);
+#   new  — только новый (в свежих сборках старый реверс удалён);
+#   none — ни того, ни другого.
+# Проверяем не по номеру версии (граница между 26.4.17 и 26.4.25), а делом:
+# даём бинарнику крошечный конфиг со старым реверсом и смотрим, примет ли он его.
+# Ответ запоминаем рядом с отпечатком бинарника — считаем заново только когда
+# бинарник заменят (другая версия, другой размер).
+reverse_bin_support() {
+	_bin=$(xray_bin 2>/dev/null)
+	[ -x "$_bin" ] || { printf 'none'; return 0; }
+	# «v2» — версия самого способа проверки: если поменяется, старый кэш не
+	# подойдёт и проверка пройдёт заново (иначе застряло бы неверное значение)
+	_key="v2|$("$_bin" version 2>/dev/null | head -1)|$(file_size "$_bin")"
+	_sf="$STATE_DIR/reverse.bin"
+	_old=$(cat "$_sf" 2>/dev/null)
+	case "$_old" in
+		"$_key|"*) printf '%s' "${_old##*|}"; return 0 ;;
+	esac
+	# расширение .json обязательно: xray определяет формат по нему, без него
+	# проверка падает и бинарник выглядит «ничего не умеющим»
+	_t="/tmp/.xraypanel-rev.$$.json"
+	printf '%s' '{"log":{"loglevel":"none"},"reverse":{"bridges":[{"tag":"probe","domain":"probe.invalid"}]},"inbounds":[{"listen":"127.0.0.1","port":1,"protocol":"socks","settings":{"udp":false}}],"outbounds":[{"protocol":"freedom"}]}' > "$_t" 2>/dev/null
+	if "$_bin" run -test -config "$_t" >/dev/null 2>&1; then
+		_cap="both"
+	else
+		# старый не принимает: проверяем хотя бы новый (пометку тега у выхода)
+		printf '%s' '{"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":1,"protocol":"socks","settings":{"udp":false}}],"outbounds":[{"protocol":"vless","settings":{"address":"127.0.0.1","port":1,"id":"11111111-1111-1111-1111-111111111111","encryption":"none","reverse":{"tag":"probe"}}}]}' > "$_t" 2>/dev/null
+		if "$_bin" run -test -config "$_t" >/dev/null 2>&1; then _cap="new"; else _cap="none"; fi
+	fi
+	rm -f "$_t" 2>/dev/null
+	printf '%s|%s' "$_key" "$_cap" > "$_sf" 2>/dev/null
+	printf '%s' "$_cap"
+}
+
 # Сервер с Hysteria 2 требует xray 25+ (там появился этот транспорт). Если
 # сборка его не знает, такой сервер нельзя писать в конфиг: иначе xray вообще
 # не запустится. Признак ставится при первой неудачной проверке конфига.
@@ -1465,10 +1813,36 @@ server_available() { # $1 = имя секции сервера
 	_p=$(uci -q get "$UCI_APP.$1.protocol" 2>/dev/null)
 	case "$_p" in
 		hy|hysteria|hysteria2)
-			[ -f "$STATE_DIR/hysteria.unsupported" ] && return 1
+			# Проверяем саму сборку xray, а не старую «метку»: раньше панель
+			# один раз не смогла собрать конфиг с Hysteria (например на старом
+			# xray) и навсегда писала hysteria.unsupported — сервер пропадал из
+			# конфига, а правило на него оставалось, и трафик уходил «в никуда»
+			# (в журнале «non existing outTag»).
+			xray_hysteria_ok || return 1
 			;;
 	esac
 	return 0
+}
+
+# Понимает ли установленный xray Hysteria 2. Проверяем делом: даём бинарнику
+# крошечный конфиг с таким выходом и смотрим, примет ли он его. Ответ кэшируем
+# рядом с версией и размером бинарника — заново считаем только после замены
+# сборки (как и проверку реверса).
+xray_hysteria_ok() {
+	_bin=$(xray_bin 2>/dev/null)
+	[ -x "$_bin" ] || return 1
+	_key="v2|$("$_bin" version 2>/dev/null | head -1)|$(file_size "$_bin")"
+	_sf="$STATE_DIR/hysteria.bin"
+	_old=$(cat "$_sf" 2>/dev/null)
+	case "$_old" in
+		"$_key|"*) [ "${_old##*|}" = yes ]; return $? ;;
+	esac
+	_t="/tmp/.xraypanel-hy.$$.json"
+	printf '%s' '{"log":{"loglevel":"none"},"inbounds":[{"listen":"127.0.0.1","port":1,"protocol":"http","tag":"t"}],"outbounds":[{"tag":"h","protocol":"hysteria","settings":{"version":2,"address":"127.0.0.1","port":1},"streamSettings":{"network":"hysteria","security":"tls","tlsSettings":{"serverName":"example.com"},"hysteriaSettings":{"version":2,"auth":"x"}}}],"routing":{"rules":[{"type":"field","inboundTag":["t"],"outboundTag":"h"}]}}' > "$_t" 2>/dev/null
+	if "$_bin" run -test -config "$_t" >/dev/null 2>&1; then _r=yes; else _r=no; fi
+	rm -f "$_t" 2>/dev/null
+	printf '%s|%s' "$_key" "$_r" > "$_sf" 2>/dev/null
+	[ "$_r" = yes ]
 }
 
 reverse_tags() {
@@ -1483,6 +1857,29 @@ server_is_reverse() { # $1 = тег выхода
 		[ "$_rt" = "$1" ] && return 0
 	done
 	return 1
+}
+
+# Способ реверса у конкретного моста: legacy (старый, через домен) или new
+# (VLESS Reverse Proxy). Если у моста не выбрано — берём общий способ роутера.
+bridge_style() { # $1 = раздел моста
+	_bs=$(uci -q get "$UCI_APP.$1.style" 2>/dev/null)
+	case "$_bs" in
+		legacy|new) printf '%s' "$_bs" ;;
+		*)          reverse_style ;;
+	esac
+}
+
+# Тег моста для нового реверса: по этому тегу трафик, пришедший из туннеля,
+# заходит в маршрутизацию xray — его и пишем в выход как "reverse": {"tag": …}
+bridge_tag_for_outbound() { # $1 = тег сервера-выхода
+	for _b in $(bridge_sections); do
+		bridge_disabled "$_b" && continue
+		[ "$(bridge_style "$_b")" = "new" ] || continue
+		[ "$(uci -q get "$UCI_APP.$_b.outbound" 2>/dev/null)" = "$1" ] || continue
+		uci -q get "$UCI_APP.$_b.tag" 2>/dev/null | head -n1
+		return 0
+	done
+	return 0
 }
 
 # --- создание разделов UCI ---------------------------------------------------
@@ -1613,7 +2010,10 @@ gen_outbound_server() { # имя секции
 		[ -n "$_waddr" ] || _waddr="10.0.0.2/32"
 		_wallowed=$(jesc "$(uci -q get "$UCI_APP.$_s.wg_allowed" 2>/dev/null)")
 		[ -n "$_wallowed" ] || _wallowed="0.0.0.0/0"
-		printf '{"tag":"%s","protocol":"wireguard","settings":{"secretKey":"%s","address":["%s"],"peers":[{"endpoint":"%s:%s","publicKey":"%s","allowedIPs":["%s"]}],"mtu":%s}}' \
+		# noKernelTun обязателен на роутерах: без него xray пытается создать
+		# сетевой интерфейс в ядре (/dev/net/tun), которого на OpenWrt обычно нет,
+		# и падает с «CreateTUN("wg0") failed» — то есть вся служба не стартует.
+		printf '{"tag":"%s","protocol":"wireguard","settings":{"secretKey":"%s","address":["%s"],"peers":[{"endpoint":"%s:%s","publicKey":"%s","allowedIPs":["%s"]}],"mtu":%s,"noKernelTun":true}}' \
 			"$_tag" \
 			"$(jesc "$(uci -q get "$UCI_APP.$_s.wg_private")")" "$_waddr" \
 			"$_addr" "$_port" "$(jesc "$(uci -q get "$UCI_APP.$_s.wg_peer")")" "$_wallowed" "$_mtu"
@@ -1623,9 +2023,15 @@ gen_outbound_server() { # имя секции
 	if [ "$_proto" = hysteria ]; then
 		_ins=$(uci -q get "$UCI_APP.$_s.insecure" 2>/dev/null)
 		[ "$_ins" = 1 ] && _insl=',"allowInsecure":true' || _insl=""
-		printf '{"tag":"%s","protocol":"hysteria","settings":{"version":2,"address":"%s","port":%s},"streamSettings":{"network":"hysteria","hysteriaSettings":{"version":2,"auth":"%s"%s}}}' \
-			"$_tag" "$_addr" "$_port" \
-			"$(jesc "$(uci -q get "$UCI_APP.$_s.password")")" "$_insl"
+		# Hysteria 2 работает поверх TLS (QUIC): без блока tlsSettings xray
+		# отказывается — «transport/internet/hysteria: tls config is nil», и
+		# сервер не проходит проверку. Имя для проверки сертификата берём из SNI,
+		# а если он не задан — из адреса сервера.
+		_hsni=$(jesc "$(uci -q get "$UCI_APP.$_s.sni" 2>/dev/null)")
+		[ -n "$_hsni" ] || _hsni="$_addr"
+		printf '{"tag":"%s","protocol":"hysteria","settings":{"version":2,"address":"%s","port":%s},"streamSettings":{"network":"hysteria","security":"tls","tlsSettings":{"serverName":"%s"%s},"hysteriaSettings":{"version":2,"auth":"%s"}}}' \
+			"$_tag" "$_addr" "$_port" "$_hsni" "$_insl" \
+			"$(jesc "$(uci -q get "$UCI_APP.$_s.password")")"
 		return 0
 	fi
 	# --- VMess (часто приходит в подписках)
@@ -1660,6 +2066,19 @@ gen_outbound_server() { # имя секции
 	_sid=$(jesc "$(uci -q get "$UCI_APP.$_s.shortid" 2>/dev/null)")
 	_fp=$(jesc "$(uci -q get "$UCI_APP.$_s.fingerprint" 2>/dev/null)")
 	[ -n "$_fp" ] || _fp="chrome"
+	# Новый реверс (VLESS Reverse Proxy, xray 25.9.11+): у выхода моста
+	# помечается тег, под которым пришедший из туннеля трафик заходит в
+	# маршрутизацию. xray читает эту пометку ТОЛЬКО в упрощённом виде выхода
+	# (address/port/id прямо в settings) — в обычном виде с vnext она молча
+	# игнорируется, и обратный туннель не поднимается.
+	_revt=""
+	# смотрим именно на способ этого моста (bridge_tag_for_outbound его и
+	# проверяет), а не на общий — иначе мост с новым способом на роутере со
+	# старым общим способом остался бы вообще без реверса
+	if server_is_reverse "$_tag"; then
+		_rtag=$(bridge_tag_for_outbound "$_tag")
+		[ -n "$_rtag" ] && _revt=",\"reverse\":{\"tag\":\"$(jesc "$_rtag")\"}"
+	fi
 	# Транспорт: tcp (обычный VLESS+Reality, как было) или ws (WebSocket —
 	# так подключаются через CDN). Для ws Reality и flow не годятся: нужен
 	# обычный TLS, а путь и Host берутся из ссылки/настроек сервера.
@@ -1679,15 +2098,26 @@ gen_outbound_server() { # имя секции
 				[ "$(uci -q get "$UCI_APP.$_s.insecure" 2>/dev/null)" = 1 ] && _wtls="$_wtls,\"allowInsecure\":true"
 				_wtls="$_wtls}"
 			fi
-			printf '{"tag":"%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","encryption":"none"}]}]},"streamSettings":{"network":"ws","security":"%s"%s,"wsSettings":{"path":"%s"' \
-				"$_tag" "$_addr" "$_port" "$_uuid" "$_wsec" "$_wtls" "$_wpath"
+			if [ -n "$_revt" ]; then
+				# новый реверс: упрощённый вид выхода, иначе пометка игнорируется
+				printf '{"tag":"%s","protocol":"vless","settings":{"address":"%s","port":%s,"id":"%s","encryption":"none"%s},"streamSettings":{"network":"ws","security":"%s"%s,"wsSettings":{"path":"%s"' \
+					"$_tag" "$_addr" "$_port" "$_uuid" "$_revt" "$_wsec" "$_wtls" "$_wpath"
+			else
+				printf '{"tag":"%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","encryption":"none"}]}]},"streamSettings":{"network":"ws","security":"%s"%s,"wsSettings":{"path":"%s"' \
+					"$_tag" "$_addr" "$_port" "$_uuid" "$_wsec" "$_wtls" "$_wpath"
+			fi
 			[ -n "$_whost" ] && printf ',"headers":{"Host":"%s"}' "$_whost"
 			printf '}%s}}' "$_mark"
 			return 0
 			;;
 	esac
-	printf '{"tag":"%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","flow":"%s","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"%s","publicKey":"%s","shortId":"%s","fingerprint":"%s","spiderX":"/"}%s}}' \
-		"$_tag" "$_addr" "$_port" "$_uuid" "$_flow" "$_sni" "$_pub" "$_sid" "$_fp" "$_mark"
+	if [ -n "$_revt" ]; then
+		printf '{"tag":"%s","protocol":"vless","settings":{"address":"%s","port":%s,"id":"%s","flow":"%s","encryption":"none"%s},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"%s","publicKey":"%s","shortId":"%s","fingerprint":"%s","spiderX":"/"}%s}}' \
+			"$_tag" "$_addr" "$_port" "$_uuid" "$_flow" "$_revt" "$_sni" "$_pub" "$_sid" "$_fp" "$_mark"
+	else
+		printf '{"tag":"%s","protocol":"vless","settings":{"vnext":[{"address":"%s","port":%s,"users":[{"id":"%s","flow":"%s","encryption":"none"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":"%s","publicKey":"%s","shortId":"%s","fingerprint":"%s","spiderX":"/"}%s}}' \
+			"$_tag" "$_addr" "$_port" "$_uuid" "$_flow" "$_sni" "$_pub" "$_sid" "$_fp" "$_mark"
+	fi
 }
 
 # Выводит готовый конфиг xray в stdout.
@@ -1816,6 +2246,14 @@ gen_config() {
 	_dnsres=${_dnsres%% *}
 	[ -n "$_dnsres" ] || _dnsres="1.1.1.1"
 	_dnsout=$(cfg dns_out "")
+	# «по лучшему пингу» — это «конкретный выход не задан»: DNS уходит правилом
+	# на балансировщик (balancerTag auto). Если бы мы оставили слово auto как
+	# есть, xray получил бы ссылку на несуществующий выход и конфиг не прошёл
+	# бы проверку. same — «как у прозрачного режима».
+	case "$_dnsout" in
+		same) _dnsout=$(cfg transparent_out "") ;;
+	esac
+	case "$_dnsout" in auto|'') _dnsout="" ;; esac
 	[ -n "$_dnsout" ] && outbound_off "$_dnsout" && _dnsout=""
 	# по умолчанию пересылаем DNS через выбранный сервер: внутренний
 	# DNS-выход xray (dns-out) поддерживают не все сборки — на 24.12.31 он
@@ -1832,6 +2270,26 @@ gen_config() {
 	# запрос уходил бы мимо туннеля, то есть с утечкой.
 	DNS_RELAY=1
 	[ "$_dnsmode" = module ] && DNS_RELAY=0
+	# --- новый реверс: отдельные выходы для туннеля ------------------------
+	# Xray по умолчанию полностью блокирует цели для трафика, пришедшего из
+	# VLESS-туннеля нового реверса (политика безопасности freedom). Без явных
+	# разрешений «с сервера на роутер» не попасть: соединение принимается, а
+	# ответа нет, и в журнале ничего не пишется. Поэтому для трафика мостов
+	# пишем отдельные freedom-выходы с finalRules:
+	#   домашняя сеть (lan)   — разрешено всё: и домашняя сеть, и интернет;
+	#   только интернет (direct) — домашние и служебные адреса закрыты,
+	#                              остаётся только выход в интернет.
+	_revnet_need=0
+	_revhome_need=0
+	for _b in $(bridge_sections); do
+		bridge_disabled "$_b" && continue
+		_rn=$(uci -q get "$UCI_APP.$_b.net_outbound" 2>/dev/null)
+		outbound_off "$_rn" && _rn=""
+		[ -n "$_rn" ] || _rn="lan"
+		[ "$_rn" = lan ] && _revhome_need=1
+		[ "$(bridge_style "$_b")" = new ] || continue
+		[ "$_rn" = direct ] && _revnet_need=1
+	done
 	# теги входов DNS-туннеля: по одному на каждый резолвер из списка
 	_dns_tags=""
 	_dns_n=0
@@ -1869,6 +2327,15 @@ gen_config() {
 				auto) _bal_on=1 ;;
 			esac
 		done
+		# DNS может уходить «в лучший сервер» и тогда, когда обычный трафик
+		# идёт мимо серверов (например direct). Без балансировщика такое
+		# правило выпустить нечем — DNS ушёл бы напрямую. Поэтому включаем
+		# балансировщик, если так настроен выход для DNS.
+		if [ "$DNS_TUNNEL_ON" = 1 ]; then
+			case "$(cfg dns_out "")" in
+				''|auto) _bal_on=1 ;;
+			esac
+		fi
 	fi
 	# Адреса серверов, заданные доменом: их нельзя разрешать через туннель
 	# (чтобы подключиться к серверу, нужно знать его IP — иначе замкнутый круг)
@@ -1942,8 +2409,12 @@ EOF
 			# followRedirect=false: запрос идёт на указанный резолвер через
 			# туннель, а не на исходный адрес (иначе клиент, спросивший у
 			# роутера, уходил бы на 192.168.x.x — и запрос умирал бы на
-			# удалённой стороне)
-			printf ',\n    {"listen": "0.0.0.0", "port": %s, "protocol": "dokodemo-door", "settings": {"address": "%s", "port": %s, "network": "tcp,udp", "followRedirect": false}, "streamSettings": {"sockopt": {"tproxy": "tproxy"}}, "tag": "%s"}\n' \
+			# удалённой стороне).
+			# ВАЖНО: без пометки tproxy. С ней xray ждёт «прозрачный» пакет
+			# с сохранённым исходным адресом, а обычный запрос от dnsmasq
+			# (или перенаправленный по DNAT) до входа не доходит — DNS у
+			# клиентов просто перестаёт отвечать.
+			printf ',\n    {"listen": "0.0.0.0", "port": %s, "protocol": "dokodemo-door", "settings": {"address": "%s", "port": %s, "network": "tcp,udp", "followRedirect": false}, "tag": "%s"}\n' \
 				"$_p" "$(jesc "$_dnsaddr")" "$_dnsrport" "$_tag"
 		done
 	fi
@@ -1971,6 +2442,28 @@ EOF
 		printf ',\n'
 		gen_outbound_server "$_s"
 	done
+	# «домашняя сеть»: разрешено всё — и домашняя сеть, и интернет
+	if [ "$_revhome_need" = 1 ]; then
+		printf ',\n    {"tag": "rev-home", "protocol": "freedom", "settings": {"domainStrategy": "AsIs", "finalRules": [{"action": "allow", "network": "tcp,udp", "ip": ["0.0.0.0/0", "::/0"]}]}'
+		if [ "$TRANSPARENT_ON" = 1 ]; then
+			printf ', "streamSettings": {"sockopt": {"mark": 255}}}'
+		else
+			printf '}'
+		fi
+		printf '\n'
+	fi
+	# «только интернет»: сначала закрываем домашние и служебные адреса, потом
+	# разрешаем всё остальное (правила проверяются по порядку, первое совпадение
+	# и решает)
+	if [ "$_revnet_need" = 1 ]; then
+		printf ',\n    {"tag": "rev-net", "protocol": "freedom", "settings": {"domainStrategy": "AsIs", "finalRules": [{"action": "block", "network": "tcp,udp", "ip": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10"]}, {"action": "allow", "network": "tcp,udp", "ip": ["0.0.0.0/0", "::/0"]}]}'
+		if [ "$TRANSPARENT_ON" = 1 ]; then
+			printf ', "streamSettings": {"sockopt": {"mark": 255}}}'
+		else
+			printf '}'
+		fi
+		printf '\n'
+	fi
 	printf '\n  ],\n'
 
 	# реверс-мосты. Старый способ (reverse.bridges) есть только в старых
@@ -1980,18 +2473,33 @@ EOF
 	_rstyle=$(reverse_style)
 	_br=$(for _b in $(bridge_sections); do
 		bridge_disabled "$_b" && continue
+		# в блок старого реверса попадают только мосты, у которых выбран
+		# старый способ: у остальных он новый, им домен не нужен
+		[ "$(bridge_style "$_b")" = "legacy" ] || continue
 		_bt=$(jesc "$(uci -q get "$UCI_APP.$_b.tag")")
 		_bd=$(jesc "$(uci -q get "$UCI_APP.$_b.domain")")
 		[ -n "$_bt" ] && [ -n "$_bd" ] && printf '{"tag":"%s","domain":"%s"}\n' "$_bt" "$_bd"
 	done | json_lines)
-	if [ -n "$_br" ] && [ "$_rstyle" = legacy ]; then
+	# старый блок пишем только если его понимает УСТАНОВЛЕННЫЙ бинарник: иначе
+	# xray отказался бы запускаться целиком. Так панель сама подстраивается под
+	# сборку — при свежем xray мосты со старым способом просто не попадают в
+	# конфиг (в панели они остаются видны, там же и подсказка, что делать).
+	_cap=$(reverse_bin_support 2>/dev/null)
+	if [ -n "$_br" ] && [ "$_rstyle" = legacy ] && [ "$_cap" = both ]; then
 		printf '  "reverse": {\n    "bridges": [\n%s\n    ]\n  },\n' "$_br"
 	fi
 
 	# маршрутизация
 	printf '  "routing": {\n    "domainStrategy": "AsIs",\n'
 	if [ "$_bal_on" = 1 ]; then
-		printf '    "balancers": [\n      {"tag": "auto", "selector": [%s], "strategy": {"type": "leastPing"}}\n    ],\n' "$_srv_tags"
+		# «Спокойный» автовыбор: leastLoad с допуском не переключает сервер,
+		# если разница в задержке небольшая — иначе выбор дёргался между
+		# серверами с почти одинаковым пингом. Выключается галочкой.
+		if [ "$(cfg auto_calm 1)" = 1 ]; then
+			printf '    "balancers": [\n      {"tag": "auto", "selector": [%s], "strategy": {"type": "leastLoad", "settings": {"expected": 1, "maxRTT": "2s", "tolerance": 0.5}}}\n    ],\n' "$_srv_tags"
+		else
+			printf '    "balancers": [\n      {"tag": "auto", "selector": [%s], "strategy": {"type": "leastPing"}}\n    ],\n' "$_srv_tags"
+		fi
 	fi
 	printf '    "rules": [\n'
 	printf '      {"type": "field", "inboundTag": ["api"], "outboundTag": "api"}'
@@ -2010,13 +2518,19 @@ EOF
 				printf ',\n      {"type": "field", "inboundTag": ["dns"], "outboundTag": "%s"}' "$(jesc "$_dnsout")"
 			fi
 		else
-			# пересылка: выпускаем запрос через тот же выход, что и трафик
+			# пересылка. Куда выпускать перехваченный DNS:
+			#   пусто или auto — «по лучшему пингу» (балансировщик),
+			#   same — как у прозрачного режима,
+			#   тег сервера или direct — конкретный выход.
+			# Важно: при «по лучшему пингу» НЕ подставляем выход прозрачного
+			# режима, иначе DNS жёстко садился на один сервер.
 			_dtag=""
-			if [ -n "$_dnsout" ]; then
-				_dtag="$_dnsout"
-			elif [ -n "$_tout" ] && [ "$_tout" != "auto" ]; then
-				_dtag="$_tout"
-			fi
+			case "$(cfg dns_out "")" in
+				''|auto) : ;;
+				same)    _dtag="$_tout" ;;
+				*)       _dtag="$_dnsout" ;;
+			esac
+			[ "$_dtag" = auto ] && _dtag=""
 			if [ -n "$_dtag" ]; then
 				printf ',\n      {"type": "field", "inboundTag": [%s], "outboundTag": "%s"}' "$_dns_tags" "$(jesc "$_dtag")"
 			elif [ "$_bal_on" = 1 ]; then
@@ -2034,10 +2548,22 @@ EOF
 		# куда выпускать трафик, пришедший из туннеля (клиенты портала):
 		# direct = через интернет роутера, либо тег сервера
 		_bn=$(jesc "$(uci -q get "$UCI_APP.$_b.net_outbound" 2>/dev/null)")
-		outbound_off "$(uci -q get "$UCI_APP.$_b.net_outbound" 2>/dev/null)" && _bn=$(jesc "direct")
-		[ -n "$_bn" ] || _bn="direct"
+		outbound_off "$(uci -q get "$UCI_APP.$_b.net_outbound" 2>/dev/null)" && _bn=""
+		[ -n "$_bn" ] || _bn="lan"
+		# у трафика из туннеля свои выходы с разрешениями: обычный direct такой
+		# трафик блокирует, а «только интернет» должен ещё и домашнюю сеть закрыть
+		if [ "$_bn" = lan ]; then
+			_bn="rev-home"
+		elif [ "$_bn" = direct ] && [ "$(bridge_style "$_b")" = new ]; then
+			_bn="rev-net"
+		fi
 		[ -n "$_bt" ] || continue
-		[ -n "$_bo" ] && printf ',\n      {"type": "field", "inboundTag": ["%s"], "domain": ["full:%s"], "outboundTag": "%s"}' "$_bt" "$_bd" "$_bo"
+		# правило «трафик моста на этот домен → в выход» пишем только когда домен
+		# задан: у нового способа реверса домена нет, и условие с пустым
+		# значением было бы мусором в конфиге
+		if [ -n "$_bd" ] && [ -n "$_bo" ]; then
+			printf ',\n      {"type": "field", "inboundTag": ["%s"], "domain": ["full:%s"], "outboundTag": "%s"}' "$_bt" "$_bd" "$_bo"
+		fi
 		printf ',\n      {"type": "field", "inboundTag": ["%s"], "outboundTag": "%s"}' "$_bt" "$_bn"
 	done
 	for _r in $(rule_sections); do
@@ -2045,6 +2571,13 @@ EOF
 		rule_disabled "$_r" && continue
 		# правило, которое указывает на выключенный сервер, тоже не применяем
 		outbound_off "$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)" && continue
+		# и на сервер, который эта сборка xray не умеет (например Hysteria на
+		# старом бинарнике): без этого правила ссылалось бы на отсутствующий
+		# выход, и трафик молча пропадал — в журнале «non existing outTag»
+		_rsec=$(tag_to_section "$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)" 2>/dev/null)
+		if [ -n "$_rsec" ] && ! server_available "$_rsec"; then
+			continue
+		fi
 		_ro=$(jesc "$(uci -q get "$UCI_APP.$_r.outbound")")
 		[ -n "$_ro" ] || continue
 		# цели вида iface:… — это маршрутизация ядра (через интерфейс),
@@ -2123,7 +2656,12 @@ EOF
 	printf '\n    ]\n  },\n'
 	# балансировщику leastPing нужен наблюдатель: без него xray не стартует
 	if [ "$_bal_on" = 1 ]; then
-		printf '  "observatory": {\n    "subjectSelector": [%s],\n    "probeURL": "%s",\n    "probeInterval": "30s",\n    "enableConcurrency": true\n  },\n' "$_srv_tags" "$(jesc "$_probe")"
+		# Как часто xray перепроверяет серверы для автовыбора. 30 секунд —
+		# слишком редко: переключение запаздывало, поэтому по умолчанию 15.
+		_pint=$(cfg probe_interval 15)
+		case "$_pint" in ''|*[!0-9]*) _pint=15 ;; esac
+		[ "$_pint" -ge 5 ] 2>/dev/null || _pint=15
+		printf '  "observatory": {\n    "subjectSelector": [%s],\n    "probeURL": "%s",\n    "probeInterval": "%ss",\n    "enableConcurrency": true\n  },\n' "$_srv_tags" "$(jesc "$_probe")" "$_pint"
 	fi
 	# Без блока "system" xray не ведёт счётчики по входам и выходам вообще:
 	# запрос статистики возвращает пустоту, хотя служба работает. Проверено на
@@ -2184,7 +2722,7 @@ apply_config() {
 		if [ "$_rc" != 0 ] && grep -q "legacy reverse" "$STATE_DIR/last-test.log" 2>/dev/null; then
 			printf 'new\n' > "$STATE_DIR/reverse.style"
 			gen_config > "$_cfg_tmp" && xray_test_config "$_bin" "$_cfg_tmp"
-			_dnsnote="в вашем xray нет старого реверса (его удалили начиная с 25.x) — мосты временно выключены, чтобы xray вообще запустился"
+			_dnsnote="в вашем xray нет старого реверса (в 26.4.17 он ещё есть, в 26.4.25 уже удалён — панель это проверила) — мосты со старым способом в конфиг не попали, чтобы xray вообще запустился"
 		fi
 		# Hysteria 2 знаком только новым сборкам xray: если проверка ругается,
 		# такие серверы из конфига убираем (иначе xray не запустится совсем)
@@ -2209,6 +2747,8 @@ apply_config() {
 	[ -n "$_dnsnote" ] && echo "$_dnsnote"
 	# снимки статистики по выходам (история переключений между серверами)
 	cron_set_exits
+	# проверка новых версий панели (если включена в настройках)
+	cron_set_update "$(cfg update_auto 1)"
 	# маршруты через интерфейс (если такие правила есть) — на уровне ядра
 	iface_routes_apply
 	# Держим ровно одну копию прежнего конфига (перезаписываем её каждый раз):
@@ -2292,9 +2832,30 @@ rollback_config() {
 	echo "восстановлено из $_last. xray перезапускается — обновите страницу через пару секунд."
 }
 
-ping_host() { # хост -> задержка в мс (или пусто)
-	_p=$(ping -c 1 -W 2 "$1" 2>/dev/null | sed -n 's/.*time=\([0-9.]*\).*/\1/p' | head -1)
+ping_host() { # хост -> задержка в мс (или пусто); $2 — сколько секунд ждать ответа
+	_w="${2:-2}"
+	_p=$(ping -c 1 -W "$_w" "$1" 2>/dev/null | sed -n 's/.*time=\([0-9.]*\).*/\1/p' | head -1)
 	printf '%s' "$_p"
+}
+
+# --- точные часы -------------------------------------------------------------
+# На роутере нет ни дробного sleep, ни date с долями секунды, а /proc/uptime
+# отдаёт только сотые доли (шаг 10 мс). Поэтому берём наносекунды из
+# /proc/timer_list — там строка «now at N nsecs» с точностью часов ядра.
+# Если файла нет (или ядро его не отдаёт), откатываемся на /proc/uptime.
+now_ns() {
+	_n=$(awk '/now at/{print $3; exit}' /proc/timer_list 2>/dev/null)
+	case "$_n" in
+		''|*[!0-9]*) ;;
+		*) printf '%s' "$_n"; return 0 ;;
+	esac
+	_u=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+	case "$_u" in ''|*[!0-9.]*) _u=0 ;; esac
+	awk -v u="$_u" 'BEGIN{ printf "%.0f", u * 1000000000 }'
+}
+
+ms_between() { # $1 $2 — наносекунды -> миллисекунды (одна цифра после точки)
+	awk -v a="$1" -v b="$2" 'BEGIN{ d = (b - a) / 1000000; if (d < 0) d = 0; printf "%.1f", d }'
 }
 
 # --- настоящая проверка узла: качаем тестовый адрес через этот сервер --------
@@ -2306,8 +2867,26 @@ URLTEST_FILE="$STATE_DIR/urltest"
 url_test_url() { cfg url_test_url "http://www.gstatic.com/generate_204"; }
 url_test_port() { cfg url_test_port 18999; }
 
-url_test_reason() { # $1 — файл журнала проверки: печатает причину отказа словами
+# Тот же uuid, что у выхода реверс-моста? xray запрещает клиенту с пометкой
+# reverse работать обычным выходом («for safety reasons ... not allowed to use
+# forward proxy»), поэтому такой сервер проверку пройти не может.
+uuid_used_by_reverse() { # $1 = тег сервера
+	_u=$(uci -q get "$UCI_APP.$(tag_to_section "$1").uuid" 2>/dev/null)
+	[ -n "$_u" ] || return 1
+	for _b in $(bridge_sections); do
+		bridge_disabled "$_b" && continue
+		_o=$(uci -q get "$UCI_APP.$_b.outbound" 2>/dev/null)
+		[ -n "$_o" ] || continue
+		_s=$(tag_to_section "$_o")
+		[ -n "$_s" ] || continue
+		[ "$(uci -q get "$UCI_APP.$_s.uuid" 2>/dev/null)" = "$_u" ] && return 0
+	done
+	return 1
+}
+
+url_test_reason() { # $1 — файл журнала проверки, $2 — тег сервера (необязательно)
 	_f="${1:-$STATE_DIR/last-test.log}"
+	_ctx="$2"
 	[ -f "$_f" ] || return 0
 	_t=$(tail -n 80 "$_f" 2>/dev/null)
 	case "$_t" in
@@ -2318,6 +2897,22 @@ url_test_reason() { # $1 — файл журнала проверки: печа�
 		*"connection refused"*) printf 'сервер отклонил соединение — порт закрыт' ;;
 		*"network is unreachable"*|*"no route to host"*) printf 'нет маршрута до сервера' ;;
 		*"i/o timeout"*|*"deadline exceeded"*)  printf 'сервер не ответил вовремя' ;;
+		# клиент достучался и отправил запрос, а сервер сразу закрыл соединение.
+		# Так ведут себя входы, сделанные под реверс (обратный туннель): они
+		# принимают клиента, но трафик в интернет не выпускают. Ровно так же
+		# выглядит и не подошедший ключ Reality — сервер молча уводит клиента
+		# на настоящий сайт. Снаружи эти два случая не различить, поэтому
+		# подсказка зависит от того, занят сервер мостом или нет.
+		*"tunneling request"*"EOF"*)
+			if [ -n "$_ctx" ] && server_is_reverse "$_ctx"; then
+				printf 'сервер принял клиента и сразу закрыл соединение: этот вход работает как портал реверса (выход для моста), наружу через него не выйти'
+			elif [ -n "$_ctx" ] && uuid_used_by_reverse "$_ctx"; then
+				printf 'сервер принял клиента и сразу закрыл соединение: у этого сервера тот же uuid, что у клиента реверс-моста, а xray такому клиенту обычный выход запрещает. Нужен отдельный клиент (свой uuid без пометки reverse) на этом входе'
+			else
+				printf 'сервер принял клиента и сразу закрыл соединение: похоже, не совпали данные клиента — uuid/flow на входе или ключ Reality (pbk, shortId, SNI)'
+			fi
+			;;
+		*"REALITY"*"invalid connection"*)       printf 'сервер не признал ключ Reality (pbk / shortId / SNI) — сверьте их с настройками входа' ;;
 		*"unexpected EOF"*|*"EOF"*) printf 'соединение оборвалось без ответа' ;;
 		*"unknown transport"*|*"unsupported"*) printf 'эта сборка xray не умеет такой транспорт' ;;
 		# запрос ушёл, ответа нет и ошибки нет — сервер просто молчит
@@ -2328,6 +2923,8 @@ url_test_reason() { # $1 — файл журнала проверки: печа�
 
 url_test_server() { # $1 = тег сервера; печатает «<мс> мс» или причину отказа
 	_tag="$1"
+	# причина отказа (для страницы «Серверы»): заполняется, если проверка не прошла
+	URLTEST_REASON=""
 	_sec=$(tag_to_section "$_tag")
 	[ -n "$_sec" ] || { printf 'нет такого сервера'; return 1; }
 	_bin=$(xray_bin)
@@ -2367,62 +2964,100 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 	"$_bin" run -config "$_cfg" >>"$STATE_DIR/urltest.log" 2>&1 &
 	_pid=$!
 	sleep 1
-	_t0=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
-	# Качаем с ограничением по времени: wget умеет повторять попытки, поэтому
-	# без ограничения можно ждать минутами. Если есть timeout — берём его.
-	_rc=1
-	if command -v timeout >/dev/null 2>&1; then
-		http_proxy="$_proxy" timeout 12 wget -q -O /dev/null -T 5 "$_target" >/dev/null 2>&1 && _rc=0
-	else
-		_rcf="$STATE_DIR/urltest.rc"
-		rm -f "$_rcf" 2>/dev/null
-		( http_proxy="$_proxy" wget -q -O /dev/null -T 5 "$_target" >/dev/null 2>&1; printf '%s' "$?" > "$_rcf" ) &
-		_n=0
-		while [ ! -f "$_rcf" ] && [ "$_n" -lt 12 ]; do
-			sleep 1
+	# Три попытки, берём лучшее время. Время меряем точными часами ядра прямо
+	# вокруг запроса, а не опросом раз в секунду: раньше из-за опроса у всех
+	# серверов выходили «круглые» 1000 / 1010 / 1020 мс, и по ним нельзя было
+	# ничего сравнивать. Запросы идут в фоне (повисший wget не задержит ответ
+	# страницы), а панель только ждёт, пока в файле появятся три замера.
+	_rcf="$STATE_DIR/urltest.rc.$$"
+	rm -f "$_rcf" 2>/dev/null
+	(
+		_n=1
+		while [ "$_n" -le 3 ]; do
+			_a=$(now_ns)
+			http_proxy="$_proxy" wget -q -O /dev/null -T 5 "$_target" >/dev/null 2>&1
+			_r=$?
+			_b=$(now_ns)
+			printf '%s %s %s\n' "$_a" "$_b" "$_r"
 			_n=$((_n + 1))
 		done
-		_rc=$(cat "$_rcf" 2>/dev/null)
-		rm -f "$_rcf" 2>/dev/null
-		pkill -f "127.0.0.1:$_tport" 2>/dev/null
+	) > "$_rcf" 2>/dev/null &
+	_wpid=$!
+	_n=0
+	while [ "$_n" -lt 20 ]; do
+		_done=$(awk 'END { print NR }' "$_rcf" 2>/dev/null)
+		[ "${_done:-0}" -ge 3 ] && break
+		sleep 1
+		_n=$((_n + 1))
+	done
+	_best=""
+	_rc=1
+	if [ -s "$_rcf" ]; then
+		while read -r _a _b _r; do
+			[ -n "$_r" ] || continue
+			if [ "$_r" != 0 ]; then _rc="$_r"; continue; fi
+			_rc=0
+			_ms=$(ms_between "$_a" "$_b")
+			if [ -z "$_best" ] || awk -v a="$_ms" -v b="$_best" 'BEGIN{ exit !(a < b) }'; then
+				_best="$_ms"
+			fi
+		done < "$_rcf"
 	fi
-	_t1=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
-	if [ "$_rc" = 0 ]; then
-		_ms=$(awk -v a="$_t0" -v b="$_t1" 'BEGIN { printf "%d", (b - a) * 1000 }')
+	kill "$_wpid" 2>/dev/null
+	rm -f "$_rcf" 2>/dev/null
+	if [ -n "$_best" ]; then
+		_ms="$_best"
 	else
 		_ms=""
 		# даём проверочному xray дописать в журнал, почему не получилось
 		sleep 1
-		_why=$(url_test_reason "$_lgf")
+		# второй довод — тег сервера: по нему подсказка понимает, занят ли этот
+		# вход реверс-мостом (тогда «молчание» ожидаемо) или дело в ключах
+		_why=$(url_test_reason "$_lgf" "$_tag")
+		URLTEST_REASON="$_why"
 	fi
 	kill "$_pid" 2>/dev/null
+	pkill -f "run -config $_cfg" 2>/dev/null
 	rm -f "$_cfg" 2>/dev/null
 	if [ -n "$_ms" ]; then
 		printf '%s мс' "$_ms"
 	else
-		# нет ответа — объясняем, на чём именно оборвалось
-		if [ -n "$_why" ]; then printf 'нет ответа (%s)' "$_why"; else printf 'нет ответа'; fi
+		# В таблице держим короткий текст: длинная причина разъезжалась по
+		# высоте и ломала вид столбца. Подробности (что именно оборвалось)
+		# остаются в журнале последней проверки — их показывает страница
+		# «Серверы» подписью под таблицей и во всплывающей подсказке.
+		printf 'нет ответа'
 	fi
 }
 
-url_test_save() { # $1 = тег, $2 = результат
+url_test_save() { # $1 = тег, $2 = результат, $3 = причина отказа (необязательно)
 	_tf="$URLTEST_FILE.new.$$"
 	[ -f "$URLTEST_FILE" ] && grep -v "^$1	" "$URLTEST_FILE" > "$_tf" 2>/dev/null || : > "$_tf"
-	printf '%s\t%s\t%s\n' "$1" "$2" "$(date '+%H:%M:%S')" >> "$_tf"
+	printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(date '+%H:%M:%S')" "$3" >> "$_tf"
 	mv -f "$_tf" "$URLTEST_FILE" 2>/dev/null
 }
 
 url_test_all() {
+	_otf="$STATE_DIR/urltest.out.$$"
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		[ -n "$_t" ] || continue
-		url_test_save "$_t" "$(url_test_server "$_t")"
+		# вызываем без подстановки команды: иначе причина отказа осталась бы в
+		# подоболочке и не попала в таблицу проверок
+		url_test_server "$_t" > "$_otf" 2>/dev/null
+		url_test_save "$_t" "$(cat "$_otf" 2>/dev/null)" "$URLTEST_REASON"
 	done
+	rm -f "$_otf" 2>/dev/null
 }
 
 url_test_saved() { # $1 = тег -> сохранённый результат
 	[ -f "$URLTEST_FILE" ] || return 0
 	awk -F'\t' -v t="$1" '$1 == t { print $2 " (" $3 ")" }' "$URLTEST_FILE" 2>/dev/null | head -1
+}
+
+url_test_saved_reason() { # $1 = тег -> сохранённая причина отказа (или пусто)
+	[ -f "$URLTEST_FILE" ] || return 0
+	awk -F'\t' -v t="$1" '$1 == t { print $4 }' "$URLTEST_FILE" 2>/dev/null | head -1
 }
 
 # --- статистика трафика ------------------------------------------------------
@@ -2725,6 +3360,56 @@ client_traffic() { # трафик по клиентам: «адрес<TAB>отп
 }
 
 # периодическая проверка узлов: строка в cron
+client_traffic_cached() { # то же, что client_traffic, но не чаще раза в 5 секунд
+	# кэш держим в оперативной памяти (/tmp), а не во флеш-памяти роутера:
+	# он обновляется каждые 5 секунд, флешку изнашивать незачем
+	_cache="/tmp/.xraypanel-clients.cache"
+	_at="/tmp/.xraypanel-clients.at"
+	_now=$(date +%s 2>/dev/null)
+	[ -n "$_now" ] || _now=0
+	_cat=$(cat "$_at" 2>/dev/null)
+	case "$_cat" in ''|*[!0-9]*) _cat=0 ;; esac
+	if [ -s "$_cache" ] && [ $((_now - _cat)) -lt 5 ]; then
+		cat "$_cache"
+		return 0
+	fi
+	_out=$(client_traffic 2>/dev/null)
+	printf '%s\n' "$_out" > "$_cache" 2>/dev/null
+	printf '%s\n' "$_now" > "$_at" 2>/dev/null
+	printf '%s\n' "$_out"
+}
+
+# Журнал обращений xray растёт без ограничения (на 21.09.2026 он был 24,6 МБ,
+# 322 886 строк) и лежит в оперативной памяти роутера. Держим в нём последние
+# строки: лампочкам и «что ходило» хватает последней пары минут, а страницы
+# читают короткий файл. Проверяем не чаще раза в 10 минут, чтобы не тратить
+# время на сам файл.
+trim_access_log() { # $1 = сколько строк оставить (по умолчанию 5000)
+	_keep=${1:-5000}
+	_log="$(cfg log_dir "/var/log")/xray-access.log"
+	[ -f "$_log" ] || return 0
+	_now=$(date +%s 2>/dev/null)
+	[ -n "$_now" ] || _now=0
+	_stamp="/tmp/.xraypanel-log-trim.at"
+	_cat=$(cat "$_stamp" 2>/dev/null)
+	case "$_cat" in ''|*[!0-9]*) _cat=0 ;; esac
+	[ $((_now - _cat)) -lt 600 ] && return 0
+	_sz=$(stat -c %s "$_log" 2>/dev/null)
+	[ -n "$_sz" ] || _sz=$(wc -c < "$_log" 2>/dev/null)
+	case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
+	# ~250 000 байт — это примерно те же 5000 строк: меньше не трогаем
+	if [ "$_sz" -lt 250000 ]; then
+		printf '%s\n' "$_now" > "$_stamp" 2>/dev/null
+		return 0
+	fi
+	_tmp="/tmp/.xraypanel-log-trim.$$"
+	if tail -n "$_keep" "$_log" > "$_tmp" 2>/dev/null; then
+		cat "$_tmp" > "$_log" 2>/dev/null
+	fi
+	rm -f "$_tmp" 2>/dev/null
+	printf '%s\n' "$_now" > "$_stamp" 2>/dev/null
+}
+
 lan_clients() { # известные адреса клиентов локальной сети (из DHCP)
 	for _h in $(uci -q show dhcp 2>/dev/null | sed -n 's/^dhcp\.\([^.]*\)=host$/\1/p'); do
 		uci -q get "dhcp.$_h.ip" 2>/dev/null
@@ -2935,6 +3620,9 @@ server_add_from_link() {
 			[ -n "$_wgpub" ] && uci -q set "$UCI_APP.$_sec.wg_peer=$_wgpub"
 			_wgadr=$(_q address)
 			[ -n "$_wgadr" ] && uci -q set "$UCI_APP.$_sec.wg_address=$_wgadr"
+			_wgall=$(_q allowedips)
+			[ -n "$_wgall" ] || _wgall=$(_q allowed_ips)
+			[ -n "$_wgall" ] && uci -q set "$UCI_APP.$_sec.wg_allowed=$_wgall"
 			_wgmtu=$(_q mtu)
 			case "$_wgmtu" in ''|*[!0-9]*) ;; *) uci -q set "$UCI_APP.$_sec.mtu=$_wgmtu" ;; esac
 			;;
@@ -3067,7 +3755,7 @@ sub_update() { # $1 = имя секции подписки
 		[ -n "$_ln" ] || continue
 		_total=$((_total + 1))
 		case "$_ln" in
-			vless://*|ss://*|hysteria2://*|hy2://*) ;;
+			vless://*|ss://*|hysteria2://*|hy2://*|vmess://*|trojan://*|wireguard://*|wg://*) ;;
 			*)
 				_unsup=$((_unsup + 1))
 				_sc=${_ln%%://*}
@@ -3170,6 +3858,70 @@ cron_set_subs() { # $1 = период в часах (0 = выключить)
 	fi
 }
 
+# автообновление готовых списков (geosite/geoip): $1 — период в днях (0 = выкл),
+# $2 — источник (loyalsoldier|v2fly|russia). Раз в неделю — по понедельникам,
+# раз в месяц — 1-го числа, оба раза ночью: роутер в это время свободнее.
+cron_set_geo() { # $1 период в днях, $2 источник
+	case "${1:-0}" in
+		7)  _sch="0 4 * * 1" ;;
+		30) _sch="0 4 1 * *" ;;
+		*)  cron_set "xraypanel-geo" "" ""; return 0 ;;
+	esac
+	case "${2:-}" in
+		loyalsoldier|v2fly|russia) _src="$2" ;;
+		*) _src="loyalsoldier" ;;
+	esac
+	cron_set "xraypanel-geo" "$_sch" "/usr/lib/xraypanel/geo-update.sh $_src >/dev/null 2>&1"
+}
+
+# --- обновление самой панели (GitHub) ---------------------------------------
+# Что нашла последняя проверка: строки «ключ<TAB>значение» (date, version, tag,
+# url, size, page). Пишет их update-check.sh.
+update_field() { # $1 = ключ
+	awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' "$STATE_DIR/update.info" 2>/dev/null
+}
+
+# что нового в найденном релизе (текст с GitHub)
+update_notes() {
+	_f="$STATE_DIR/update.notes"
+	[ -s "$_f" ] && cat "$_f" 2>/dev/null
+}
+
+# сколько секунд назад проверяли обновления (пусто, если ни разу)
+update_checked_ago() {
+	_f="$STATE_DIR/update.at"
+	[ -s "$_f" ] || return 0
+	_a=$(cat "$_f" 2>/dev/null)
+	case "$_a" in ''|*[!0-9]*) return 0 ;; esac
+	_n=$(date +%s 2>/dev/null)
+	case "$_n" in ''|*[!0-9]*) return 0 ;; esac
+	[ "$_n" -ge "$_a" ] && printf '%s' "$((_n - _a))"
+}
+
+# версия $1 новее, чем $2? (сравниваем по числам: 0.67.0 > 0.66.44)
+ver_newer() {
+	awk -v a="${1:-}" -v b="${2:-}" '
+		BEGIN {
+			na = split(a, x, "."); nb = split(b, y, ".")
+			n = (na > nb ? na : nb)
+			for (i = 1; i <= n; i++) {
+				va = x[i] + 0; vb = y[i] + 0
+				if (va > vb) { print "yes"; exit }
+				if (va < vb) { print "no"; exit }
+			}
+			print "no"
+		}'
+}
+
+# проверка обновлений раз в сутки (по cron)
+cron_set_update() { # $1 = 1 включить, 0 выключить
+	if [ "${1:-0}" = 1 ]; then
+		cron_set "xraypanel-update" "17 5 * * *" "/usr/lib/xraypanel/update-check.sh >/dev/null 2>&1"
+	else
+		cron_set "xraypanel-update" "" ""
+	fi
+}
+
 cron_set_urltest() { # $1 = интервал в минутах, 0 — выключить
 	_cf=/etc/crontabs/root
 	[ -d /etc/crontabs ] || return 0
@@ -3266,6 +4018,16 @@ geo_files() {
 
 geo_tags_cache() { printf '%s/geo-tags.tsv' "$STATE_DIR"; }
 
+# Размер файла в байтах, НЕ читая сам файл: `wc -c < file` в busybox читает
+# файл целиком (geosite.dat — 10–17 МБ), и на роутере это стоит ~80 мс на файл.
+# `ls` только спрашивает размер у системы — поэтому страницы со списками
+# перестают тормозить.
+file_size() { # $1 = файл
+	_s=$(ls -l "$1" 2>/dev/null | awk '{ print $5 }')
+	case "$_s" in ''|*[!0-9]*) _s=0 ;; esac
+	printf '%s' "$_s"
+}
+
 # сколько названий нашлось из кэша: $1 = geosite|geoip
 geo_tags_count() {
 	_c=$(geo_tags_cache)
@@ -3312,17 +4074,21 @@ geo_signature() {
 	for _k in geosite geoip; do
 		for _pair in $(geo_files "$_k" | tr '\t' ':'); do
 			_f=${_pair%%:*}
-			_sig="$_sig${_k}:${_f}:$(wc -c <"$_f" 2>/dev/null):$(date -r "$_f" +%s 2>/dev/null);"
+			# размер — через file_size: wc -c читал бы файл целиком и отпечаток
+			# (а значит и открытие «Маршрутов») стоил бы почти секунду
+			_sig="$_sig${_k}:${_f}:$(file_size "$_f"):$(date -r "$_f" +%s 2>/dev/null);"
 		done
 	done
 	printf '%s' "$_sig"
 }
 
-geo_cache_fresh() { # кэш собран для текущего набора файлов?
+geo_cache_fresh() { # кэш собран для текущего набора файлов? $1 = отпечаток (необязательно)
 	[ -s "$(geo_tags_cache)" ] || return 1
 	_s=$(cat "$STATE_DIR/geo-tags.sig" 2>/dev/null)
 	[ -n "$_s" ] || return 1
-	[ "$_s" = "$(geo_signature)" ]
+	_now="${1:-}"
+	[ -n "$_now" ] || _now=$(geo_signature)
+	[ "$_s" = "$_now" ]
 }
 
 # названия, в которых встречается введённое — подсказка, когда точного нет
@@ -3392,6 +4158,12 @@ dns_lookup() { # $1 домен, $2 сервер (пусто = через роу�
 # куда фактически уходит DNS-запрос при текущих настройках
 dns_effective_out() {
 	_do=$(cfg dns_out "")
+	# пусто (по умолчанию) и явное «по лучшему пингу» — один и тот же случай:
+	# DNS выпускает балансировщик, то есть самый быстрый сейчас сервер
+	case "$_do" in
+		''|auto) printf 'auto'; return 0 ;;
+		same)    _do="" ;;
+	esac
 	_to=$(cfg transparent_out "")
 	if [ -n "$_do" ]; then printf '%s' "$_do"; return 0; fi
 	if [ -n "$_to" ] && [ "$_to" != auto ]; then printf '%s' "$_to"; return 0; fi
@@ -3440,6 +4212,19 @@ rule_activity() { # печатает «источник<TAB>куда<TAB>вых�
 	[ -f "$_log" ] || return 0
 	_now=$(date +%s 2>/dev/null)
 	[ -n "$_now" ] || _now=0
+	# Разбор журнала стоит дорого, а за одну отрисовку страницы его просят
+	# несколько раз (активный выход, «идёт через» у клиентов, «что ходило»,
+	# лампочки правил). Держим готовый разбор 5 секунд: журнал читается один
+	# раз, а не шесть, и страницы перестают тормозить.
+	# кэш держим в оперативной памяти (/tmp), а не во флеш-памяти роутера
+	_cache="/tmp/.xraypanel-journal.cache"
+	_at="/tmp/.xraypanel-journal.at"
+	_cat=$(cat "$_at" 2>/dev/null)
+	case "$_cat" in ''|*[!0-9]*) _cat=0 ;; esac
+	if [ -s "$_cache" ] && [ $((_now - _cat)) -lt 5 ]; then
+		cat "$_cache"
+		return 0
+	fi
 	# Лампочки должны показывать настоящий трафик из интернета, а не служебную
 	# беготню: проверки панели ходят на адрес probe_url, панель и SSH — на сам
 	# роутер и в локальную сеть, а к серверам-выходам обращается сам xray.
@@ -3450,7 +4235,7 @@ rule_activity() { # печатает «источник<TAB>куда<TAB>вых�
 		_probe=$(probe_hosts)
 		_skip=$( { own_ips; server_ips; } | awk 'NF' | LC_ALL=C sort -u | tr '\n' ' ')
 	fi
-	tail -n 400 "$_log" 2>/dev/null | LC_ALL=C awk -v now="$_now" -v skip="$_skip" -v probe="$_probe" -v cntf="$STATE_DIR/lamp-skip.count" '
+	_out=$(tail -n 400 "$_log" 2>/dev/null | LC_ALL=C awk -v now="$_now" -v skip="$_skip" -v probe="$_probe" -v cntf="$STATE_DIR/lamp-skip.count" '
 		BEGIN {
 			n = split(skip, a, " ")
 			for (i = 1; i <= n; i++) if (a[i] != "") skipip[a[i]] = 1
@@ -3500,7 +4285,10 @@ rule_activity() { # печатает «источник<TAB>куда<TAB>вых�
 			print src "\t" dst "\t" out "\t" age
 		}
 		END { if (cntf != "") printf "%d\n", skipped > cntf }
-	'
+	')
+	printf '%s\n' "$_out" > "$_cache" 2>/dev/null
+	printf '%s\n' "$_now" > "$_at" 2>/dev/null
+	printf '%s\n' "$_out"
 }
 
 # какие правила недавно вели трафик: «раздел<TAB>сколько секунд назад<TAB>куда»
@@ -3510,7 +4298,14 @@ rules_activity() {
 	_rf="$STATE_DIR/rules-activity.list"
 	_af="$STATE_DIR/rules-activity.log"
 	: > "$_rf"
-	rule_conditions 2>/dev/null | while IFS="$(printf '\t')" read -r _r _s _t _v; do
+	# Поля режем сами, а не через «read -r _r _s _t _v»: у правила без источника
+	# поле пустое, а read пустое поле «съедает» — остальные сдвигаются влево, и
+	# правило оставалось без лампочки. cut пустые поля сохраняет.
+	rule_conditions 2>/dev/null | while IFS= read -r _line; do
+		_r=$(printf '%s' "$_line" | cut -f1)
+		_s=$(printf '%s' "$_line" | cut -f2)
+		_t=$(printf '%s' "$_line" | cut -f3)
+		_v=$(printf '%s' "$_line" | cut -f4)
 		[ -n "$_r" ] || continue
 		rule_disabled "$_r" && continue
 		_o=$(uci -q get "$UCI_APP.$_r.outbound" 2>/dev/null)
@@ -3529,7 +4324,7 @@ rules_activity() {
 	if [ "$(dns_log_state)" = on ]; then
 		dns_log_pairs >/dev/null 2>&1
 	fi
-	LC_ALL=C awk -F'\t' -v mapf="$DNS_LOG_MAP" '
+	LC_ALL=C awk -F'\t' -v mapf="$DNS_LOG_MAP" -v destmap="$STATE_DIR/rules-dests.tsv" -v geodir="$STATE_DIR" '
 		BEGIN {
 			# имена сайтов из журнала запросов dnsmasq: по адресу видно, что
 			# это за сайт. Тогда правила по домену, слову и шаблону можно
@@ -3560,22 +4355,103 @@ rules_activity() {
 			}
 			return 0
 		}
-		function val_ok(i, d,   tail, a, c, b) {
-			# готовые списки (geosite/geoip) целиком на роутере не разбираем —
-			# для них признак один: трафик ушёл через выход этого правила
-			if (r_val[i] == "" || r_typ[i] == "geosite" || r_typ[i] == "geoip") return 1
-			if (r_typ[i] == "full") return d == r_val[i]
-			if (r_typ[i] == "keyword") return index(d, r_val[i]) > 0
-			# шаблон проверяем только когда знаем имя сайта: иначе, как и
-			# раньше, правило отмечается «по выходу»
+		# разобранный готовый список доменов (файл делает geo-item.sh): пока
+		# файла нет, про такое правило можно судить только «по выходу», как
+		# раньше. Как только файл есть — проверяем по домену, и правило ловит
+		# ровно свои сайты, а не весь трафик, который ушёл через сервер.
+		function geoload(i,   f, ln, c) {
+			if (i in geodone) return geodone[i]
+			geodone[i] = 0
+			if (r_typ[i] != "geosite" || r_val[i] == "" || geodir == "") return 0
+			f = geodir "/geosite." r_val[i] ".domains"
+			c = 0
+			while ((getline ln < f) > 0) {
+				sub(/\r$/, "", ln)
+				gsub(/^[ \t]+/, "", ln); gsub(/[ \t]+$/, "", ln)
+				if (ln == "") continue
+				geodom[i "\t" tolower(ln)] = 1
+				c++
+			}
+			close(f)
+			if (c > 0) geodone[i] = 1
+			return geodone[i]
+		}
+		function dom_in(i, d,   s, p) {
+			s = tolower(d)
+			while (s != "") {
+				if ((i "\t" s) in geodom) return 1
+				p = index(s, ".")
+				if (p == 0) break
+				s = substr(s, p + 1)
+			}
+			return 0
+		}
+		# Разобранный список адресов (geoip, файл делает geo-item.sh): диапазоны
+		# складываем в таблицу «сдвиг:начало сети» — так проверка адреса занимает
+		# 33 обращения вместо перебора тысяч диапазонов.
+		function ip2n(s,   a, n, i) {
+			n = split(s, a, ".")
+			if (n != 4) return -1
+			for (i = 1; i <= 4; i++) if (a[i] !~ /^[0-9]+$/ || a[i] > 255) return -1
+			return ((a[1] * 256 + a[2]) * 256 + a[3]) * 256 + a[4]
+		}
+		function geoipload(i,   f, ln, a, base, p, c) {
+			if (i in geoidone) return geoidone[i]
+			geoidone[i] = 0
+			if (r_typ[i] != "geoip" || r_val[i] == "" || geodir == "") return 0
+			f = geodir "/geoip." r_val[i] ".cidr"
+			c = 0
+			while ((getline ln < f) > 0) {
+				sub(/\r$/, "", ln)
+				gsub(/^[ \t]+/, "", ln); gsub(/[ \t]+$/, "", ln)
+				if (ln == "") continue
+				split(ln, a, "/")
+				base = ip2n(a[1]); p = a[2] + 0
+				if (base < 0 || p < 0 || p > 32) continue
+				geonet[i "\t" (32 - p) ":" int(base / 2 ^ (32 - p))] = 1
+				c++
+			}
+			close(f)
+			if (c > 0) geoidone[i] = 1
+			return geoidone[i]
+		}
+		# 1 — адрес в списке, 0 — нет, -1 — проверить нечем (не IPv4 или нет файла)
+		function geoip_check(i, ip,   n, sh) {
+			n = ip2n(ip)
+			if (n < 0) return -1
+			if (!geoipload(i)) return -1
+			for (sh = 0; sh <= 32; sh++)
+				if ((i "\t" sh ":" int(n / 2 ^ sh)) in geonet) return 1
+			return 0
+		}
+		# Насколько условие подходит адресу: 0 — не подходит, 1 — подходит ТОЧНО
+		# (панель условие проверила), 2 — «по выходу»: проверить нечем (geoip,
+		# готовый список без разобранного файла, неизвестное имя сайта).
+		function val_kind(i, d,   tail, a, c, b) {
+			if (r_val[i] == "") return 2
+			# адреса (geoip): если список разобран — проверяем по адресу, иначе
+			# судим «по выходу»
+			if (r_typ[i] == "geoip") {
+				g = geoip_check(i, d)
+				return (g == 1) ? 1 : ((g == 0) ? 0 : 2)
+			}
+			if (r_typ[i] == "geosite") {
+				if (nm == "" || !geoload(i)) return 2
+				return dom_in(i, nm) ? 1 : 0
+			}
+			if (r_typ[i] == "full") return (d == r_val[i]) ? 1 : 0
+			if (r_typ[i] == "keyword") {
+				if (nm == "") return 2
+				return (index(d, r_val[i]) > 0) ? 1 : 0
+			}
 			if (r_typ[i] == "regexp") {
-				if (nm == "") return 1
-				return match(d, r_val[i]) > 0
+				if (nm == "") return 2
+				return (match(d, r_val[i]) > 0) ? 1 : 0
 			}
 			if (r_typ[i] == "domain") {
 				if (d == r_val[i]) return 1
 				tail = substr(d, length(d) - length(r_val[i]))
-				return tail == "." r_val[i]
+				return (tail == "." r_val[i]) ? 1 : 0
 			}
 			if (r_typ[i] == "ip") {
 				if (d == r_val[i]) return 1
@@ -3586,32 +4462,54 @@ rules_activity() {
 				}
 				return 0
 			}
-			return 1
+			return 2
 		}
 		{
 			# имя сайта для этого адреса (если панель знает его из журнала
 			# запросов dnsmasq). Для правил по домену, слову и шаблону
 			# сравниваем именно имя, а не адрес.
 			nm = byname[$2]
+			# xray берёт ПЕРВОЕ подходящее правило сверху вниз — порядок уважаем.
+			# Но сначала ищем ТОЧНОЕ совпадение (условие проверено по разобранному
+			# списку или известному имени сайта): иначе правило с непроверяемым
+			# условием забирало бы себе весь трафик, ушедший через сервер, и
+			# лампочка горела бы не на той строке.
+			# Второй проход — «по выходу», но сначала примеряем правила с
+			# конкретным выходом, который совпал с выходом из журнала (у таких
+			# правил видно не только «ушло через сервер», но и через какой
+			# именно). Третий — все остальные, по порядку, как раньше.
 			claimed = 0
-			for (pass = 0; pass <= 1 && !claimed; pass++) {
-				for (i = 1; i <= n; i++) {
-					if (r_weak[i] != pass) continue
+			for (pass = 1; pass <= 3 && !claimed; pass++) {
+				for (i = 1; i <= n && !claimed; i++) {
 					# у правила «по пингу» в журнале стоит тег выбранного сервера
-				if (r_out[i] == "auto") {
+					if (r_out[i] == "auto") {
 						if ($3 == "direct" || $3 == "blocked") continue
 					} else if ($3 != r_out[i]) continue
 					if (!src_ok(i, $1)) continue
 					dp = (nm != "" && r_typ[i] != "ip" && r_typ[i] != "geoip") ? nm : $2
-					if (!val_ok(i, dp)) continue
+					k = val_kind(i, dp)
+					if (k == 0) continue
+					if (pass == 1 && k != 1) continue
+					if (pass == 2 && (k != 2 || r_out[i] == "auto" || r_out[i] != $3)) continue
 					if (!(i in best) || $4 + 0 < best[i] + 0) { best[i] = $4; dest[i] = dp; out_tag[i] = $3 }
 					cnt_dest[i "\t" dp]++
+					# запоминаем правило для каждого адреса: по этой карте набор
+					# показывает активность только своих правил, а не чужих
+					age_dest[i "\t" dp] = $4
 					claimed = 1
-					break
 				}
 			}
 		}
 		END {
+			# карта «куда → правило» для подсветки записей внутри наборов
+			if (destmap != "") {
+				for (k in cnt_dest) {
+					split(k, a, "\t")
+					if (a[1] == "" || a[2] == "") continue
+					print a[2] "\t" r_sec[a[1]] "\t" (age_dest[k] + 0) > destmap
+				}
+				close(destmap)
+			}
 			for (i = 1; i <= n; i++) {
 				if (!(i in best)) continue
 				# до трёх самых частых адресов этого правила — по ним видно, что
@@ -3684,15 +4582,30 @@ client_exits() { # $1 = за сколько секунд смотреть (по 
 		}
 		END {
 			for (ip in ips) {
-				best = ""
+				# Сначала ищем последний выход, который НЕ «напрямую» и не «заблокировано»:
+				# именно он показывает, куда трафик клиента ушёл по правилу
+				# маршрутизации. Если таких не было — берём последний вообще.
+				best = ""; best_any = ""
 				for (k in cnt) {
 					split(k, a, "\t")
 					if (a[1] != ip) continue
-					if (best == "" || cnt[k] > cnt[best]) best = k
+					if (best_any == "" || last[k] + 0 < last[best_any] + 0) best_any = k
+					if (a[2] == "direct" || a[2] == "blocked") continue
+					if (best == "" || last[k] + 0 < last[best] + 0) best = k
 				}
+				if (best == "") best = best_any
 				if (best != "") {
 					split(best, a, "\t")
-					printf "%s\t%s\t%s\t%s\n", ip, a[2], last[best], d[best]
+					# и остальные выходы этого клиента за окно, с их свежестью —
+					# чтобы «напрямую» и «wg» были видны рядом, а не спорили
+					_others = ""
+					for (k in cnt) {
+						split(k, a2, "\t")
+						if (a2[1] != ip || k == best) continue
+						_w = (a2[2] == "direct") ? "напрямую" : a2[2]
+						_others = _others ( _others == "" ? "" : ", " ) _w " (" last[k] + 0 " с)"
+					}
+					printf "%s\t%s\t%s\t%s\t%s\n", ip, a[2], last[best], d[best], _others
 				}
 			}
 		}
@@ -3886,7 +4799,11 @@ rules_matcher_dump() {
 # (по свежим записям журнала; «direct» и служебные входы не считаются)
 active_server_now() {
 	rule_activity | LC_ALL=C awk -F'\t' '
-		$3 != "" && $3 != "direct" && $3 != "blocked" {
+		# Служебные выходы мостов (rev-home, rev-net и т.п.) — это выпуск трафика,
+		# пришедшего из обратного туннеля, а не сервер, к которому подключается
+		# роутер. Раньше они попадали в «сейчас в работе», и на странице
+		# «Прокси» было видно rev-home, хотя обычный трафик шёл через wg.
+		$3 != "" && $3 != "direct" && $3 != "blocked" && $3 !~ /^rev-/ {
 			if ($4 + 0 <= 120) {
 				cnt[$3]++
 				if (!($3 in last) || $4 + 0 < last[$3] + 0) last[$3] = $4 + 0
