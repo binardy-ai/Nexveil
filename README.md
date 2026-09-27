@@ -82,55 +82,50 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ## Как это выглядит
 
-> Проверка картинок (временная строка, потом уберу): ниже две картинки с посторонних
-> сайтов. Если они видны — значит README умеет показывать картинки, и дело было в отдаче
-> файлов с GitHub. Если и они не видны — картинки не грузятся у вас вообще.
-
-![картинка с placehold.co](https://placehold.co/200x80.png) ![картинка с githubassets](https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png)
 
 Скриншоты сняты с демонстрационных настроек: адреса вида `203.0.113.x` и домены
 `example.com` — это примеры из документации, ваши данные на картинках не
 попадают. Панель на снимках открыта в окне 1280 px — так её видно на компьютере.
 
-Все снимки лежат в папке `docs/screenshots` этого репозитория — их видно, когда вы залогинены в GitHub под аккаунтом, у которого есть доступ.
+Снимки лежат и в репозитории (`docs/screenshots`), и на внешнем хостинге картинок — в README показаны те, что с хостинга: так они видны независимо от настроек доступа GitHub. Если понадобится убрать их из интернета, изменение откатывается — ссылки в README заменяются обратно на файлы репозитория.
 
 **Реверс (мосты)** — слева светлая тема «В стиле Windows XP», справа тёмная:
 
-![Реверс, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-winxp.png) ![Реверс, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-reverse-dark.png)
+![Реверс, светлая тема](https://i.imgur.com/065dtQf.png) ![Реверс, тёмная тема](https://i.imgur.com/luMMB7G.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-reverse-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-reverse-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/065dtQf.png) · [тёмная тема](https://i.imgur.com/luMMB7G.png)
 
 **Прокси (прозрачный режим, DNS)**:
 
-![Прокси, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-transparent-winxp.png) ![Прокси, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-transparent-dark.png)
+![Прокси, светлая тема](https://i.imgur.com/roFIGgU.png) ![Прокси, тёмная тема](https://i.imgur.com/N8ATYkU.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-transparent-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-transparent-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/roFIGgU.png) · [тёмная тема](https://i.imgur.com/N8ATYkU.png)
 
 **Маршруты (правила и наборы)**:
 
-![Маршруты, светлая тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-rules-winxp.png) ![Маршруты, тёмная тема](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/ru-rules-dark.png)
+![Маршруты, светлая тема](https://i.imgur.com/yQldlKA.png) ![Маршруты, тёмная тема](https://i.imgur.com/onq1hzf.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-rules-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/ru-rules-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/yQldlKA.png) · [тёмная тема](https://i.imgur.com/onq1hzf.png)
 
 **English interface**
 
 **Reverse (bridges)**:
 
-![Reverse, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-reverse-winxp.png) ![Reverse, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-reverse-dark.png)
+![Reverse, light theme](https://i.imgur.com/dnli2Hf.png) ![Reverse, dark theme](https://i.imgur.com/mgbumKe.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-reverse-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-reverse-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/dnli2Hf.png) · [тёмная тема](https://i.imgur.com/mgbumKe.png)
 
 **Proxy (transparent mode, DNS)**:
 
-![Proxy, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-transparent-winxp.png) ![Proxy, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-transparent-dark.png)
+![Proxy, light theme](https://i.imgur.com/3qi94ef.png) ![Proxy, dark theme](https://i.imgur.com/JR0Ck8K.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-transparent-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-transparent-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/3qi94ef.png) · [тёмная тема](https://i.imgur.com/JR0Ck8K.png)
 
 **Routes (rules and sets)**:
 
-![Routes, light theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-rules-winxp.png) ![Routes, dark theme](https://github.com/Petr700/xraypanel/raw/main/docs/screenshots/en-rules-dark.png)
+![Routes, light theme](https://i.imgur.com/KtkUJuh.png) ![Routes, dark theme](https://i.imgur.com/kFyuZ8S.png)
 
-[открыть снимок: светлая тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-rules-winxp.png) · [тёмная тема](https://github.com/Petr700/xraypanel/blob/main/docs/screenshots/en-rules-dark.png)
+[открыть снимок: светлая тема](https://i.imgur.com/KtkUJuh.png) · [тёмная тема](https://i.imgur.com/kFyuZ8S.png)
 
 Язык переключается на странице «Настройки» → «Язык панели» (русский, English или
 «как в браузере»); тема — там же, в поле «Оформление панели».
