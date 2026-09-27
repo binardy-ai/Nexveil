@@ -82,7 +82,7 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ![Реверс, светлая тема](https://i.imgur.com/065dtQf.png) ![Реверс, тёмная тема](https://i.imgur.com/luMMB7G.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/065dtQf.png) · [тёмная тема](https://i.imgur.com/luMMB7G.png)
+(https://i.imgur.com/065dtQf.png) (https://i.imgur.com/luMMB7G.png)
 
 **Прокси (прозрачный режим, DNS)**:
 
