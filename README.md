@@ -4,13 +4,6 @@
 
 # Nexveil — панель Xray-прокси для роутеров OpenWrt
 
-**Русский** | Lightweight web panel (CGI, POSIX shell) for Xray on OpenWrt /
-ImmortalWrt: servers, reverse bridges, routing rules with address and domain
-sets, transparent proxy, DNS, ready-made geo lists and self-update. Everything
-works in a browser, no extra services on the router.
-
-Актуальная версия: **0.67.4**. Лицензия: MIT.
-
 Панель ставится обычным пакетом `opkg` и открывается с любого устройства в сети:
 `http://<IP роутера>/cgi-bin/xraypanel`. Внутри — одна CGI-страница и
 shell-скрипты; ни Python, ни PHP, ни Node на роутере не нужны.
