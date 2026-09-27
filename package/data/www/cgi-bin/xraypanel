@@ -737,7 +737,7 @@ act_fix_tz() {
 		ln -sf "$_p" /etc/localtime
 		_sh="часовой пояс выставлен: $_z"
 	else
-		_sh="на роутере нет файла зоны $_p. Установите пакет с поясами: opkg update; opkg install $(tz_package "$_z") — и нажмите кнопку снова. Пояс в LuCI: $_z"
+		_sh="на роутере нет файла зоны $_p. Установите пакет с поясами: $(pkg_cmd update); $(pkg_cmd install "$(tz_package "$_z")") — и нажмите кнопку снова. Пояс в LuCI: $_z"
 	fi
 	respond_now "" "$_sh. Перезапускаю xray, дальше журнал будет писаться по этому времени."
 	svc_restart_async
@@ -917,7 +917,7 @@ act_panel_install() {
 	ui_uci set "$UCI_APP.settings.panel_installed_ipk=$_f"
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	rm -f "$STATE_DIR/panel-install.rc" 2>/dev/null
-	bg_run "echo 'ставлю: $_f (версия $_v)'; opkg install --force-reinstall '$_f' 2>&1; _rc=\$?; printf '%s' \"\$_rc\" > '$STATE_DIR/panel-install.rc'; echo \"код возврата: \$_rc\"" "$STATE_DIR/panel-install.log"
+	bg_run ". '$LIB' >/dev/null 2>&1; echo 'ставлю: $_f (версия $_v)'; pkg_add_file '$_f' 2>&1; _rc=\$?; printf '%s' \"\$_rc\" > '$STATE_DIR/panel-install.rc'; echo \"код возврата: \$_rc\"" "$STATE_DIR/panel-install.log"
 	respond_now status "устанавливаю версию $_v — через 10–20 секунд обновите страницу. Настройки, серверы и правила не трогаются."
 	exit 0
 }
@@ -1543,7 +1543,7 @@ act_geo_auto() {
 
 act_geo_pkg() { # поставить/обновить пакеты со списками (v2ray-geoip, v2ray-geosite)
 	respond_now rules "ставлю пакеты со списками в фоне — через минуту загляните сюда."
-	bg_run "opkg update; opkg install v2ray-geoip v2ray-geosite; echo '--- итог ---'; ls -l \$(geo_dirs | tr '\n' ' ' | sed 's/ /\\/*.dat /g') 2>/dev/null" "$STATE_DIR/geo-pkg.log"
+	bg_run ". '$LIB' >/dev/null 2>&1; pkg_update; pkg_add v2ray-geoip v2ray-geosite; echo '--- итог ---'; ls -l \$(geo_dirs | tr '\n' ' ' | sed 's/ /\\/*.dat /g') 2>/dev/null" "$STATE_DIR/geo-pkg.log"
 	exit 0
 }
 
@@ -3844,7 +3844,7 @@ EOF
 	else
 		printf '<p class="muted">'"$T_no_packages_found_checked_fo"'</p>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	fi
-	printf '<form method="post" enctype="multipart/form-data" style="margin-top:8px"><input type="hidden" name="action" value="panel_upload"><label>'"$T_upload_ipk_package_from_the_"'</label><input type="file" name="ipk" accept=".ipk"><p><button>'"$T_upload"'</button></p></form>'
+	printf '<form method="post" enctype="multipart/form-data" style="margin-top:8px"><input type="hidden" name="action" value="panel_upload"><label>'"$T_upload_ipk_package_from_the_"'</label><input type="file" name="ipk" accept=".ipk,.apk"><p><button>'"$T_upload"'</button></p></form>'
 	printf '<form method="post" style="margin-top:8px"><label>'"$T_folders_to_look_for_packages"'</label><input name="panel_ipk_dirs" value="%s"><p><button class="btn sec">'"$T_save_folders"'</button></p></form>' "$(h "$(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions")")"
 	_pip=$(cfg panel_prev_ipk "")
 	if [ -n "$_pip" ] && [ -f "$_pip" ]; then

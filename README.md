@@ -115,6 +115,13 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ## Установка
 
+Формат пакета зависит от версии системы:
+
+- **OpenWrt / ImmortalWrt до 24.10** (и вообще всё, где пакетами управляет
+  `opkg`) — файл `.ipk`, команды `opkg`;
+- **OpenWrt 25.12 и новее** (там пакетный менеджер уже `apk`) — файл `.apk`,
+  команды `apk`. Старые `.ipk` в этих системах не ставятся вообще.
+
 Последняя версия — в разделе **Releases**. Ссылка
 `https://github.com/Petr700/xraypanel/releases/latest` всегда ведёт на самый
 свежий релиз, номер версии в ней указывать не нужно. В каждом релизе два файла
@@ -126,6 +133,14 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
     scp xraypanel_<версия>_all.ipk root@<IP роутера>:/tmp/
     ssh root@<IP роутера> 'opkg install /tmp/xraypanel_<версия>_all.ipk'
+
+Для систем с `apk` (OpenWrt 25.12+) — то же самое, но другим форматом пакета:
+
+    scp xraypanel_<версия>_all.apk root@<IP роутера>:/tmp/
+    ssh root@<IP роутера> 'apk add --allow-untrusted /tmp/xraypanel_<версия>_all.apk'
+
+Файлы `.apk` для релизов готовятся отдельным шагом; пока в релизе лежит `.ipk`
+(он подходит вашей ImmortalWrt 23.05 и любым системам с `opkg`).
 
 Если `opkg` ругается на зависимости:
 
@@ -148,6 +163,7 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 последний релиз (`latest`):
 
     opkg update && opkg install curl
+    # на системах с apk:  apk update && apk add curl
     TOKEN=<ваш токен GitHub>
     API=https://api.github.com/repos/Petr700/xraypanel/releases/latest
     ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')

@@ -48,6 +48,90 @@ lang_title() {
 	esac
 }
 
+# --- пакетный менеджер ------------------------------------------------------
+# До OpenWrt 24.10 в системе opkg (файлы .ipk), начиная с 25.12 — apk
+# (файлы .apk). Панель работает на обеих линиях, поэтому установка пакетов
+# идёт только через эти обёртки: сами команды отличаются.
+pkg_mgr() {
+	if [ -n "${PKG_MGR:-}" ]; then
+		printf '%s' "$PKG_MGR"
+		return 0
+	fi
+	if command -v apk >/dev/null 2>&1; then
+		PKG_MGR=apk
+	elif command -v opkg >/dev/null 2>&1; then
+		PKG_MGR=opkg
+	else
+		PKG_MGR=none
+	fi
+	printf '%s' "$PKG_MGR"
+}
+
+# расширение пакетов этой системы — нужно, чтобы скачать правильный файл
+pkg_ext() {
+	[ "$(pkg_mgr)" = apk ] && printf 'apk' || printf 'ipk'
+}
+
+pkg_update() { # обновить список пакетов
+	case "$(pkg_mgr)" in
+		apk)  apk update ;;
+		opkg) opkg update ;;
+		*)    return 1 ;;
+	esac
+}
+
+pkg_add() { # pkg_add <имена пакетов…>
+	case "$(pkg_mgr)" in
+		apk)  apk add "$@" ;;
+		opkg) opkg install "$@" ;;
+		*)    return 1 ;;
+	esac
+}
+
+pkg_del() { # pkg_del <имя пакета>
+	case "$(pkg_mgr)" in
+		apk)  apk del "$@" ;;
+		opkg) opkg remove "$@" ;;
+		*)    return 1 ;;
+	esac
+}
+
+# установка файла пакета, который лежит на роутере (пакет самой панели)
+pkg_add_file() { # $1 — путь к .ipk или .apk
+	_pf="$1"
+	[ -f "$_pf" ] || return 1
+	case "$(pkg_mgr)" in
+		apk)
+			case "$_pf" in
+				*.apk) apk add --allow-untrusted "$_pf" ;;
+				*)     echo "нужен пакет .apk (система с apk), а тут $(basename "$_pf")"; return 2 ;;
+			esac ;;
+		opkg)
+			case "$_pf" in
+				*.apk) echo "нужен пакет .ipk (система с opkg), а тут $(basename "$_pf")"; return 2 ;;
+				*)     opkg install --force-reinstall "$_pf" ;;
+			esac ;;
+		*) return 1 ;;
+	esac
+}
+
+# как выглядит команда — для подсказок в интерфейсе и журналах
+pkg_cmd() { # pkg_cmd update | pkg_cmd install <пакет> | pkg_cmd install_file <файл>
+	case "$1" in
+		update)
+			case "$(pkg_mgr)" in apk) printf 'apk update' ;; *) printf 'opkg update' ;; esac ;;
+		install)
+			case "$(pkg_mgr)" in apk) printf 'apk add %s' "$2" ;; *) printf 'opkg install %s' "$2" ;; esac ;;
+		install_file)
+			case "$(pkg_mgr)" in
+				apk) printf 'apk add --allow-untrusted %s' "$2" ;;
+				*)   printf 'opkg install --force-reinstall %s' "$2" ;;
+			esac ;;
+		remove)
+			case "$(pkg_mgr)" in apk) printf 'apk del %s' "$2" ;; *) printf 'opkg remove %s' "$2" ;; esac ;;
+	esac
+}
+
 # Словарь для браузерной части: строки, которые панель дописывает уже в
 # браузере (надписи кнопок, «проверяю…», подписи столбцов для сортировки).
 # Список ключей лежит в языковом файле (XP_JS_KEYS), текст — рядом с ключом.
@@ -175,11 +259,16 @@ panel_ipk_ok() { # $1 — путь: это пакет панели?
 }
 
 panel_ipk_list() { # «путь<TAB>версия<TAB>байт» по всем найденным пакетам
+	# На старых системах это .ipk, на новых (apk) — .apk. Версию берём из
+	# самого пакета, а если не получилось (файл .apk) — из имени файла.
 	for _d in $(cfg panel_ipk_dirs "/tmp /etc/xraypanel/versions"); do
 		[ -d "$_d" ] || continue
-		for _f in "$_d"/*.ipk; do
+		for _f in "$_d"/*.ipk "$_d"/*.apk; do
 			[ -f "$_f" ] || continue
 			_v="$(panel_ipk_version "$_f")"
+			if [ -z "$_v" ]; then
+				_v=$(basename "$_f" | sed -n 's/.*xraypanel_\([0-9][0-9.]*\)_.*/\1/p')
+			fi
 			[ -n "$_v" ] || continue
 			printf '%s\t%s\t%s\n' "$_f" "$_v" "$(wc -c <"$_f" 2>/dev/null | tr -d ' ')"
 		done
@@ -329,16 +418,16 @@ xray_present() {
 
 # пробуем поставить xray из репозитория OpenWrt/ImmortalWrt
 xray_install() {
-	command -v opkg >/dev/null 2>&1 || { echo "opkg не найден — установите xray вручную"; return 1; }
+	[ "$(pkg_mgr)" != none ] || { echo "не нашёл ни opkg, ни apk — установите xray вручную"; return 1; }
 	echo "ставлю xray из репозитория…"
-	opkg update >/dev/null 2>&1
+	pkg_update >/dev/null 2>&1
 	for _p in xray-core xray; do
-		if opkg install "$_p" >/dev/null 2>&1 && xray_present; then
+		if pkg_add "$_p" >/dev/null 2>&1 && xray_present; then
 			echo "установлен пакет $_p"
 			return 0
 		fi
 	done
-	echo "не удалось поставить xray автоматически — поставьте вручную: opkg update && opkg install xray-core"
+	echo "не удалось поставить xray автоматически — поставьте вручную: $(pkg_cmd update) && $(pkg_cmd install xray-core)"
 	return 1
 }
 
@@ -994,7 +1083,7 @@ tz_package() { # какой пакет zoneinfo нужен для этого п�
 tz_state() { # совпадает ли системная зона с зоной роутера
 	_z=$(router_tz)
 	_p="/usr/share/zoneinfo/$_z"
-	[ -f "$_p" ] || { printf 'нет файла зоны %s — установите: opkg install %s' "$_p" "$(tz_package "$_z")"; return; }
+	[ -f "$_p" ] || { printf 'нет файла зоны %s — установите: %s' "$_p" "$(pkg_cmd install "$(tz_package "$_z")")"; return; }
 	if [ -L /etc/localtime ]; then
 		_l=$(readlink /etc/localtime 2>/dev/null)
 		[ "$_l" = "$_p" ] && printf 'совпадает (%s)' "$_z" || printf 'не совпадает (%s вместо %s)' "$_l" "$_z"

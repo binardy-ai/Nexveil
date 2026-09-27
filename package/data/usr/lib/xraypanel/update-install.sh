@@ -2,7 +2,8 @@
 # Установка новой версии панели из релиза на GitHub (кнопка «обновить»).
 #
 # Скачиваем пакет в /etc/xraypanel/versions, проверяем, что это пакет панели и
-# что он читается, ставим через opkg и записываем код возврата — страница
+# что он читается, ставим через штатный менеджер системы (opkg на старых,
+# apk на новых) и записываем код возврата — страница
 # «Статус» сама показывает итог.
 
 STATE="${XRAYPANEL_STATE:-/etc/xraypanel}"
@@ -22,7 +23,7 @@ _ver=$(awk -F'\t' '$1 == "version" { print $2; exit }' "$STATE/update.info" 2>/d
 [ -n "$_url" ] || { say "нет ссылки на пакет — сначала проверьте обновления"; printf '1' > "$STATE/update-install.rc"; rm -f "$RUN"; exit 1; }
 
 mkdir -p "$STATE/versions" 2>/dev/null
-_f="$STATE/versions/xraypanel_${_ver}_all.ipk"
+_f="$STATE/versions/xraypanel_${_ver}_all.$(pkg_ext)"
 say "скачиваю $_url"
 rm -f "$_f" 2>/dev/null
 _ok=0
@@ -33,7 +34,7 @@ if [ -n "$_tok" ] && [ -n "$_apiurl" ] && command -v curl >/dev/null 2>&1; then
 	say "репозиторий приватный — качаю через API с токеном"
 	curl -sSL --max-time 300 -H "Authorization: Bearer $_tok" -H "Accept: application/octet-stream" -o "$_f" "$_apiurl" && _ok=1
 elif [ -n "$_tok" ]; then
-	say "для приватного репозитория нужен пакет curl (busybox-wget не умеет отправлять токен): opkg update && opkg install curl"
+	say "для приватного репозитория нужен пакет curl (busybox-wget не умеет отправлять токен): $(pkg_cmd update) && $(pkg_cmd install curl)"
 	printf '1' > "$STATE/update-install.rc"
 	rm -f "$RUN"
 	exit 1
@@ -65,13 +66,13 @@ fi
 _new=$(panel_ipk_version "$_f" 2>/dev/null)
 say "пакет на месте: версия $_new ($(file_size "$_f") байт), ставлю"
 
-opkg install --force-reinstall "$_f" >>"$LOG" 2>&1
+pkg_add_file "$_f" >>"$LOG" 2>&1
 _rc=$?
 printf '%s' "$_rc" > "$STATE/update-install.rc"
 if [ "$_rc" = 0 ]; then
 	say "установлено: $("$LIB" 2>/dev/null; panel_version 2>/dev/null) — настройки, серверы и правила не тронуты"
 else
-	say "opkg вернул код $_rc — посмотрите журнал выше"
+	say "$(pkg_mgr) вернул код $_rc — посмотрите журнал выше"
 fi
 rm -f "$RUN"
 exit 0

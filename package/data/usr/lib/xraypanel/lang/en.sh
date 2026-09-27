@@ -193,7 +193,7 @@ T_this_is_where_traffic_goes_t='This is where traffic goes that did not match an
 # «Применить конфиг» — собрать конфиг xray из настроек панели, проверить его и перезапустить службу. «Откат конфига» — вернуть прежний конфиг из единственной копии, которую панель сохраняет перед применением.
 T_apply_config_build_the_xray_='“Apply config” — build the xray config from the panel settings, check it and restart the service. “Roll back config” — restore the previous config from the only copy the panel keeps before applying.'
 # Можно поставить другую версию панели, не заходя по ssh: положите файл <b>.ipk</b> на роутер (например в <code>/tmp</code>) или загрузите его кнопкой ниже. Настройки, серверы и правила при этом не трогаются — меняется только сама панель, xray не перезапускается.
-T_you_can_install_another_pane='You can install another panel version without ssh: put the <b>.ipk</b> file on the router (for example into <code>/tmp</code>) or upload it with the button below. Settings, servers and rules are not touched — only the panel itself changes, xray is not restarted.'
+T_you_can_install_another_pane='You can install another panel version without ssh: put the package file (<b>.ipk</b> for older systems, <b>.apk</b> for new ones) on the router (for example into <code>/tmp</code>) or upload it with the button below. Settings, servers and rules are not touched — only the panel itself changes, xray is not restarted.'
 # Выберите пакет
 T_choose_a_package='Choose a package'
 # %s — версия %s (стоит сейчас)
@@ -205,11 +205,11 @@ T_checked_folders_code_s_code_='Checked folders: <code>%s</code>. You can change
 # Пакетов не нашлось. Проверенные папки: <code>%s</code>. Загрузите файл — он попадёт в <code>/etc/xraypanel/versions</code> и появится здесь.
 T_no_packages_found_checked_fo='No packages found. Checked folders: <code>%s</code>. Upload a file — it will be put into <code>/etc/xraypanel/versions</code> and appear here.'
 # Загрузить пакет .ipk с компьютера
-T_upload_ipk_package_from_the_='Upload .ipk package from the computer'
+T_upload_ipk_package_from_the_='Upload a package (.ipk or .apk) from the computer'
 # Папки, где искать пакеты (через пробел)
 T_folders_to_look_for_packages='Folders to look for packages in (space separated)'
 # Перед установкой панель запоминает пакет, который стоял до этого, — на него возвращает кнопка «вернуть прежнюю версию». Если новая версия не откроется совсем, спасают только ssh и <code>opkg install --force-reinstall /tmp/<файл>.ipk</code>.
-T_before_installing_the_panel_='Before installing, the panel remembers the package that was installed before — the “restore previous version” button brings it back. If the new version does not open at all, only ssh and <code>opkg install --force-reinstall /tmp/<file>.ipk</code> will help.'
+T_before_installing_the_panel_='Before installing, the panel remembers the package that was installed before — the “restore previous version” button brings it back. If the new version does not open at all, only ssh and installing the package file by hand will help: <code>opkg install --force-reinstall /tmp/xraypanel_&lt;version&gt;_all.ipk</code> (on apk systems: <code>apk add --allow-untrusted /tmp/xraypanel_&lt;version&gt;_all.apk</code>).'
 # Журнал установки:
 T_installation_log_2='Installation log:'
 # Если из репозитория не получится — поставьте вручную: <code>opkg update &amp;&amp; opkg install xray-core</code>, затем «Применить конфиг».

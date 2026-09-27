@@ -15,10 +15,12 @@ mkdir -p "$STATE" 2>/dev/null
 	if xray_present; then
 		echo "xray уже установлен: $(xray_bin) — ничего не ставлю"
 	else
-		# ждём, пока завершится текущая установка пакета (opkg держит блокировку)
+		# ждём, пока завершится текущая установка пакета (opkg или apk держит
+		# блокировку — на новых системах пакетный менеджер уже apk)
 		_i=0
 		while [ "$_i" -lt 90 ]; do
-			pgrep -f "opkg install" >/dev/null 2>&1 || pgrep -x opkg >/dev/null 2>&1 || break
+			pgrep -f "opkg install" >/dev/null 2>&1 || pgrep -f "apk add" >/dev/null 2>&1 ||
+				pgrep -x opkg >/dev/null 2>&1 || pgrep -x apk >/dev/null 2>&1 || break
 			_i=$((_i + 1))
 			sleep 2
 		done
@@ -46,6 +48,6 @@ mkdir -p "$STATE" 2>/dev/null
 			echo "$(date '+%Y-%m-%d %H:%M:%S') xray не поднялся — откройте панель и посмотрите «Статус»"
 		fi
 	else
-		echo "$(date '+%Y-%m-%d %H:%M:%S') xray поставить не удалось — поставьте вручную: opkg update && opkg install xray-core"
+		echo "$(date '+%Y-%m-%d %H:%M:%S') xray поставить не удалось — поставьте вручную: $(pkg_cmd update) && $(pkg_cmd install xray-core)"
 	fi
 } >>"$LOG" 2>&1

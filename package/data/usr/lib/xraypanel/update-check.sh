@@ -50,7 +50,7 @@ fetch() { # $1 = куда
 			return 1
 		fi
 		say "для приватного репозитория нужен пакет curl: busybox-wget не умеет отправлять токен"
-		say "поставьте его командой: opkg update && opkg install curl"
+		say "поставьте его командой: $(pkg_cmd update) && $(pkg_cmd install curl)"
 		return 1
 	fi
 	if command -v wget >/dev/null 2>&1; then
@@ -83,13 +83,15 @@ fi
 
 _tag=$(sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' "$TMP" | head -1)
 _ver=${_tag#v}
-# ссылка на пакет панели: первый .ipk среди файлов релиза
-_url=$(grep -o '"browser_download_url": *"[^"]*\.ipk"' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*"\(http[^"]*\)".*/\1/')
+# ссылка на пакет панели: берём файл того формата, который подходит этой
+# системе — .ipk на старых (opkg), .apk на новых (apk)
+_ext=$(pkg_ext)
+_url=$(grep -o '"browser_download_url": *"[^"]*\.'"$_ext"'"' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*"\(http[^"]*\)".*/\1/')
 # адрес того же файла через API: для приватного репозитория обычная ссылка не
 # скачивается, а API-адрес с токеном — скачивается (Accept: octet-stream)
 _apiurl=$(awk '
 	/"url": *"[^"]*\/releases\/assets\/[0-9]+"/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) }
-	/"browser_download_url": *"[^"]*\.ipk"/ { if (last != "") { print "https://api.github.com/repos/'"$_repo"'/releases/" last; exit } }
+	/"browser_download_url": *"[^"]*\.'"$_ext"'"/ { if (last != "") { print "https://api.github.com/repos/'"$_repo"'/releases/" last; exit } }
 ' "$TMP" 2>/dev/null)
 _size=$(grep -o '"size": *[0-9]*' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*: *//')
 _date=$(date '+%d.%m.%Y %H:%M')
