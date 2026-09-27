@@ -150,12 +150,14 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
     opkg update && opkg install curl
     TOKEN=<ваш токен GitHub>
     API=https://api.github.com/repos/Petr700/xraypanel/releases/latest
-    ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" \
-         | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')
-    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" \
-         -o /tmp/xraypanel.ipk \
-         "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"
+    ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')
+    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"
     opkg install --force-reinstall /tmp/xraypanel.ipk
+
+Ту же последовательность можно вставить одной длинной строкой (удобно копировать
+целиком, без переносов):
+
+    TOKEN=<ваш токен GitHub>; API=https://api.github.com/repos/Petr700/xraypanel/releases/latest; ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"; opkg install --force-reinstall /tmp/xraypanel.ipk
 
 Посмотреть, что нашлось в последнем релизе (номер версии и имя файла):
 
@@ -168,6 +170,12 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
     wget -O /tmp/xraypanel.ipk https://github.com/Petr700/xraypanel/releases/latest/download/xraypanel_all.ipk
     opkg install --force-reinstall /tmp/xraypanel.ipk
+
+**Важно:** эта строка работает только для **публичного** репозитория. Если
+выполнить её на приватном репозитории, GitHub ответит `HTTP error 404` — не
+потому что файла нет, а потому что скачивание идёт без токена. Для приватного
+репозитория используйте команды с токеном выше (или кнопку обновления в самой
+панели: «Статус» → «Обновление панели»).
 
 Удалить панель (настройки и конфиг Xray при этом остаются):
 
