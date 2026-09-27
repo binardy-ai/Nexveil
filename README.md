@@ -1,11 +1,15 @@
-# xraypanel — веб-панель Xray для роутеров OpenWrt
+> **Nexveil** — Xray-прокси для роутера. Внутри роутера панель по-прежнему
+> называется `xraypanel`: так называется пакет `opkg`, каталоги и служба,
+> чтобы установка и самообновление работали без ломки. Nexveil — это её имя.
+
+# Nexveil — панель Xray-прокси для роутеров OpenWrt
 
 **Русский** | Lightweight web panel (CGI, POSIX shell) for Xray on OpenWrt /
 ImmortalWrt: servers, reverse bridges, routing rules with address and domain
 sets, transparent proxy, DNS, ready-made geo lists and self-update. Everything
 works in a browser, no extra services on the router.
 
-Актуальная версия: **0.67.3**. Лицензия: MIT.
+Актуальная версия: **0.67.4**. Лицензия: MIT.
 
 Панель ставится обычным пакетом `opkg` и открывается с любого устройства в сети:
 `http://<IP роутера>/cgi-bin/xraypanel`. Внутри — одна CGI-страница и

@@ -649,7 +649,7 @@ T_settings_file='Settings file'
 # Если файл почему-то не выбирается — можно открыть его в блокноте, скопировать содержимое целиком и вставить сюда.
 T_if_the_file_is_somehow_not_s='If the file is somehow not selected — you can open it in a text editor, copy the whole contents and paste them here.'
 # # Настройки панели xraypanel...
-T_xraypanel_settings='# xraypanel settings...'
+T_xraypanel_settings='# Nexveil settings...'
 # После восстановления панель сама применит конфиг и перезапустит xray. Если что-то не так — верните прежний файл из копии .bak или нажмите «Откат конфига» на странице «Статус».
 T_after_restoring_the_panel_ap='After restoring, the panel applies the config itself and restarts xray. If something is wrong — bring back the previous file from the .bak copy or press “Roll back config” on the “Status” page.'
 # вся локальная сеть
@@ -1170,3 +1170,8 @@ T_is_not_wrapped_into_itself_i='is not wrapped into itself (its connections are 
 T_is_blocked_for_wrapped_clien='is blocked for wrapped clients so that browsers do not bypass the proxy over UDP — they switch to usual TCP by themselves'
 # в этой версии не заворачиваются: имена разбирает роутер как обычно
 T_are_not_wrapped_in_this_vers='are not wrapped in this version: the router resolves names as usual'
+
+# --- panel name and the tagline in the header ---
+T_app_name='Nexveil'
+T_app_tagline='· Xray proxy for the router'
+T_app_title='Nexveil — Xray proxy for the router'

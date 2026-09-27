@@ -1862,7 +1862,7 @@ Pragma: no-cache
 <!doctype html>
 <html lang="$PANEL_LANG"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>xraypanel</title>
+<title>$T_app_title</title>
 <style>
 EOF
 	theme_style
@@ -1879,7 +1879,7 @@ EOF
 	printf '<style>.names-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0 10px}.names-row .names-count{font-size:15px;min-width:22px}.names-row .names-hint{font-size:12px}.names-list{flex:1 1 360px;min-width:220px;font-size:12px;color:var(--muted);line-height:1.5}.names-list .seen-item{display:inline-block;margin-right:14px}</style>\n'
 	cat <<EOF
 </style></head><body class="t-$_th">
-<header><b>xraypanel</b>
+<header><b>$T_app_name <span class="tag">$T_app_tagline</span></b>
 <nav>
 <a href="$SCRIPT_NAME?page=" class="$([ "$(param page)" = "" ] && echo on)">$T_status_2</a>
 <a href="$SCRIPT_NAME?page=servers" class="$([ "$(param page)" = servers ] && echo on)">$T_servers</a>

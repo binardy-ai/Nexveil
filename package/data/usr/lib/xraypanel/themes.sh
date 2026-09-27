@@ -54,6 +54,10 @@ header{background:var(--hd-bg);color:var(--hd-fg);padding:10px 16px;display:flex
 /* переход по якорю не должен прятать заголовок под закреплённой шапкой */
 html{scroll-padding-top:70px}
 header b{font-size:16px}
+/* подпись рядом с именем панели: имя главное, пояснение — мельче */
+.tag{font-size:12px;font-weight:400;opacity:.8}
+/* в боковых меню место узкое — подпись там только занимает строку */
+.t-sidebar .tag,.t-sidebar-dark .tag{display:none}
 nav a{color:var(--nav);text-decoration:none;margin-right:12px;display:inline-block}
 nav a.on{color:var(--nav-on);font-weight:600;border-bottom:2px solid var(--nav-line);padding-bottom:2px}
 main{padding:16px;max-width:var(--main-max);margin:0 auto;min-width:0;overflow-x:auto}

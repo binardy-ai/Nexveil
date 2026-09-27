@@ -8,7 +8,7 @@ Section: net
 Architecture: all
 Installed-Size: 165
 Maintainer: local
-Description: Веб-панель управления xray для OpenWrt/ImmortalWrt.
+Description: Nexveil — панель Xray-прокси для роутеров OpenWrt/ImmortalWrt (прокси, DNS, маршруты, реверс-мосты).
  Умеет: серверы (VLESS/Reality), реверс-мосты (обратные туннели),
  правила маршрутизации, проверку задержки серверов и выбор основного,
  применение конфига с проверкой и откатом.
