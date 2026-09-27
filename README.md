@@ -87,13 +87,11 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ![Прокси, светлая тема](https://i.imgur.com/roFIGgU.png) ![Прокси, тёмная тема](https://i.imgur.com/N8ATYkU.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/roFIGgU.png) · [тёмная тема](https://i.imgur.com/N8ATYkU.png)
 
 **Маршруты (правила и наборы)**:
 
 ![Маршруты, светлая тема](https://i.imgur.com/yQldlKA.png) ![Маршруты, тёмная тема](https://i.imgur.com/onq1hzf.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/yQldlKA.png) · [тёмная тема](https://i.imgur.com/onq1hzf.png)
 
 **English interface**
 
@@ -101,19 +99,16 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ![Reverse, light theme](https://i.imgur.com/dnli2Hf.png) ![Reverse, dark theme](https://i.imgur.com/mgbumKe.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/dnli2Hf.png) · [тёмная тема](https://i.imgur.com/mgbumKe.png)
 
 **Proxy (transparent mode, DNS)**:
 
 ![Proxy, light theme](https://i.imgur.com/3qi94ef.png) ![Proxy, dark theme](https://i.imgur.com/JR0Ck8K.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/3qi94ef.png) · [тёмная тема](https://i.imgur.com/JR0Ck8K.png)
 
 **Routes (rules and sets)**:
 
 ![Routes, light theme](https://i.imgur.com/KtkUJuh.png) ![Routes, dark theme](https://i.imgur.com/kFyuZ8S.png)
 
-[открыть снимок: светлая тема](https://i.imgur.com/KtkUJuh.png) · [тёмная тема](https://i.imgur.com/kFyuZ8S.png)
 
 Язык переключается на странице «Настройки» → «Язык панели» (русский, English или
 «как в браузере»); тема — там же, в поле «Оформление панели».
