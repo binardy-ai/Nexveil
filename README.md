@@ -156,11 +156,20 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ### Скачать и поставить прямо с роутера
 
-Если рядом нет компьютера, пакет можно скачать с роутера — из терминала (ssh
-или веб-консоль). Репозиторий приватный, поэтому нужен токен GitHub (тот же,
-что вписан на странице «Настройки»), а из инструментов — `curl`: busybox-wget
-не умеет отправлять заголовки. Версию указывать не нужно — команды сами берут
-последний релиз (`latest`):
+**Одна команда на любую систему.** Она сама смотрит, чем на роутере управляются
+пакеты (`apk` или `opkg`), и скачивает из последнего релиза файл нужного формата:
+`.apk` для OpenWrt 25.12+, `.ipk` для более старых. Версию указывать не нужно.
+
+Для публичного репозитория (одна строка):
+
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); curl -sL -o /tmp/xraypanel.$M https://github.com/Petr700/xraypanel/releases/latest/download/xraypanel_all.$M && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
+
+Для приватного репозитория (нужен токен GitHub и `curl` — busybox-wget не умеет
+отправлять заголовки; та же логика выбора файла):
+
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); EXT=$([ "$M" = apk ] && echo apk || echo ipk); TOKEN=<ваш токен GitHub>; ID=$(curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/Petr700/xraypanel/releases/latest | awk -v ext="$EXT" '/\/releases\/assets\/[0-9]+/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) } $0 ~ ("\"browser_download_url\": *\"[^\"]*\\." ext "\"") { if (last != "") { print last; exit } }'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.$EXT "https://api.github.com/repos/Petr700/xraypanel/releases/$ID" && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
+
+Если удобнее по шагам, то же самое:
 
     opkg update && opkg install curl
     # на системах с apk:  apk update && apk add curl
@@ -170,28 +179,23 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
     curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"
     opkg install --force-reinstall /tmp/xraypanel.ipk
 
-Ту же последовательность можно вставить одной длинной строкой (удобно копировать
-целиком, без переносов):
-
-    TOKEN=<ваш токен GitHub>; API=https://api.github.com/repos/Petr700/xraypanel/releases/latest; ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"; opkg install --force-reinstall /tmp/xraypanel.ipk
-
 Посмотреть, что нашлось в последнем релизе (номер версии и имя файла):
 
     curl -s -H "Authorization: Bearer <ТОКЕН>" \
          https://api.github.com/repos/Petr700/xraypanel/releases/latest \
       | grep -E '"tag_name"|"browser_download_url"'
 
-Если сделать репозиторий публичным, скачивание упрощается до одной строки —
-имя файла при этом постоянное, номер версии подставлять не нужно:
+**Важно:** если скачивать файл с GitHub напрямую (`.../latest/download/...`)
+без токена, приватный репозиторий ответит `HTTP error 404` — это «нет доступа»,
+а не «нет файла». Для приватного репозитория берите команду с токеном выше либо
+кнопку обновления в самой панели («Статус» → «Обновление панели»).
 
-    wget -O /tmp/xraypanel.ipk https://github.com/Petr700/xraypanel/releases/latest/download/xraypanel_all.ipk
-    opkg install --force-reinstall /tmp/xraypanel.ipk
+Кратко, что чему соответствует:
 
-**Важно:** эта строка работает только для **публичного** репозитория. Если
-выполнить её на приватном репозитории, GitHub ответит `HTTP error 404` — не
-потому что файла нет, а потому что скачивание идёт без токена. Для приватного
-репозитория используйте команды с токеном выше (или кнопку обновления в самой
-панели: «Статус» → «Обновление панели»).
+| Система | Менеджер | Файл в релизе | Установка файла |
+| --- | --- | --- | --- |
+| OpenWrt / ImmortalWrt до 24.10 | `opkg` | `xraypanel_<версия>_all.ipk` | `opkg install --force-reinstall <файл>` |
+| OpenWrt 25.12 и новее | `apk` | `xraypanel_<версия>_all.apk` | `apk add --allow-untrusted <файл>` |
 
 Удалить панель (настройки и конфиг Xray при этом остаются):
 
@@ -300,9 +304,15 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 ## Сборка из исходников
 
     ./build.sh
+    ./build-apk.sh      # дополнительно пакет в формате apk (OpenWrt 25.12+)
 
 Скрипт собирает `xraypanel_<версия>_all.ipk` из папки `package/` и описания в
 `control/`. Версия берётся из строки `Version:` в файле `control/control`.
+`build-apk.sh` собирает тот же пакет в формате `apk` (для систем, где пакетный
+менеджер уже `apk`): он берёт данные из `build/data` после `build.sh` и требует
+`apk-tools 3` — если статического `apk.static` нет, скрипт разово скачает его из
+репозитория Alpine (бинарник статический, работает в любом Linux) или возьмёт
+путь из переменной `APK_STATIC`.
 
 ## Что лежит в репозитории
 
