@@ -132,16 +132,25 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ## Установка
 
-    scp xraypanel_0.67.0_all.ipk root@<IP роутера>:/tmp/
-    ssh root@<IP роутера> 'opkg install /tmp/xraypanel_0.67.0_all.ipk'
+Последняя версия — в разделе **Releases**. Ссылка
+`https://github.com/Petr700/xraypanel/releases/latest` всегда ведёт на самый
+свежий релиз, номер версии в ней указывать не нужно. В каждом релизе два файла
+пакета: с точным номером (например `xraypanel_0.67.4_all.ipk`) и с постоянным
+именем `xraypanel_all.ipk` — он всегда относится к последней сборке.
+
+Скачайте `.ipk` из последнего релиза и положите на роутер (подставьте имя файла,
+которое видите в релизе):
+
+    scp xraypanel_<версия>_all.ipk root@<IP роутера>:/tmp/
+    ssh root@<IP роутера> 'opkg install /tmp/xraypanel_<версия>_all.ipk'
 
 Если `opkg` ругается на зависимости:
 
-    opkg install --nodeps /tmp/xraypanel_0.67.0_all.ipk
+    opkg install --nodeps /tmp/xraypanel_<версия>_all.ipk
 
 Переставить ту же версию:
 
-    opkg install --force-reinstall /tmp/xraypanel_0.67.0_all.ipk
+    opkg install --force-reinstall /tmp/xraypanel_<версия>_all.ipk
 
 Обновить панель можно и прямо из неё: страница «Статус» → блок про версии
 (положить пакет в `/tmp` или загрузить файлом) либо кнопка «обновить» в блоке
@@ -152,23 +161,29 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 Если рядом нет компьютера, пакет можно скачать с роутера — из терминала (ssh
 или веб-консоль). Репозиторий приватный, поэтому нужен токен GitHub (тот же,
 что вписан на странице «Настройки»), а из инструментов — `curl`: busybox-wget
-не умеет отправлять заголовки.
+не умеет отправлять заголовки. Версию указывать не нужно — команды сами берут
+последний релиз (`latest`):
 
     opkg update && opkg install curl
-    ID=591247875      # номер файла в релизе, см. ниже
-    curl -L -H "Authorization: Bearer <ТОКЕН>" -H "Accept: application/octet-stream" \
-         -o /tmp/xraypanel.ipk https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID
+    TOKEN=<ваш токен GitHub>
+    API=https://api.github.com/repos/Petr700/xraypanel/releases/latest
+    ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" \
+         | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')
+    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" \
+         -o /tmp/xraypanel.ipk \
+         "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"
     opkg install --force-reinstall /tmp/xraypanel.ipk
 
-Номер файла (`ID`) панель показывает на странице «Статус» в блоке обновления.
-Его же видно командой:
+Посмотреть, что нашлось в последнем релизе (номер версии и имя файла):
 
     curl -s -H "Authorization: Bearer <ТОКЕН>" \
-         https://api.github.com/repos/Petr700/xraypanel/releases/latest | grep -B2 '"browser_download_url"'
+         https://api.github.com/repos/Petr700/xraypanel/releases/latest \
+      | grep -E '"tag_name"|"browser_download_url"'
 
-Если сделать репозиторий публичным, скачивание упрощается до одной строки:
+Если сделать репозиторий публичным, скачивание упрощается до одной строки —
+имя файла при этом постоянное, номер версии подставлять не нужно:
 
-    wget -O /tmp/xraypanel.ipk https://github.com/Petr700/xraypanel/releases/download/v0.67.4/xraypanel_0.67.4_all.ipk
+    wget -O /tmp/xraypanel.ipk https://github.com/Petr700/xraypanel/releases/latest/download/xraypanel_all.ipk
     opkg install --force-reinstall /tmp/xraypanel.ipk
 
 Удалить панель (настройки и конфиг Xray при этом остаются):
@@ -177,7 +192,7 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 Пакет — это gzip-архив, содержимое можно посмотреть так:
 
-    cd /tmp && tar tzf xraypanel_0.67.0_all.ipk
+    cd /tmp && tar tzf xraypanel_<версия>_all.ipk
 
 ## Первые шаги
 
