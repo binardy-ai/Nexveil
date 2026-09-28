@@ -3032,6 +3032,21 @@ URLTEST_FILE="$STATE_DIR/urltest"
 url_test_url() { cfg url_test_url "http://www.gstatic.com/generate_204"; }
 url_test_port() { cfg url_test_port 18999; }
 
+# Прибрать тестовый xray: в новых сборках OpenWrt нет pkill, поэтому ищем
+# процесс по /proc и убиваем по pid — иначе проверочные экземпляры копятся,
+# занимают порт 18999, и следующая проверка идёт через «соседний» сервер.
+urltest_kill_leftovers() { # $1 = путь к конфигу тестовой проверки
+	_cf="${1:-$STATE_DIR/urltest.json}"
+	[ -n "$_cf" ] || return 0
+	for _pp in /proc/[0-9]*; do
+		[ -r "$_pp/cmdline" ] || continue
+		case "$(tr '\0' ' ' < "$_pp/cmdline" 2>/dev/null)" in
+			*"run -config $_cf"*|*"run -c $_cf"*) kill "${_pp#/proc/}" 2>/dev/null ;;
+		esac
+	done
+	return 0
+}
+
 # Тот же uuid, что у выхода реверс-моста? xray запрещает клиенту с пометкой
 # reverse работать обычным выходом («for safety reasons ... not allowed to use
 # forward proxy»), поэтому такой сервер проверку пройти не может.
@@ -3126,9 +3141,19 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 		printf ',\n    {"protocol": "freedom", "tag": "direct"}\n  ],\n'
 		printf '  "routing": {"rules": [{"type": "field", "inboundTag": ["t"], "outboundTag": "%s"}]}\n}\n' "$(jesc "$(server_tag "$_sec")")"
 	} > "$_cfg" 2>/dev/null
+	# убираем возможные зависшие экземпляры от прошлых проверок (они держат
+	# тот же порт, и новая проверка тогда уходит через предыдущий сервер)
+	urltest_kill_leftovers "$_cfg"
 	"$_bin" run -config "$_cfg" >>"$STATE_DIR/urltest.log" 2>&1 &
 	_pid=$!
-	sleep 1
+	# ждём готовности порта, а не «одну секунду»: на виртуальных роутерах
+	# xray поднимается дольше, и проверка ложно показывала «нет ответа»
+	_i=0
+	while [ "$_i" -lt 15 ]; do
+		netstat -lnt 2>/dev/null | grep -q "127.0.0.1:$_tport" && break
+		sleep 1
+		_i=$((_i + 1))
+	done
 	# Три попытки, берём лучшее время. Время меряем точными часами ядра прямо
 	# вокруг запроса, а не опросом раз в секунду: раньше из-за опроса у всех
 	# серверов выходили «круглые» 1000 / 1010 / 1020 мс, и по ним нельзя было
@@ -3182,7 +3207,7 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 		URLTEST_REASON="$_why"
 	fi
 	kill "$_pid" 2>/dev/null
-	pkill -f "run -config $_cfg" 2>/dev/null
+	urltest_kill_leftovers "$_cfg"
 	rm -f "$_cfg" 2>/dev/null
 	if [ -n "$_ms" ]; then
 		printf '%s мс' "$_ms"
