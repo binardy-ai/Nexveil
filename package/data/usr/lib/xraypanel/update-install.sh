@@ -29,17 +29,11 @@ rm -f "$_f" 2>/dev/null
 _ok=0
 _tok=$(cfg update_token "" 2>/dev/null)
 _apiurl=$(awk -F'\t' '$1 == "apiurl" { print $2; exit }' "$STATE/update.info" 2>/dev/null)
-# приватный репозиторий: обычная ссылка отдаёт 404, файл берём через API с токеном
-if [ -n "$_tok" ] && [ -n "$_apiurl" ] && command -v curl >/dev/null 2>&1; then
-	say "репозиторий приватный — качаю через API с токеном"
-	curl -sSL --max-time 300 -H "Authorization: Bearer $_tok" -H "Accept: application/octet-stream" -o "$_f" "$_apiurl" && _ok=1
-elif [ -n "$_tok" ]; then
-	say "для приватного репозитория нужен пакет curl (busybox-wget не умеет отправлять токен): $(pkg_cmd update) && $(pkg_cmd install curl)"
-	printf '1' > "$STATE/update-install.rc"
-	rm -f "$RUN"
-	exit 1
-fi
-if [ "$_ok" = 0 ] && command -v wget >/dev/null 2>&1; then
+# Сначала обычная ссылка: для публичного репозитория она работает всегда и не
+# зависит от токена. Через API с токеном идём только тогда, когда обычная файл не
+# отдала (приватный репозиторий) — иначе старый или просроченный токен в
+# настройках ломал обновление на ровном месте.
+if command -v wget >/dev/null 2>&1; then
 	wget -q -T 60 -O "$_f" "$_url" && _ok=1
 fi
 if [ "$_ok" = 0 ] && command -v curl >/dev/null 2>&1; then
@@ -47,6 +41,21 @@ if [ "$_ok" = 0 ] && command -v curl >/dev/null 2>&1; then
 fi
 if [ "$_ok" = 0 ] && command -v uclient-fetch >/dev/null 2>&1; then
 	uclient-fetch -q -O "$_f" "$_url" && _ok=1
+fi
+# скачалось что-то, но это не пакет (например, страница «нет доступа» от
+# приватного репозитория) — считаем попытку неудачной
+if [ -s "$_f" ] && ! panel_ipk_ok "$_f" 2>/dev/null; then
+	rm -f "$_f" 2>/dev/null
+	_ok=0
+fi
+if [ "$_ok" = 0 ] && [ -n "$_tok" ]; then
+	if [ -n "$_apiurl" ] && command -v curl >/dev/null 2>&1; then
+		say "обычная ссылка файл не отдала — качаю через API с токеном"
+		curl -sSL --max-time 300 -H "Authorization: Bearer $_tok" -H "Accept: application/octet-stream" -o "$_f" "$_apiurl" && _ok=1
+		if [ -s "$_f" ] && ! panel_ipk_ok "$_f" 2>/dev/null; then _ok=0; fi
+	else
+		say "для приватного репозитория нужен пакет curl (busybox-wget не умеет отправлять токен): $(pkg_cmd update) && $(pkg_cmd install curl)"
+	fi
 fi
 if [ "$_ok" = 0 ] || [ ! -s "$_f" ]; then
 	say "скачать не удалось — оставляю текущую версию"
@@ -58,12 +67,17 @@ fi
 
 if ! panel_ipk_ok "$_f" 2>/dev/null; then
 	say "скачанный файл не похож на пакет панели — не ставлю"
+	_head=$(head -c 160 "$_f" 2>/dev/null | tr -d '\r\n')
+	[ -n "$_head" ] && say "вместо пакета пришло: $_head"
+	[ -n "$_tok" ] && say "если репозиторий публичный — очистите поле «токен GitHub» на странице «Настройки» и повторите"
 	rm -f "$_f" 2>/dev/null
 	printf '1' > "$STATE/update-install.rc"
 	rm -f "$RUN"
 	exit 1
 fi
 _new=$(panel_ipk_version "$_f" 2>/dev/null)
+# если версию из файла вытащить не вышло, показываем ту, что нашла проверка
+[ -n "$_new" ] || _new="$_ver"
 say "пакет на месте: версия $_new ($(file_size "$_f") байт), ставлю"
 
 pkg_add_file "$_f" >>"$LOG" 2>&1
