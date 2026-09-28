@@ -66,9 +66,9 @@ fetch() { # $1 = куда
 }
 
 API="https://api.github.com/repos/${_repo}/releases/latest"
-rm -f "$TMP" 2>/dev/null
+rm -f "$TMP" "$TMP.fields" 2>/dev/null
 if ! fetch "$TMP"; then
-	rm -f "$TMP" 2>/dev/null
+	rm -f "$TMP" "$TMP.fields" 2>/dev/null
 	fail "не удалось получить ответ от GitHub: нет интернета, либо репозиторий приватный (тогда на странице «Настройки» нужен токен GitHub)"
 fi
 
@@ -77,7 +77,7 @@ if grep -q '"message"' "$TMP" 2>/dev/null && ! grep -q '"tag_name"' "$TMP" 2>/de
 	case "$_msg" in
 		Not\ Found) _msg="репозиторий не найден (проверьте настройку «владелец/репозиторий»)" ;;
 	esac
-	rm -f "$TMP" 2>/dev/null
+	rm -f "$TMP" "$TMP.fields" 2>/dev/null
 	fail "GitHub ответил ошибкой: ${_msg:-неизвестная ошибка}"
 fi
 
@@ -86,18 +86,30 @@ _ver=${_tag#v}
 # ссылка на пакет панели: берём файл того формата, который подходит этой
 # системе — .ipk на старых (opkg), .apk на новых (apk)
 _ext=$(pkg_ext)
-_url=$(grep -o '"browser_download_url": *"[^"]*\.'"$_ext"'"' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*"\(http[^"]*\)".*/\1/')
+# Ответ GitHub бывает и многострочным, и «в одну строку» — на роутере wget
+# получает именно однострочный. Тогда все регулярки ниже видят первую попавшуюся
+# строку, и панель подставляла чужой номер файла и чужой размер. Поэтому для
+# разбора файлов релиза раскладываем ответ построчно по запятым.
+FIELDS="$TMP.fields"
+tr ',' '\n' < "$TMP" 2>/dev/null > "$FIELDS"
+_url=$(grep -o '"browser_download_url": *"[^"]*\.'"$_ext"'"' "$FIELDS" 2>/dev/null | head -1 | sed -e 's/.*"\(http[^"]*\)".*/\1/')
 # адрес того же файла через API: для приватного репозитория обычная ссылка не
 # скачивается, а API-адрес с токеном — скачивается (Accept: octet-stream)
 _apiurl=$(awk '
 	/"url": *"[^"]*\/releases\/assets\/[0-9]+"/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) }
 	/"browser_download_url": *"[^"]*\.'"$_ext"'"/ { if (last != "") { print "https://api.github.com/repos/'"$_repo"'/releases/" last; exit } }
-' "$TMP" 2>/dev/null)
-_size=$(grep -o '"size": *[0-9]*' "$TMP" 2>/dev/null | head -1 | sed -e 's/.*: *//')
+' "$FIELDS" 2>/dev/null)
+# размер берём у того же файла, который скачаем: в релизе лежат и .ipk, и .apk,
+# а первый «size» в ответе относится к первому файлу — на системах с opkg это
+# давало размер чужого пакета
+_size=$(awk '
+	/"size": *[0-9]+/ { if (match($0, /[0-9]+/)) s = substr($0, RSTART, RLENGTH) }
+	/"browser_download_url": *"[^"]*\.'"$_ext"'"/ { if (s != "") { print s; exit } }
+' "$FIELDS" 2>/dev/null)
 _date=$(date '+%d.%m.%Y %H:%M')
 
 if [ -z "$_ver" ]; then
-	rm -f "$TMP" 2>/dev/null
+	rm -f "$TMP" "$TMP.fields" 2>/dev/null
 	fail "в ответе GitHub не нашлось версии — обновление не предлагаю"
 fi
 
@@ -140,7 +152,7 @@ awk '
 } > "$STATE/update.info.new" 2>/dev/null
 mv -f "$STATE/update.info.new" "$STATE/update.info" 2>/dev/null
 date +%s > "$STATE/update.at" 2>/dev/null
-rm -f "$TMP" 2>/dev/null
+rm -f "$TMP" "$TMP.fields" 2>/dev/null
 
 say "последняя версия на GitHub: $_ver${_url:+ (пакет найден)}"
 [ -n "$_url" ] || say "в релизе нет файла .ipk — установить кнопкой не получится, только ссылкой"
