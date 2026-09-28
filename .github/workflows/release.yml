@@ -1,0 +1,68 @@
+name: сборка релиза
+
+# Что делает: при публикации релиза сам собирает оба пакета — .ipk (для систем с
+# opkg) и .apk (для систем с apk, OpenWrt 25.12+) — и прикладывает файлы к
+# релизу. Так «сделали для 23.05» не остаётся только для 23.05.
+#
+# Можно запустить и руками (Actions → сборка релиза → Run workflow) — тогда
+# пакеты просто сохранятся как артефакты, ничего не публикуется.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Забрать код
+        uses: actions/checkout@v4
+
+      - name: Собрать .ipk (opkg, до 24.10)
+        run: bash build.sh
+
+      - name: Собрать .apk (apk, 25.12+) от root
+        run: |
+          set -e
+          # .apk записывает внутрь владельцев файлов: собирать только от root,
+          # иначе на роутере файлы достанутся nobody
+          sudo chown -R root:root build control
+          sudo bash build-apk.sh
+
+      - name: Проверить пакеты и подготовить постоянные имена
+        run: |
+          set -e
+          VER="$(sed -n 's/^Version: //p' control/control)"
+          IPK="xraypanel_${VER}_all.ipk"
+          APK="xraypanel_${VER}_all.apk"
+          test -s "$IPK"
+          gzip -dc "$IPK" | tar tf - | grep -qx './debian-binary'
+          test "$(head -c 3 "$APK")" = "ADB"
+          mkdir -p dist
+          cp "$IPK" dist/xraypanel_all.ipk
+          cp "$APK" dist/xraypanel_all.apk
+          ls -la "$IPK" "$APK" dist/
+
+      - name: Приложить файлы к релизу
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            xraypanel_*_all.ipk
+            xraypanel_*_all.apk
+            dist/xraypanel_all.ipk
+            dist/xraypanel_all.apk
+
+      - name: Сохранить файлы как артефакт (ручной запуск)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: xraypanel-packages
+          path: |
+            xraypanel_*_all.ipk
+            xraypanel_*_all.apk
+            dist/*
