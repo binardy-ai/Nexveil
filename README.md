@@ -290,6 +290,13 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
     ./build.sh
     ./build-apk.sh      # дополнительно пакет в формате apk (OpenWrt 25.12+)
 
+Проще собирать обе версии одной командой — она же проверяет оба пакета и
+складывает копии с постоянными именами в `dist/`:
+
+    APK_BUILD_HOST=root@<IP роутера> \
+    APK_BUILD_SSH_OPTS="-i ~/.ssh/id_xraypanel" \
+    bash build-all.sh
+
 Скрипт собирает `xraypanel_<версия>_all.ipk` из папки `package/` и описания в
 `control/`. Версия берётся из строки `Version:` в файле `control/control`.
 `build-apk.sh` собирает тот же пакет в формате `apk` (для систем, где пакетный
