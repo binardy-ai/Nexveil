@@ -70,7 +70,7 @@ OpenWrt до 24.10 ставит пакеты через `opkg` (файлы `.ipk
 
     opkg update && opkg install curl
     curl -L -H "Authorization: Bearer <ТОКЕН>" -H "Accept: application/octet-stream" \
-         -o /tmp/xraypanel.ipk https://api.github.com/repos/Petr700/xraypanel/releases/assets/<ID>
+         -o /tmp/xraypanel.ipk https://api.github.com/repos/binardy-ai/Nexveil/releases/assets/<ID>
     opkg install --force-reinstall /tmp/xraypanel.ipk
 
 (`<ID>` — номер файла в релизе: он показан на странице «Статус» в блоке

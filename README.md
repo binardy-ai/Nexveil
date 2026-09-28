@@ -123,7 +123,7 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
   команды `apk`. Старые `.ipk` в этих системах не ставятся вообще.
 
 Последняя версия — в разделе **Releases**. Ссылка
-`https://github.com/Petr700/xraypanel/releases/latest` всегда ведёт на самый
+`https://github.com/binardy-ai/Nexveil/releases/latest` всегда ведёт на самый
 свежий релиз, номер версии в ней указывать не нужно. В каждом релизе два файла
 пакета: с точным номером (например `xraypanel_0.67.4_all.ipk`) и с постоянным
 именем `xraypanel_all.ipk` — он всегда относится к последней сборке.
@@ -162,27 +162,27 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 Для публичного репозитория (одна строка):
 
-    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); curl -sL -o /tmp/xraypanel.$M https://github.com/Petr700/xraypanel/releases/latest/download/xraypanel_all.$M && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); curl -sL -o /tmp/xraypanel.$M https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.$M && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
 
 Для приватного репозитория (нужен токен GitHub и `curl` — busybox-wget не умеет
 отправлять заголовки; та же логика выбора файла):
 
-    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); EXT=$([ "$M" = apk ] && echo apk || echo ipk); TOKEN=<ваш токен GitHub>; ID=$(curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/Petr700/xraypanel/releases/latest | awk -v ext="$EXT" '/\/releases\/assets\/[0-9]+/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) } $0 ~ ("\"browser_download_url\": *\"[^\"]*\\." ext "\"") { if (last != "") { print last; exit } }'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.$EXT "https://api.github.com/repos/Petr700/xraypanel/releases/$ID" && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); EXT=$([ "$M" = apk ] && echo apk || echo ipk); TOKEN=<ваш токен GitHub>; ID=$(curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/binardy-ai/Nexveil/releases/latest | awk -v ext="$EXT" '/\/releases\/assets\/[0-9]+/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) } $0 ~ ("\"browser_download_url\": *\"[^\"]*\\." ext "\"") { if (last != "") { print last; exit } }'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.$EXT "https://api.github.com/repos/binardy-ai/Nexveil/releases/$ID" && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
 
 Если удобнее по шагам, то же самое:
 
     opkg update && opkg install curl
     # на системах с apk:  apk update && apk add curl
     TOKEN=<ваш токен GitHub>
-    API=https://api.github.com/repos/Petr700/xraypanel/releases/latest
+    API=https://api.github.com/repos/binardy-ai/Nexveil/releases/latest
     ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')
-    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/Petr700/xraypanel/releases/assets/$ID"
+    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/binardy-ai/Nexveil/releases/assets/$ID"
     opkg install --force-reinstall /tmp/xraypanel.ipk
 
 Посмотреть, что нашлось в последнем релизе (номер версии и имя файла):
 
     curl -s -H "Authorization: Bearer <ТОКЕН>" \
-         https://api.github.com/repos/Petr700/xraypanel/releases/latest \
+         https://api.github.com/repos/binardy-ai/Nexveil/releases/latest \
       | grep -E '"tag_name"|"browser_download_url"'
 
 **Важно:** если скачивать файл с GitHub напрямую (`.../latest/download/...`)

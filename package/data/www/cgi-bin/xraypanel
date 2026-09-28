@@ -255,7 +255,7 @@ act_del_bridge() {
 
 # --- обновление самой панели -------------------------------------------------
 act_update_check() { # проверить новые версии панели в релизах GitHub
-	[ -n "$(cfg update_repo "Petr700/xraypanel")" ] || redirect status "не указан репозиторий для проверки обновлений — впишите его на странице «Настройки»"
+	[ -n "$(cfg update_repo "binardy-ai/Nexveil")" ] || redirect status "не указан репозиторий для проверки обновлений — впишите его на странице «Настройки»"
 	bg_run "$UPDATE_ENV sh '$UPDATE_CHECK'" "$STATE_DIR/update.log"
 	respond_now status "проверяю новые версии — результат появится на этой странице через несколько секунд"
 	exit 0
@@ -5845,7 +5845,7 @@ page_settings() {
 	done
 	printf '</select></div>'
 	# проверка новых версий панели (самообновление)
-	printf '<div><label>'"$T_panel_updates_github_reposit"'</label><input name="update_repo" value="%s" placeholder="'"$T_owner_repository"'"></div>' "$(h "$(cfg update_repo "Petr700/xraypanel")")"
+	printf '<div><label>'"$T_panel_updates_github_reposit"'</label><input name="update_repo" value="%s" placeholder="'"$T_owner_repository"'"></div>' "$(h "$(cfg update_repo "binardy-ai/Nexveil")")"
 	printf '<div><label>Токен GitHub <span class="muted">'"$T_only_needed_for_a_private_re"'</span></label><input name="update_token" value="%s" placeholder="'"$T_optional"'"></div>' "$(h "$(cfg update_token "")")"
 	printf '<div><label>'"$T_check_for_updates"'</label><select name="update_auto">'
 	printf '<option value="1"%s>'"$T_once_a_day_and_when_status_i"'</option>' "$([ "$(cfg update_auto 1)" = 1 ] && echo ' selected')"
@@ -5859,7 +5859,7 @@ page_settings() {
 # «проверить сейчас», «что нового» и «обновить». Отдаётся и отдельной страницей
 # (?page=update_card), чтобы страница обновляла её без перезагрузки.
 update_card_html() {
-	_repo=$(cfg update_repo "Petr700/xraypanel")
+	_repo=$(cfg update_repo "binardy-ai/Nexveil")
 	_cver=$(panel_version)
 	printf '<h2>'"$T_panel_update"'</h2>'
 	if [ -z "$_repo" ]; then

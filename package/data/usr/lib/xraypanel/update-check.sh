@@ -2,7 +2,7 @@
 # Проверка новой версии панели на GitHub.
 #
 # Куда смотреть — настройка update_repo («владелец/репозиторий»), по умолчанию
-# Petr700/xraypanel. Если репозиторий приватный, можно указать update_token.
+# binardy-ai/Nexveil. Если репозиторий приватный, можно указать update_token.
 #
 # Результат кладём в состояние панели, чтобы страница «Статус» показывала
 # предупреждение без обращения к интернету:
@@ -33,7 +33,7 @@ if [ -f "$LOG" ] && [ "$(wc -c <"$LOG" 2>/dev/null)" -gt 200000 ] 2>/dev/null; t
 fi
 
 rm -f "$ERR" 2>/dev/null
-_repo=$(cfg update_repo "Petr700/xraypanel" 2>/dev/null)
+_repo=$(cfg update_repo "binardy-ai/Nexveil" 2>/dev/null)
 [ -n "$_repo" ] || { say "репозиторий обновлений не указан — выхожу"; exit 0; }
 _tok=$(cfg update_token "" 2>/dev/null)
 
