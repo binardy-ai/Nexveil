@@ -44,13 +44,22 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 ### Команда для файла .ipk — системы с opkg (до 24.10)
 
-Скачивает `.ipk` из последнего релиза и ставит его:
+Скачивает `.ipk` из последнего релиза и ставит его. Через `wget` (в OpenWrt и
+ImmortalWrt он есть всегда — это busybox):
+
+    wget -q -O /tmp/xraypanel.ipk https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.ipk && opkg install --force-reinstall /tmp/xraypanel.ipk
+
+Через `curl` (он стоит не во всех сборках, но если есть — результат тот же):
 
     curl -sL -o /tmp/xraypanel.ipk https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.ipk && opkg install --force-reinstall /tmp/xraypanel.ipk
 
 ### Команда для файла .apk — системы с apk (25.12 и новее)
 
-Скачивает `.apk` из последнего релиза и ставит его:
+Скачивает `.apk` из последнего релиза и ставит его. Через `wget`:
+
+    wget -q -O /tmp/xraypanel.apk https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.apk && apk add --allow-untrusted /tmp/xraypanel.apk
+
+Через `curl`:
 
     curl -sL -o /tmp/xraypanel.apk https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.apk && apk add --allow-untrusted /tmp/xraypanel.apk
 
@@ -62,9 +71,10 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 Если не хочется выяснять, какая у тебя система: команда сама смотрит, чем
 ставятся пакеты, скачивает из последнего релиза файл нужного формата и сразу его
-ставит. Версию указывать не нужно — всегда берётся последняя.
+ставит. Заодно сама выбирает, чем качать — `wget` или `curl`. Версию указывать не
+нужно — всегда берётся последняя.
 
-    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); E=$([ "$M" = apk ] && echo apk || echo ipk); curl -sL -o /tmp/xraypanel.$E https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.$E && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); E=$([ "$M" = apk ] && echo apk || echo ipk); U=https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.$E; if command -v wget >/dev/null 2>&1; then wget -q -O /tmp/xraypanel.$E "$U"; else curl -sL -o /tmp/xraypanel.$E "$U"; fi && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
 
 Терминал на роутере — это вход по SSH (`ssh root@<IP роутера>`) либо «Терминал»
 в самом веб-интерфейсе роутера.
