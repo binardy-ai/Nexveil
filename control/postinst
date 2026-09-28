@@ -15,6 +15,33 @@ if ! uci -q get xraypanel.settings >/dev/null 2>&1; then
 		uci commit xraypanel >/dev/null 2>&1
 	fi
 
+# Переезд на новый адрес репозитория. Файл настроек при обновлении не трогается,
+# поэтому у панелей, поставленных до переезда, в нём оставался прежний адрес (и
+# прежний токен GitHub): проверка обновлений ходила мимо нового репозитория и
+# находила только старые релизы. Правим один раз при установке.
+_repo_new='binardy-ai/Nexveil'
+_repo_moved=""
+_tok_removed=""
+case "$(uci -q get xraypanel.settings.update_repo 2>/dev/null)" in
+	''|Petr700/xraypanel|petr700/xraypanel)
+		uci -q set "xraypanel.settings.update_repo=$_repo_new"
+		_repo_moved=1
+		;;
+esac
+# новый репозиторий публичный: токен для него не нужен, а старый в настройках
+# лежал открытым текстом и давал доступ к прежнему аккаунту
+if [ "$(uci -q get xraypanel.settings.update_repo 2>/dev/null)" = "$_repo_new" ] && [ -n "$(uci -q get xraypanel.settings.update_token 2>/dev/null)" ]; then
+	uci -q delete xraypanel.settings.update_token
+	_tok_removed=1
+fi
+if [ -n "$_repo_moved" ] || [ -n "$_tok_removed" ]; then
+	uci commit xraypanel >/dev/null 2>&1
+fi
+if [ -n "$_repo_moved" ]; then
+	echo " адрес репозитория для проверки обновлений: $_repo_new"
+fi
+[ -n "$_tok_removed" ] && echo " прежний токен GitHub из настроек убран (он больше не нужен)"
+
 chmod 755 /www/cgi-bin/xraypanel 2>/dev/null
 chmod 755 /usr/lib/xraypanel/transparent.sh 2>/dev/null
 chmod 755 /usr/lib/xraypanel/transparent-enable.sh 2>/dev/null
