@@ -1902,6 +1902,20 @@ server_tag() { # имя секции -> тег выхода
 	printf '%s' "$_t"
 }
 
+server_label() { # имя секции -> подпись для глаз
+	# Название сервера для показа: у узлов из подписки это название из ссылки
+	# (там бывает флаг страны и русские буквы), у остальных — имя раздела.
+	# В конфиг xray оно не попадает: там по-прежнему технический тег.
+	_t=$(uci -q get "$UCI_APP.$1.title" 2>/dev/null)
+	[ -n "$_t" ] || _t="$1"
+	printf '%s' "$_t"
+}
+
+server_label_by_tag() { # тег выхода -> подпись для глаз
+	_s=$(tag_to_section "$1")
+	if [ -n "$_s" ]; then server_label "$_s"; else printf '%s' "$1"; fi
+}
+
 tag_to_section() { # тег выхода -> имя секции
 	for _s in $(server_sections); do
 		[ "$(server_tag "$_s")" = "$1" ] && { printf '%s' "$_s"; return; }
@@ -3775,12 +3789,18 @@ server_add_from_link() {
 	case "$_p_port" in ''|*[!0-9]*) _p_port=443 ;; esac
 	_name=$(urldecode "$_frag")
 	[ -n "$_name" ] || _name=${_vps:-}
+	# «Название» — как в подписке: с флагом страны, русскими буквами и пробелами.
+	# В конфиг xray оно не идёт (там технический тег ниже), поэтому кавычки и
+	# служебные символы убираем, а переводы строк и лишние пробелы — тоже.
+	_title=$(printf '%s' "$_name" | tr -d '\r\n\t' | sed -e "s/['\"\\\\]//g" \
+		-e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/  */ /g')
 	_base=$(printf '%s' "$_name" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{1,\}/-/g' -e 's/^[._-]*//' -e 's/[._-]*$//')
 	[ -n "$_base" ] || _base="srv"
 	_tag=$(unique_tag "$_base")
 	_sec=$(ensure_section server "$(unique_section_name "$_tag")")
 	[ -n "$_sec" ] || { printf 'не удалось создать раздел сервера'; return 1; }
 	uci -q set "$UCI_APP.$_sec.tag=$_tag"
+	[ -n "$_title" ] && uci -q set "$UCI_APP.$_sec.title=$_title"
 	uci -q set "$UCI_APP.$_sec.address=$_p_host"
 	uci -q set "$UCI_APP.$_sec.port=$_p_port"
 	case "$_proto" in

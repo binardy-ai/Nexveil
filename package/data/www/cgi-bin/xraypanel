@@ -172,6 +172,7 @@ act_save_server() {
 	_existed=$(uci -q get "$UCI_APP.$_want" 2>/dev/null)
 	_sec=$(ensure_section server "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел сервера"
+	_oldtag=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null)
 	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_address wg_allowed mtu network path hosthdr tls hy_obfs hy_obfs_pass; do
 		_v=$(param "$_f")
 		# тег приводим к безопасному виду: пробелы и посторонние символы ломают
@@ -179,6 +180,9 @@ act_save_server() {
 		[ "$_f" = tag ] && [ -n "$_v" ] && _v=$(tag_clean "$_v")
 		if [ -n "$_v" ]; then ui_uci set "$UCI_APP.$_sec.$_f=$_v"; else ui_uci delete "$UCI_APP.$_sec.$_f"; fi
 	done
+	# тег переименовали руками — название из подписки к нему уже не подходит
+	_nv=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null)
+	[ -n "$_oldtag" ] && [ -n "$_nv" ] && [ "$_nv" != "$_oldtag" ] && ui_uci delete "$UCI_APP.$_sec.title"
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	_nt=$(param tag); [ -n "$_nt" ] || _nt="$_sec"
 	if [ -n "$_existed" ]; then pending_note "изменён сервер «$_nt»"; else pending_note "добавлен сервер «$_nt»"; fi
@@ -3888,6 +3892,8 @@ servers_table_html() {
 	printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_tag"'</th><th>'"$T_address"'</th><th title="'"$T_time_of_the_real_request_thr"'">'"$T_check_proxy"'</th><th title="'"$T_network_ping_to_the_server_i"'">'"$T_ping_network"'</th><th></th></tr>'
 	for _s in $(server_sections); do
 		_tag=$(server_tag "$_s")
+		# в столбце «Имя» — название из подписки (с флагом), если оно есть
+		_nm=$(server_label "$_s")
 		_style=""; _mark=""
 		if [ -n "$_actv" ] && [ "$_tag" = "$_actv" ]; then
 			_style=' class="row-ok"'
@@ -3968,7 +3974,7 @@ servers_table_html() {
 		# длинные значения (имя, тег, адрес) держим в одной строке: хвост
 		# обрезается, полный текст виден при наведении мышки
 		printf '<tr data-tag="%s"%s><td data-label="'"$T_name"'"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="'"$T_tag"'"><span class="%s" title="%s"%s>%s</span></td><td data-label="'"$T_address"'"%s><span class="clip" title="%s">%s</span>%s</td><td data-label="'"$T_check_2"'"><span class="%s"%s>%s</span>%s</td><td data-label="'"$T_ping"'">%s</td><td data-label="'"$T_actions"'"><a class="btn sec" href="%s?page=server&amp;sec=%s">'"$T_edit_2"'</a> <button type="button" class="btn sec urltest-one" data-tag="%s">'"$T_check"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> %s</td></tr>\n' \
-			"$(h "$_tag")" "$_style" "$_rev" "$(h "$_tag")" "$(h "$_s")" "$_offmark" \
+			"$(h "$_tag")" "$_style" "$_rev" "$(h "$_nm")" "$(h "$_nm")" "$_offmark" \
 			"$_tagcls" "$(h "$_tag")" "$_rev" "$(h "$_tag")" \
 			"$_rev" "$_addrhp" "$_addrhp" "$_ep" \
 			"$_rcls" "$_rtitle_attr" "$(h "$_res")" "$_rtime_html" \
@@ -4200,10 +4206,12 @@ EOF
 		fi
 		# длинные значения держим в одной строке: хвост обрезается, полный
 		# текст виден при наведении мышки (title)
+		# выход моста: у сервера показываем название из подписки (с флагом)
+		_bouttxt=$(server_label_by_tag "$_bout")
 		printf '<tr data-bridge="%s"%s><td data-label="'"$T_name"'"><span class="clip" title="%s">%s</span>%s</td><td data-label="'"$T_bridge_tag"'"><span class="%s" title="%s">%s</span></td><td data-label="'"$T_mode"'">%s</td><td data-label="'"$T_domain"'"><span class="clip" title="%s">%s</span></td><td data-label="'"$T_outbound"'"><span class="clip" title="%s">%s</span></td><td data-label="'"$T_response"'">%s</td><td data-label="'"$T_status"'" class="muted bnote"><span class="clip" title="%s">%s</span></td><td data-label="'"$T_actions"'"><a class="btn sec" href="%s?page=bridge&sec=%s">'"$T_edit_2"'</a> ' \
 			"$(h "$_bt")" "$_bstyle" "$(h "$_b")" "$(h "$_b")" "$_boffmark" \
 			"$_bcls" "$(h "$_bt")" "$(h "$_bt")" "$_bstxt" \
-			"$(h "$_bdom")" "$(h "$_bdom")" "$(h "$_bout")" "$(h "$_bout")" \
+			"$(h "$_bdom")" "$(h "$_bdom")" "$(h "$_bouttxt")" "$(h "$_bouttxt")" \
 			"$_bms" "$(h "$_bstate")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
 		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
 	done
@@ -4264,7 +4272,7 @@ page_bridge() {
 		_ot=$(server_tag "$_os")
 		[ -n "$_ot" ] || continue
 		printf '<option value="%s" %s>%s — %s:%s%s</option>' "$(h "$_ot")" "$([ "$_bo" = "$_ot" ] && echo selected)" \
-			"$(h "$_ot")" "$(h "$(uci -q get "$UCI_APP.$_os.address")")" "$(h "$(uci -q get "$UCI_APP.$_os.port")")" \
+			"$(h "$(srv_option_text "$_os")")" "$(h "$(uci -q get "$UCI_APP.$_os.address")")" "$(h "$(uci -q get "$UCI_APP.$_os.port")")" \
 			"$(server_disabled "$_os" && echo ' (выключен)')"
 	done
 	printf '</select></div>'
@@ -4276,7 +4284,7 @@ page_bridge() {
 		_ot=$(server_tag "$_os")
 		[ -n "$_ot" ] || continue
 		printf '<option value="%s" %s>%s — %s:%s</option>' "$(h "$_ot")" "$([ "$_bn" = "$_ot" ] && echo selected)" \
-			"$(h "$_ot")" "$(h "$(uci -q get "$UCI_APP.$_os.address")")" "$(h "$(uci -q get "$UCI_APP.$_os.port")")"
+			"$(h "$(srv_option_text "$_os")")" "$(h "$(uci -q get "$UCI_APP.$_os.address")")" "$(h "$(uci -q get "$UCI_APP.$_os.port")")"
 	done
 	printf '</select></div>'
 	printf '</div>'
@@ -4357,7 +4365,7 @@ rule_proxy_select() { # $1 = текущий выход (auto или тег се�
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		server_is_reverse "$_t" && continue
-		printf '<option value="%s"%s>%s</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$_t")"
+		printf '<option value="%s"%s>%s</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$(srv_option_text "$_s")")"
 	done
 	case "$_cur" in
 		''|auto|direct|blocked) ;;
@@ -4524,6 +4532,18 @@ rule_sets_multi() { # $1 = наборы через запятую
 	printf '</select>'
 }
 
+# Подпись сервера для выпадающих списков: «🇩🇪 Germ_Vless (Germ-Vless)» —
+# название из подписки, а в скобках технический тег, если он отличается
+srv_option_text() { # $1 = имя секции сервера
+	_t=$(server_tag "$1")
+	_n=$(server_label "$1")
+	[ -n "$_n" ] || { printf '%s' "$_t"; return; }
+	# если отличие только в флажке («🇩🇪Germ_Vless» и тег «Germ_Vless») —
+	# технический тег в скобках не нужен, он и так совпадает
+	_c=$(printf '%s' "$_n" | sed 's/^[^A-Za-z0-9]*//')
+	if [ "$_c" = "$_t" ]; then printf '%s' "$_n"; else printf '%s (%s)' "$_n" "$_t"; fi
+}
+
 rule_out_select() { # $1 = текущий выход, $2 = имя поля (по умолчанию outbound)
 	_cur="$1"
 	_nm="${2:-outbound}"
@@ -4533,7 +4553,7 @@ rule_out_select() { # $1 = текущий выход, $2 = имя поля (по
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		server_is_reverse "$_t" && continue
-		printf '<option value="%s"%s>'"$T_server_s"'</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$_t")"
+		printf '<option value="%s"%s>'"$T_server_s"'</option>' "$(h "$_t")" "$([ "$_cur" = "$_t" ] && echo ' selected')" "$(h "$(srv_option_text "$_s")")"
 	done
 	# если в правиле остался выход, которого нет в списке (заблокировать,
 	# реверс-мост, интерфейс) — показываем его отдельной строкой, чтобы
@@ -5379,7 +5399,7 @@ EOF
 		_t=$(server_tag "$_s")
 		# серверы, занятые реверсом, для выхода не предлагаем
 		server_is_reverse "$_t" && continue
-		printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$_po" = "$_t" ] && echo selected)" "$(h "$_t")"
+		printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$_po" = "$_t" ] && echo selected)" "$(h "$(srv_option_text "$_s")")"
 	done
 	printf '<option value="direct" %s>'"$T_direct_straight"'</option>' "$([ "$_po" = direct ] && echo selected)"
 	opt_select_close "$T_where_traffic_goes_that_did_"
@@ -5444,7 +5464,7 @@ EOF
 	for _s in $(server_sections); do
 		_t=$(server_tag "$_s")
 		server_is_reverse "$_t" && continue
-	printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$(cfg dns_out "")" = "$_t" ] && echo selected)" "$(h "$_t")"
+	printf '<option value="%s" %s>%s</option>' "$(h "$_t")" "$([ "$(cfg dns_out "")" = "$_t" ] && echo selected)" "$(h "$(srv_option_text "$_s")")"
 	done
 	opt_select_close "$T_which_outbound_dns_requests_"
 	opt_select_open "$T_how_to_release_dns" dns_mode
@@ -5637,7 +5657,9 @@ EOF
 			case "$_tag" in
 				direct)  _nm='<b>напрямую</b> (мимо прокси)' ;;
 				blocked) _nm='<b>заблокировано</b>' ;;
-				*)       if [ "$_tag" = "$_actt" ]; then _nm="<span class=\"ok\">$(h "$_tag")</span>"; else _nm="$(h "$_tag")"; fi ;;
+				*)       # у серверов показываем название из подписки (с флагом)
+				         _lb=$(server_label_by_tag "$_tag")
+				         if [ "$_tag" = "$_actt" ]; then _nm="<span class=\"ok\">$(h "$_lb")</span>"; else _nm="$(h "$_lb")"; fi ;;
 			esac
 			_pct=$(awk -v a="$(( ${_up:-0} + ${_dn:-0} ))" -v b="$_tot" 'BEGIN { printf "%.0f %%", (b > 0) ? a * 100 / b : 0 }')
 			_top=$(printf '%s\n' "$_dm" | awk -F'\t' -v t="$_tag" '$2 == t { printf "%s (%s), ", $3, $1; n++; if (n >= 3) exit }' | sed -e 's/, $//')
