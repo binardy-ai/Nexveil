@@ -8,14 +8,21 @@
 `http://<IP роутера>/cgi-bin/xraypanel`. Внутри — одна CGI-страница и
 shell-скрипты; ни Python, ни PHP, ни Node на роутере не нужны.
 
+> **Это бета-версия.** Панель рабочая и уже используется каждый день, но развитие
+> не остановлено: от версии к версии что-то меняется, какие-то места могут вести
+> себя не так, как ожидается. Если нашли ошибку, что-то не работает или есть
+> идея — открывайте Issue в репозитории. Тесты, замечания и помощь только
+> приветствуются.
+
 ## Где работает
 
 - **OpenWrt 21.02 и новее, ImmortalWrt и сборки на базе OpenWrt** — проверено на
   ImmortalWrt 23.05.4 (x86_64); на других версиях и архитектурах работают те же
   пакеты `xray-core` и `uhttpd`, отдельных сборок панели не требуется (панель —
   это shell-скрипты и CGI);
-- нужен установленный **Xray** (`opkg install xray-core`) и CGI в `uhttpd`
-  (в стандартной сборке OpenWrt уже включён);
+- нужен установленный **Xray** (`opkg install xray-core`, на системах с `apk` —
+  `apk add xray-core`) и CGI в `uhttpd` (в стандартной сборке OpenWrt уже
+  включён);
 - наружу панель открывать не обязательно — достаточно локальной сети или
   доступа по обратному туннелю (реверс-мост, см. ниже).
 
@@ -124,25 +131,38 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 
 Последняя версия — в разделе **Releases**. Ссылка
 `https://github.com/binardy-ai/Nexveil/releases/latest` всегда ведёт на самый
-свежий релиз, номер версии в ней указывать не нужно. В каждом релизе два файла
-пакета: с точным номером (например `xraypanel_0.67.4_all.ipk`) и с постоянным
-именем `xraypanel_all.ipk` — он всегда относится к последней сборке.
+свежий релиз, номер версии в ней указывать не нужно. В каждом релизе по четыре
+файла: `xraypanel_all.ipk` и `xraypanel_all.apk` (они всегда последняя сборка) и
+такие же с точным номером версии — например `xraypanel_0.67.4_all.ipk`.
 
-Скачайте `.ipk` из последнего релиза и положите на роутер (подставьте имя файла,
-которое видите в релизе):
+Установить панель можно двумя способами.
 
-    scp xraypanel_<версия>_all.ipk root@<IP роутера>:/tmp/
-    ssh root@<IP роутера> 'opkg install /tmp/xraypanel_<версия>_all.ipk'
+### Способ 1. Одной командой в терминале роутера
 
-Для систем с `apk` (OpenWrt 25.12+) — то же самое, но другим форматом пакета:
+Команда сама смотрит, чем на роутере управляются пакеты (`apk` или `opkg`),
+скачивает из последнего релиза файл нужного формата и сразу его ставит. Версию
+указывать не нужно — всегда берётся последняя.
 
-    scp xraypanel_<версия>_all.apk root@<IP роутера>:/tmp/
-    ssh root@<IP роутера> 'apk add --allow-untrusted /tmp/xraypanel_<версия>_all.apk'
+    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); E=$([ "$M" = apk ] && echo apk || echo ipk); curl -sL -o /tmp/xraypanel.$E https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.$E && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
 
-Файлы `.apk` для релизов готовятся отдельным шагом; пока в релизе лежит `.ipk`
-(он подходит вашей ImmortalWrt 23.05 и любым системам с `opkg`).
+Терминал на роутере — это вход по SSH (`ssh root@<IP роутера>`) либо «Терминал»
+в самом веб-интерфейсе роутера.
 
-Если `opkg` ругается на зависимости:
+### Способ 2. Скачать файл на компьютер и поставить из менеджера программ
+
+1. Открыть раздел **Releases** и скачать оттуда пакет: `.ipk` — для
+   OpenWrt / ImmortalWrt до 24.10, `.apk` — для OpenWrt 25.12 и новее.
+2. В веб-интерфейсе роутера открыть **Система → Менеджер программ →
+   Загрузить пакет** (System → Software → Upload Package), выбрать скачанный
+   файл и нажать «Установить».
+
+   В новых системах (с `apk`) пакет собран без подписи, и менеджер программ может
+   его не принять. Тогда ставьте способом 1 — там подпись не проверяется.
+
+После установки панель открывается по адресу
+`http://<IP роутера>/cgi-bin/xraypanel`.
+
+Если `opkg` ругается на зависимости (например, ещё не установлен `xray-core`):
 
     opkg install --nodeps /tmp/xraypanel_<версия>_all.ipk
 
@@ -154,45 +174,9 @@ shell-скрипты; ни Python, ни PHP, ни Node на роутере не 
 (положить пакет в `/tmp` или загрузить файлом) либо кнопка «обновить» в блоке
 самообновления.
 
-### Скачать и поставить прямо с роутера
-
-**Одна команда на любую систему.** Она сама смотрит, чем на роутере управляются
-пакеты (`apk` или `opkg`), и скачивает из последнего релиза файл нужного формата:
-`.apk` для OpenWrt 25.12+, `.ipk` для более старых. Версию указывать не нужно.
-
-Для публичного репозитория (одна строка):
-
-    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); curl -sL -o /tmp/xraypanel.$M https://github.com/binardy-ai/Nexveil/releases/latest/download/xraypanel_all.$M && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
-
-Для приватного репозитория (нужен токен GitHub и `curl` — busybox-wget не умеет
-отправлять заголовки; та же логика выбора файла):
-
-    M=$(command -v apk >/dev/null 2>&1 && echo apk || echo opkg); EXT=$([ "$M" = apk ] && echo apk || echo ipk); TOKEN=<ваш токен GitHub>; ID=$(curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/repos/binardy-ai/Nexveil/releases/latest | awk -v ext="$EXT" '/\/releases\/assets\/[0-9]+/ { if (match($0, /assets\/[0-9]+/)) last = substr($0, RSTART, RLENGTH) } $0 ~ ("\"browser_download_url\": *\"[^\"]*\\." ext "\"") { if (last != "") { print last; exit } }'); curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.$EXT "https://api.github.com/repos/binardy-ai/Nexveil/releases/$ID" && { [ "$M" = apk ] && apk add --allow-untrusted /tmp/xraypanel.apk || opkg install --force-reinstall /tmp/xraypanel.ipk; }
-
-Если удобнее по шагам, то же самое:
-
-    opkg update && opkg install curl
-    # на системах с apk:  apk update && apk add curl
-    TOKEN=<ваш токен GitHub>
-    API=https://api.github.com/repos/binardy-ai/Nexveil/releases/latest
-    ID=$(curl -s -H "Authorization: Bearer $TOKEN" "$API" | grep -o '/releases/assets/[0-9]*' | head -1 | sed 's#.*/##')
-    curl -sL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o /tmp/xraypanel.ipk "https://api.github.com/repos/binardy-ai/Nexveil/releases/assets/$ID"
-    opkg install --force-reinstall /tmp/xraypanel.ipk
-
-Посмотреть, что нашлось в последнем релизе (номер версии и имя файла):
-
-    curl -s -H "Authorization: Bearer <ТОКЕН>" \
-         https://api.github.com/repos/binardy-ai/Nexveil/releases/latest \
-      | grep -E '"tag_name"|"browser_download_url"'
-
-**Важно:** если скачивать файл с GitHub напрямую (`.../latest/download/...`)
-без токена, приватный репозиторий ответит `HTTP error 404` — это «нет доступа»,
-а не «нет файла». Для приватного репозитория берите команду с токеном выше либо
-кнопку обновления в самой панели («Статус» → «Обновление панели»).
-
 Кратко, что чему соответствует:
 
-| Система | Менеджер | Файл в релизе | Установка файла |
+| Система | Менеджер | Файл в релизе | Установка файла из терминала |
 | --- | --- | --- | --- |
 | OpenWrt / ImmortalWrt до 24.10 | `opkg` | `xraypanel_<версия>_all.ipk` | `opkg install --force-reinstall <файл>` |
 | OpenWrt 25.12 и новее | `apk` | `xraypanel_<версия>_all.apk` | `apk add --allow-untrusted <файл>` |
