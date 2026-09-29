@@ -2121,6 +2121,18 @@ ss_key_check() { # $1 метод, $2 пароль -> пусто, если клю
 
 ensure_section() { # $1 тип, $2 желаемое имя -> печатает имя раздела
 	_type="$1"; _want="$2"
+	# Уже существующий безымянный раздел (@bridge[1], @sub[0]) тоже нужно уметь
+	# править и удалять: раньше такое имя не проходило проверку и вместо правки
+	# создавался ещё один безымянный раздел — выглядело как «мост не меняется,
+	# а добавляется новый».
+	case "$_want" in
+		@*\[*\]*)
+			if [ "$(uci -q get "$UCI_APP.$_want" 2>/dev/null)" = "$_type" ]; then
+				printf '%s' "$_want"; return 0
+			fi
+			_want=""
+			;;
+	esac
 	if [ -n "$_want" ] && valid_uci_name "$_want"; then
 		_cur=$(uci -q get "$UCI_APP.$_want" 2>/dev/null)
 		if [ -n "$_cur" ]; then
@@ -2131,6 +2143,19 @@ ensure_section() { # $1 тип, $2 желаемое имя -> печатает �
 			printf '%s' "$_want"; return 0
 		fi
 	fi
+	# Имя не задано (или занято) — подбираем свободное вида «bridge1», «sub2».
+	# Так новый раздел всегда получает нормальное имя, которое потом можно
+	# править и удалять. Раньше две подписки без имени попадали в один раздел
+	# «sub», и вторая затирала первую.
+	_n=1
+	while [ "$_n" -lt 1000 ]; do
+		_try="$_type$_n"
+		if [ -z "$(uci -q get "$UCI_APP.$_try" 2>/dev/null)" ]; then
+			uci -q set "$UCI_APP.$_try=$_type" >/dev/null 2>&1 && { printf '%s' "$_try"; return 0; }
+			break
+		fi
+		_n=$((_n + 1))
+	done
 	uci -q add "$UCI_APP" "$_type" 2>/dev/null
 }
 

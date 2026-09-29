@@ -1215,7 +1215,9 @@ act_sub_save() { # добавить подписку и сразу её обно
 	_want=$(param sec | sed -e 's/[^A-Za-z0-9._-]/-/g')
 	_url=$(param url)
 	[ -n "$_url" ] || redirect servers "нужен адрес подписки"
-	[ -n "$_want" ] || _want="sub"
+	# Имя не подставляем жёстко: если поле пустое, ensure_section подберёт
+	# свободное имя (sub1, sub2 …). Иначе вторая подписка без имени попадала
+	# в тот же раздел «sub» и затирала первую.
 	_sec=$(ensure_section sub "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел подписки"
 	ui_uci set "$UCI_APP.$_sec.url=$_url"
@@ -2480,6 +2482,12 @@ window.__toast = function (msg, bad) {
 						(d.msg ? '&msg=' + encodeURIComponent(d.msg) : '');
 					return;
 				}
+				/* Таблицы «Серверы» (вместе со списком подписок) и «Реверс» тоже
+				   перерисовываем сразу: раньше данные сохранялись, а картинка
+				   оставалась прежней до перезагрузки страницы — «подписки не
+				   видно» и «кнопка пуск/пауза не меняется». */
+				if (window.__serversRefresh) window.__serversRefresh();
+				if (window.__bridgesRefresh) window.__bridgesRefresh();
 				/* обновляем блоки страницы на месте — без перезагрузки.
 				   Кнопки внутри новых блоков работают: обработчики здесь
 				   делегированные, то есть висят на всём документе. */
@@ -2560,6 +2568,22 @@ window.__toast = function (msg, bad) {
 			.then(function (h) { if (h) box.innerHTML = h; })
 			.catch(function () {});
 	}
+	window.__serversRefresh = refreshServers;
+
+	/* --- страница «Реверс»: перерисовать список мостов без перезагрузки --- */
+	var bridgesBox = document.getElementById('bridges-box');
+	function refreshBridges() {
+		if (!bridgesBox) return Promise.resolve();
+		return fetch('?page=bridges&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (html) {
+				var doc = new DOMParser().parseFromString(html, 'text/html');
+				var fresh = doc.getElementById('bridges-box');
+				if (fresh) bridgesBox.innerHTML = fresh.innerHTML;
+			})
+			.catch(function () {});
+	}
+	window.__bridgesRefresh = refreshBridges;
 
 	document.addEventListener('click', function (ev) {
 		if (!ev.target.closest) return;
@@ -3194,6 +3218,16 @@ window.__toast = function (msg, bad) {
 					// поэтому обновляем его, а подсказку — вместе с ним
 					var note = row.querySelector('.bnote .clip') || row.querySelector('.bnote');
 					if (note) { note.textContent = b.state; note.title = b.state; }
+					/* Кнопка пуск/пауза: раньше менялось только состояние, а
+					   значок кнопки оставался прежним — выглядело так, будто
+					   нажатие не сработало. */
+					var tform = row.querySelector('form input[value="bridge_toggle"]');
+					var tbtn = tform ? tform.parentNode.querySelector('button') : null;
+					if (tbtn) {
+						tbtn.className = b.off ? 'btn start' : 'btn stop';
+						tbtn.textContent = b.off ? '▶' : '⏸';
+						tbtn.title = b.off ? __t("T_enable_bridge") : __t("T_disable_bridge_stays_in_the_");
+					}
 				});
 				document.querySelectorAll('tr[data-tag]').forEach(function (row) {
 					var tag = row.getAttribute('data-tag');
@@ -4167,6 +4201,7 @@ page_bridges() {
 	cat <<EOF
 <div class="card"><h2>$T_reverse_bridges</h2>
 <p class="muted">$T_a_bridge_is_a_reverse_tunnel</p>
+<div id="bridges-box">
 <table class="responsive"><tr><th>$T_name</th><th>$T_bridge_tag</th><th>$T_mode</th><th>$T_domain</th><th>$T_outbound_server</th><th title="$T_response_time_of_the_outboun">$T_response</th><th>$T_status</th><th></th></tr>
 EOF
 	for _b in $(bridge_sections); do
@@ -4215,7 +4250,7 @@ EOF
 			"$_bms" "$(h "$_bstate")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
 		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
 	done
-	printf '</table><p class="muted">'"$T_working_bridges_are_green_de"'</p>\n<p><a class="btn sec" href="%s?page=bridge">'"$T_add_a_bridge"'</a> ' "$SCRIPT_NAME"
+	printf '</table></div><p class="muted">'"$T_working_bridges_are_green_de"'</p>\n<p><a class="btn sec" href="%s?page=bridge">'"$T_add_a_bridge"'</a> ' "$SCRIPT_NAME"
 	apply_form bridges
 	printf '</p></div>\n'
 	printf '<p class="muted">'"$T_the_button_disables_a_bridge"'</p>\n'
