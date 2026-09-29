@@ -2334,12 +2334,19 @@ window.__toast = function (msg, bad) {
 		if (!t || !t.closest) return;
 		if (t.closest('#rules-card') && /^(src_|sets_|out_)/.test(t.getAttribute('name') || '')) markDirty();
 	}, true);
-	/* Перетаскивание правил: держим ручку «⠿» секунду — строка «поднимается»,
-	   дальше тянем на нужное место. Порядок сохраняется тихо. */
+	/* Перетаскивание правил. Зажимаем правило в любом месте на 200 мс — строка
+	   «поднимается» (подсветка + вибрация), дальше ведём пальцем. За ручку «⠿»
+	   можно тянуть сразу, без удержания. Пока тащим, список сам подкручивается,
+	   если палец у верхнего или нижнего края экрана. Порядок сохраняется тихо. */
 	(function () {
+		var HOLD_MS = 200;   /* сколько держать до подхвата */
+		var MOVE_TOL = 12;   /* на сколько пикселей можно сдвинуть палец до подхвата */
+		var EDGE = 70;       /* зона у края экрана, где включается автопрокрутка */
 		var hold = null, row = null, body = null, dragging = false;
+		var startX = 0, startY = 0, lastY = 0, scrollTimer = null;
 		function finishDrag(save) {
 			if (hold) { clearTimeout(hold); hold = null; }
+			if (scrollTimer) { clearTimeout(scrollTimer); scrollTimer = null; }
 			if (!dragging) return;
 			dragging = false;
 			document.body.style.userSelect = '';
@@ -2360,27 +2367,18 @@ window.__toast = function (msg, bad) {
 				if (window.__panelRepaint) window.__panelRepaint();
 			}).catch(function () {});
 		}
-		document.addEventListener('pointerdown', function (ev) {
-			var t = ev.target;
-			if (!t || !t.closest) return;
-			/* тянем, зажав правило в любом месте, кроме кнопок и полей */
-			if (t.closest('button, a, input, select, textarea')) return;
-			row = t.closest('tr[data-rule]');
-			if (!row) return;
-			body = row.parentNode;
-			ev.preventDefault();
-			hold = setTimeout(function () {
-				hold = null; dragging = true;
-				row.classList.add('dragging');
-				document.body.style.userSelect = 'none';
-				toast(__t("T_drag_the_row_to_the_right_pl"));
-			}, 1000);
-		}, true);
-		document.addEventListener('pointermove', function (ev) {
-			if (!dragging) { if (hold) { clearTimeout(hold); hold = null; } return; }
-			ev.preventDefault();
+		function lift() {
+			hold = null;
+			dragging = true;
+			row.classList.add('dragging');
+			document.body.style.userSelect = 'none';
+			/* короткая вибрация: на телефоне сразу понятно, что строка «поднялась» */
+			if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) {} }
+			toast(__t("T_drag_the_row_to_the_right_pl"));
+		}
+		function moveAt(y) {
+			if (!dragging || !row || !body) return;
 			var rows = document.querySelectorAll('tr[data-rule]');
-			var y = ev.clientY;
 			for (var i = 0; i < rows.length; i++) {
 				var r = rows[i];
 				if (r === row) continue;
@@ -2392,7 +2390,54 @@ window.__toast = function (msg, bad) {
 				}
 			}
 			Array.prototype.forEach.call(rows, function (r2) { if (r2 !== row) r2.classList.remove('drop-target'); });
+		}
+		/* у края экрана список сам подкручивается — иначе правило через
+		   полсписка не перетащить */
+		function autoScroll() {
+			scrollTimer = null;
+			if (!dragging) return;
+			var h = window.innerHeight || document.documentElement.clientHeight;
+			var v = 0;
+			if (lastY < EDGE) v = -Math.max(4, Math.ceil((EDGE - lastY) / 4));
+			else if (lastY > h - EDGE) v = Math.max(4, Math.ceil((lastY - (h - EDGE)) / 4));
+			if (v) {
+				window.scrollBy(0, v);
+				moveAt(lastY);
+				scrollTimer = setTimeout(autoScroll, 30);
+			}
+		}
+		document.addEventListener('pointerdown', function (ev) {
+			var t = ev.target;
+			if (!t || !t.closest || dragging) return;
+			/* поля и кнопки в строке не перехватываем — ими продолжаем пользоваться */
+			if (t.closest('button, a, input, select, textarea, label')) return;
+			var r = t.closest('tr[data-rule]');
+			if (!r || r.getAttribute('data-tpl')) return;
+			row = r; body = r.parentNode;
+			startX = ev.clientX; startY = ev.clientY; lastY = ev.clientY;
+			/* за ручку тянем сразу, без удержания */
+			if (t.closest('.drag-handle')) { lift(); return; }
+			hold = setTimeout(lift, HOLD_MS);
 		}, true);
+		document.addEventListener('pointermove', function (ev) {
+			if (!dragging) {
+				if (!hold) return;
+				/* дрожь пальца не мешает: отменяем только заметный сдвиг */
+				if (Math.abs(ev.clientX - startX) > MOVE_TOL || Math.abs(ev.clientY - startY) > MOVE_TOL) {
+					clearTimeout(hold); hold = null; row = null; body = null;
+				}
+				return;
+			}
+			if (ev.cancelable) ev.preventDefault();
+			lastY = ev.clientY;
+			moveAt(lastY);
+			if (!scrollTimer) scrollTimer = setTimeout(autoScroll, 30);
+		}, true);
+		/* пока тащим — глушим прокрутку: иначе на телефоне браузер забирает жест
+		   себе и строка падает на место */
+		document.addEventListener('touchmove', function (ev) {
+			if (dragging && ev.cancelable) ev.preventDefault();
+		}, { passive: false, capture: true });
 		document.addEventListener('pointerup', function () { finishDrag(true); }, true);
 		document.addEventListener('pointercancel', function () { finishDrag(false); }, true);
 	})();

@@ -406,7 +406,7 @@ T_s_current_address='%s (current address)'
 # весь трафик (без набора)
 T_all_traffic_without_a_set='all traffic (without a set)'
 # зажмите правило на секунду и потяните
-T_hold_a_rule_for_a_second_and='hold a rule for a second and pull'
+T_hold_a_rule_for_a_second_and='hold a rule anywhere for a moment and pull (drag the ⠿ handle directly)'
 # Куда
 T_where='Where'
 # включить правило
