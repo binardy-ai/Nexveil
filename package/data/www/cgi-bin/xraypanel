@@ -4262,7 +4262,6 @@ page_bridges() {
 	printf '</details></div>'
 	cat <<EOF
 <div class="card"><h2>$T_reverse_bridges</h2>
-<p class="muted">$T_a_bridge_is_a_reverse_tunnel</p>
 <div id="bridges-box">
 <table class="responsive"><tr><th>$T_name</th><th>$T_bridge_tag</th><th>$T_mode</th><th>$T_domain</th><th>$T_outbound_server</th><th title="$T_response_time_of_the_outboun">$T_response</th><th>$T_status</th><th></th></tr>
 EOF

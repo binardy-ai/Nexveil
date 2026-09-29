@@ -310,7 +310,6 @@ T_for_the_new_method_it_is_imp='For the new method it is important that the xray
 T_if_you_want_both_methods_at_='If you want both methods at once — you need a build that understands both the old and the new one (the last one checked — 26.4.17), and a portal compatible with its new reverse. If the portal has a fresh xray, it is safer to keep the router fresh too and use only the new method.'
 # Способ у отдельного моста задаётся в его форме, поле «Способ реверса»; «как у роутера» — значит берётся общий способ, выбранный выше.
 # Мост — это обратный туннель: роутер сам подключается к серверу-порталу, и через него к тебе «заходят» сервисы роутера (LuCI, SSH и т.п.).
-T_a_bridge_is_a_reverse_tunnel='A bridge is a reverse tunnel: the router itself connects to the portal server, and through it the router services (LuCI, SSH and so on) “come in” to you.'
 # время ответа выходного сервера (живой замер при открытии страницы)
 T_response_time_of_the_outboun='response time of the outbound server (live measurement when the page is opened)'
 # включить мост
