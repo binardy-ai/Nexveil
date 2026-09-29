@@ -331,7 +331,6 @@ T_working_bridges_are_green_de='Working bridges are green, dead ones are red. Th
 # Кнопка ⏸ выключает мост, не удаляя его: он остаётся в списке серым, но в конфиг не попадает — туннель не поднимается, пока его не включат обратно.
 T_the_button_disables_a_bridge='The ⏸ button disables a bridge without deleting it: it stays in the list greyed out but does not get into the config — the tunnel does not come up until it is turned on again.'
 # Если тут написано «таблица соединений: НЕТ» или пусто в «есть команды» — пришлите этот текст, я скажу, что установить.
-T_if_it_says_connection_table_='If it says “connection table: NO” here, or “have commands” is empty — send me this text, I will say what to install.'
 # как у роутера (сейчас: %s)
 T_same_as_the_router_now_s='same as the router (now: %s)'
 # старый — по домену (xray до 26.4.25)
@@ -555,7 +554,6 @@ T_only_b_tcp_b_is_counted_the_='Only <b>TCP</b> is counted — the traffic that 
 # Список клиентов пуст: постоянных аренд нет и выданных сейчас тоже. Задайте их в LuCI → Сеть → DHCP и DNS → Статические аренды.
 T_the_client_list_is_empty_the='The client list is empty: there are no static leases and nothing is issued right now. Set them in LuCI → Network → DHCP and DNS → Static leases.'
 # В настройках остались адреса, которых сейчас нет среди подключённых (%s) — при сохранении они будут убраны.
-T_the_settings_still_have_addr='The settings still have addresses that are not among the connected ones right now (%s) — they will be removed on saving.'
 # Кнопки управления — вверху страницы, в блоке «Управление». Правила ставятся «на пробу» на 5 минут: если не подтвердить, они снимутся сами.
 T_the_control_buttons_are_at_t='The control buttons are at the top of the page, in the “Control” block. The rules are set “on trial” for 5 minutes: if you do not confirm, they are removed by themselves.'
 # Статистика xray пока пустая — либо служба не запущена, либо трафика ещё не было.

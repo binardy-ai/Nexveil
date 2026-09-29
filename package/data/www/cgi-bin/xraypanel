@@ -2466,10 +2466,16 @@ window.__toast = function (msg, bad) {
 					if (t) t.innerHTML = d.html;
 				}
 				if (d && d.msg) toast(d.msg);
-				/* тему применяем сразу: если она сменилась — перезагружаем страницу */
+				/* Оформление, язык и звук кнопок браузер берёт из самой
+				   страницы, поэтому после смены этих настроек её надо
+				   перечитать — иначе новое видно только после F5. */
 				if (act === 'settings') {
-					var th = document.querySelector('select[name=theme]');
-					if (th && th.getAttribute('data-old') && th.getAttribute('data-old') !== th.value) { location.reload(); return; }
+					var needReload = false;
+					['theme', 'lang', 'sound', 'volume'].forEach(function (f) {
+						var el = document.querySelector('select[name=' + f + ']');
+						if (el && el.getAttribute('data-old') && el.getAttribute('data-old') !== el.value) needReload = true;
+					});
+					if (needReload) { location.reload(); return; }
 				}
 				/* если действие относится к другой странице (сохранил сервер,
 				   правило, настройки) — переходим туда. Это переход, а не
@@ -4287,7 +4293,7 @@ EOF
 		bridge_debug "$(uci -q get "$UCI_APP.$_b.tag")" "$(uci -q get "$UCI_APP.$_b.outbound")" | h_in
 		printf '\n'
 	done
-	printf '</pre><p class="muted">'"$T_if_it_says_connection_table_"'</p></div>\n'
+	printf '</pre></div>\n'
 	cat <<EOF
 <div class="card"><h2>$T_how_to_fill_in</h2>
 <table>
@@ -5681,12 +5687,6 @@ EOF
 		printf '<p class="muted">'"$T_the_client_list_is_empty_the"'</p>'
 	fi
 	# список адресов только из подключённых устройств: ничего вводить руками не нужно
-	_unknown=""
-	for _ip in $(printf '%s' "$_pc" | tr ',' ' '); do
-		[ -n "$_ip" ] || continue
-		printf '%s' "$_list" | grep -q "^$_ip|" || _unknown="$_unknown$_ip, "
-	done
-	[ -n "$_unknown" ] && printf '<p class="muted">'"$T_the_settings_still_have_addr"'</p>' "$(h "$_unknown" | sed 's/, $//')"
 	printf '</div>\n'
 	# список клиентов нужен ровно в одном режиме — «только клиенты из списка».
 	# Показ и скрытие живёт в общем коде страницы (page_footer): раньше скрипт
@@ -5891,8 +5891,10 @@ page_settings() {
 	done
 	printf '</select></div>'
 	# язык интерфейса: строки лежат в файлах языков, в коде — ссылки вида $T_…
-	printf '<div><label>'"$T_panel_language"'</label><select name="lang">'
 	_curlang=$(cfg lang auto)
+	# data-old — чтобы браузер после сохранения понял, что язык сменился, и
+	# перечитал страницу: иначе новые подписи появлялись только после F5
+	printf '<div><label>'"$T_panel_language"'</label><select name="lang" data-old="%s">' "$(h "$_curlang")"
 	for _lg in auto ru en; do
 		printf '<option value="%s" %s>%s</option>' "$_lg" "$([ "$_curlang" = "$_lg" ] && echo selected)" "$(lang_title "$_lg")"
 	done
@@ -5904,8 +5906,8 @@ page_settings() {
 	printf '<div><label>'"$T_highlight_in_sets"'</label><label class="chk"><input type="checkbox" name="set_highlight" value="1" style="width:auto" %s>'"$T_highlight_the_entries_that_w"'</label></div>' \
 		"$([ "$(cfg set_highlight 1)" = 1 ] && echo checked)"
 	# звук кнопок: звук синтезирует сам браузер, файлов в пакете нет
-	printf '<div><label>'"$T_button_sound"'</label><select name="sound">'
 	_cur_snd=$(cfg sound click)
+	printf '<div><label>'"$T_button_sound"'</label><select name="sound" data-old="%s">' "$(h "$_cur_snd")"
 	for _s in off click tick blip two; do
 		case "$_s" in
 			off)   _lbl="$T_disabled_3" ;;
@@ -5917,8 +5919,8 @@ page_settings() {
 		printf '<option value="%s" %s>%s</option>' "$_s" "$([ "$_cur_snd" = "$_s" ] && echo selected)" "$_lbl"
 	done
 	printf '</select></div>'
-	printf '<div><label>'"$T_sound_volume"'</label><select name="volume">'
 	_cur_vol=$(cfg volume mid)
+	printf '<div><label>'"$T_sound_volume"'</label><select name="volume" data-old="%s">' "$(h "$_cur_vol")"
 	for _v in low mid high; do
 		case "$_v" in
 			low)  _lbl="$T_quiet" ;;
