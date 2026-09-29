@@ -2487,6 +2487,7 @@ window.__toast = function (msg, bad) {
 				   оставалась прежней до перезагрузки страницы — «подписки не
 				   видно» и «кнопка пуск/пауза не меняется». */
 				if (window.__serversRefresh) window.__serversRefresh();
+				if (window.__subsRefresh) window.__subsRefresh();
 				if (window.__bridgesRefresh) window.__bridgesRefresh();
 				/* обновляем блоки страницы на месте — без перезагрузки.
 				   Кнопки внутри новых блоков работают: обработчики здесь
@@ -2569,6 +2570,18 @@ window.__toast = function (msg, bad) {
 			.catch(function () {});
 	}
 	window.__serversRefresh = refreshServers;
+
+	/* Список подписок — отдельный блок: после добавления и удаления подписки
+	   он тоже должен обновиться, иначе строка появляется только после F5. */
+	var subsBox = document.getElementById('subs-box');
+	function refreshSubs() {
+		if (!subsBox) return Promise.resolve();
+		return fetch('?page=subs_table&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (h) { subsBox.innerHTML = h; })
+			.catch(function () {});
+	}
+	window.__subsRefresh = refreshSubs;
 
 	/* --- страница «Реверс»: перерисовать список мостов без перезагрузки --- */
 	var bridgesBox = document.getElementById('bridges-box');
@@ -4029,6 +4042,39 @@ servers_table_html() {
 	fi
 }
 
+# Таблица подписок отдельным куском: страница «Серверы» обновляет её без
+# перезагрузки — раньше после добавления или удаления подписки серверы
+# появлялись и исчезали, а строка подписки оставалась прежней до F5.
+subs_table_html() {
+	_subs=$(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=sub$/\1/p')
+	[ -n "$_subs" ] || return 0
+	printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_address"'</th><th>'"$T_nodes"'</th><th>'"$T_updated"'</th><th></th></tr>'
+	for _s in $_subs; do
+		_su=$(uci -q get "$UCI_APP.$_s.url")
+		_sc=$(uci -q get "$UCI_APP.$_s.count")
+		_st=$(uci -q get "$UCI_APP.$_s.updated")
+		printf '<tr data-sub="%s"><td data-label="'"$T_name"'">%s</td><td data-label="'"$T_address"'" class="url"><span class="muted">%s</span></td><td data-label="'"$T_nodes"'"><span class="sub-count">%s</span></td><td data-label="'"$T_updated"'"><span class="sub-updated">%s</span></td><td data-label="'"$T_actions"'"><button type="button" class="btn sec sub-update" data-sub="%s">'"$T_update"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' \
+			"$(h "$_s")" "$(h "$_s")" "$(h "$_su")" "$(h "${_sc:-—}")" "$(h "${_st:-ещё не обновлялась}")" "$(h "$_s")" "$(h "$_s")"
+	done
+	printf '</table>'
+}
+
+# Карточка «Подписки» целиком: список (в #subs-box, чтобы обновлять отдельно)
+# и форма добавления.
+subs_card_html() {
+	printf '<div class="card"><h2>'"$T_subscriptions"'</h2>'
+	printf '<p class="muted">'"$T_a_subscription_is_a_link_fro"'</p>'
+	printf '<div id="subs-box">'
+	subs_table_html
+	printf '</div>'
+	printf '<form method="post"><input type="hidden" name="action" value="sub_save"><div class="row">'
+	printf '<div><label>'"$T_subscription_name_latin_lett"'</label><input name="sec" placeholder="sub1"></div>'
+	printf '<div><label>'"$T_subscription_address"'</label><input name="url" placeholder="https://..."></div>'
+	printf '<div><label>'"$T_user_agent_some_servers_requ"'</label><input name="ua" value="v2rayNG/1.8.5"></div>'
+	printf '</div><p><button>'"$T_add_and_update"'</button></p></form>'
+	printf '<p class="muted">'"$T_some_subscriptions_give_node"'</p></div>\n'
+}
+
 page_servers() {
 	cat <<EOF
 <div class="card"><h2>$T_servers</h2>
@@ -4045,26 +4091,7 @@ EOF
 	printf '<p class="muted">'"$T_servers_used_by_reverse_brid"'</p>\n'
 	printf '<p class="muted">'"$T_the_ping_column_is_filled_by"'</p>\n'
 	# подписки: список узлов по ссылке
-	printf '<div class="card"><h2>'"$T_subscriptions"'</h2>'
-	printf '<p class="muted">'"$T_a_subscription_is_a_link_fro"'</p>'
-	_subs=$(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=sub$/\1/p')
-	if [ -n "$_subs" ]; then
-		printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_address"'</th><th>'"$T_nodes"'</th><th>'"$T_updated"'</th><th></th></tr>'
-		for _s in $_subs; do
-			_su=$(uci -q get "$UCI_APP.$_s.url")
-			_sc=$(uci -q get "$UCI_APP.$_s.count")
-			_st=$(uci -q get "$UCI_APP.$_s.updated")
-			printf '<tr data-sub="%s"><td data-label="'"$T_name"'">%s</td><td data-label="'"$T_address"'" class="url"><span class="muted">%s</span></td><td data-label="'"$T_nodes"'"><span class="sub-count">%s</span></td><td data-label="'"$T_updated"'"><span class="sub-updated">%s</span></td><td data-label="'"$T_actions"'"><button type="button" class="btn sec sub-update" data-sub="%s">'"$T_update"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' \
-				"$(h "$_s")" "$(h "$_s")" "$(h "$_su")" "$(h "${_sc:-—}")" "$(h "${_st:-ещё не обновлялась}")" "$(h "$_s")" "$(h "$_s")"
-		done
-		printf '</table>'
-	fi
-	printf '<form method="post"><input type="hidden" name="action" value="sub_save"><div class="row">'
-	printf '<div><label>'"$T_subscription_name_latin_lett"'</label><input name="sec" placeholder="sub1"></div>'
-	printf '<div><label>'"$T_subscription_address"'</label><input name="url" placeholder="https://..."></div>'
-	printf '<div><label>'"$T_user_agent_some_servers_requ"'</label><input name="ua" value="v2rayNG/1.8.5"></div>'
-	printf '</div><p><button>'"$T_add_and_update"'</button></p></form>'
-	printf '<p class="muted">'"$T_some_subscriptions_give_node"'</p></div>\n'
+	subs_card_html
 	cat <<EOF
 <div class="card"><h2>$T_add_from_link</h2>
 <form method="post"><input type="hidden" name="action" value="import_link">
@@ -6006,6 +6033,14 @@ fi
 if [ "$(param page)" = servers_table ]; then
 	printf 'Content-Type: text/html; charset=utf-8\n\n'
 	servers_table_html
+	exit 0
+fi
+
+# таблица подписок отдельным куском: страница «Серверы» обновляет список
+# подписок без перезагрузки (добавление, удаление, обновление)
+if [ "$(param page)" = subs_table ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n\n'
+	subs_table_html
 	exit 0
 fi
 
