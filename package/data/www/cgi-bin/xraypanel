@@ -2468,6 +2468,13 @@ window.__toast = function (msg, bad) {
 		else if (hidden) act = hidden.value;
 		if (!act || QUIET.indexOf(act) < 0) return;
 		ev.preventDefault();
+		/* Снимаем фокус с кнопки перед перерисовкой. В Chrome, если исчезает
+		   элемент, на котором был фокус, страница может прокрутиться наверх —
+		   именно так «прыгала» карточка обновления. */
+		if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+		/* позицию прокрутки держим до конца действия: перерисовка блоков и
+		   смена высоты карточек не должны «двигать» страницу под человеком */
+		var _syAll = window.pageYOffset;
 		var data = new URLSearchParams();
 		var fd = new FormData(f);
 		fd.forEach(function (v, k) { data.append(k, v); });
@@ -2552,10 +2559,28 @@ window.__toast = function (msg, bad) {
 							var geoWasOpen = false;
 							var gd = document.getElementById('geo-det');
 							if (gd) geoWasOpen = !!gd.open;
+							/* Позицию прокрутки сохраняем: карточки меняют высоту
+							   (результат проверки, список узлов), и страница
+							   прыгала — особенно заметно на телефоне */
+							var _sy = window.pageYOffset;
+							var _spoilers = {};
+							document.querySelectorAll('details.pick[id]').forEach(function (d) {
+								if (d.open) _spoilers[d.id] = 1;
+							});
+							/* фокус снимаем до перерисовки: иначе Chrome может
+							   прокрутить страницу наверх, когда элемент исчезнет */
+							if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 							live.forEach(function (sel) {
 								var fresh = doc.querySelector(sel), cur = document.querySelector(sel);
 								if (fresh && cur) cur.innerHTML = fresh.innerHTML;
 							});
+							/* раскрытые спойлеры оставляем раскрытыми: иначе карточка
+							   «схлопывалась» и всё нижнее содержимое уезжало вверх */
+							Object.keys(_spoilers).forEach(function (id) {
+								var d = document.getElementById(id);
+								if (d) d.open = true;
+							});
+							if (Math.abs(window.pageYOffset - _sy) > 1) window.scrollTo(0, _sy);
 							if (window.__geoReload) window.__geoReload(geoWasOpen);
 							if (window.__updateWatch) window.__updateWatch();
 							if (window.__syncClientsBox) window.__syncClientsBox();
@@ -2570,7 +2595,10 @@ window.__toast = function (msg, bad) {
 				}
 			})
 			.catch(function () {})
-			.then(function () { if (sub && sub.disabled !== undefined) sub.disabled = false; });
+			.then(function () {
+				if (sub && sub.disabled !== undefined) sub.disabled = false;
+				if (Math.abs(window.pageYOffset - _syAll) > 1) window.scrollTo(0, _syAll);
+			});
 	});
 })();
 /* Тихие действия: проверка узлов, обновление подписки, сбор названий списков.
@@ -3603,7 +3631,13 @@ window.__toast = function (msg, bad) {
 					var doc = new DOMParser().parseFromString(html, 'text/html');
 					var fresh = doc.querySelector('#update-card');
 					var cur = document.getElementById('update-card');
+					/* запоминаем позицию прокрутки: карточка меняет высоту
+					   (появляется результат проверки), и без этого страница
+					   «уезжала» у человека на глазах */
+					var _sy = window.pageYOffset;
+					if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
 					if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+					if (Math.abs(window.pageYOffset - _sy) > 1) window.scrollTo(0, _sy);
 				})
 				.catch(function () {})
 				.then(check);
@@ -3611,62 +3645,6 @@ window.__toast = function (msg, bad) {
 	}
 	check();
 	window.__updateWatch = check;
-})();
-/* «Проверить обновление сейчас» и «обновить до …»: раньше это были обычные формы
-   и после нажатия страница перезагружалась — она прыгала наверх, и приходилось
-   снова листать вниз. Теперь отправляем тихо и обновляем саму карточку. */
-(function () {
-	if (!window.fetch) return;
-	function cardHtml() {
-		var cur = document.getElementById('update-card');
-		return cur ? cur.innerHTML : '';
-	}
-	function loadCard() {
-		return fetch('?page=update_card&t=' + Date.now(), { cache: 'no-store' })
-			.then(function (r) { return r.text(); })
-			.then(function (html) {
-				var doc = new DOMParser().parseFromString(html, 'text/html');
-				var fresh = doc.querySelector('#update-card');
-				var cur = document.getElementById('update-card');
-				if (fresh && cur) cur.innerHTML = fresh.innerHTML;
-			})
-			.catch(function () {});
-	}
-	function poll(n, max, before) {
-		if (n >= max) return;
-		setTimeout(function () {
-			loadCard().then(function () {
-				/* карточка изменилась — значит проверка или установка закончилась */
-				if (cardHtml() !== before) return;
-				poll(n + 1, max, before);
-			});
-		}, 2500);
-	}
-	document.addEventListener('submit', function (ev) {
-		var f = ev.target;
-		if (!f || !f.querySelector) return;
-		var a = f.querySelector('input[name="action"]');
-		if (!a) return;
-		var act = a.value;
-		if (act !== 'update_check' && act !== 'update_install') return;
-		ev.preventDefault();
-		var before = cardHtml();
-		var btn = f.querySelector('button');
-		if (btn) btn.disabled = true;
-		fetch(location.pathname + location.search, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-			body: new URLSearchParams({ action: act, ajax: '1' }),
-			cache: 'no-store'
-		}).then(function () {
-			return loadCard();
-		}).then(function () {
-			/* проверка релиза — до полуминуты, установка пакета — до двух минут */
-			poll(0, act === 'update_install' ? 48 : 16, before);
-		}).catch(function () {
-			if (btn) btn.disabled = false;
-		});
-	}, true);
 })();
 /* Блок «Готовые списки»: содержимое собирается только когда блок открыли.
    Раньше панель считала это при каждой загрузке «Маршрутов», хотя спойлер
