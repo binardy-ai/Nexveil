@@ -4236,10 +4236,8 @@ page_bridges() {
 			printf '<p class="bad">Установленный xray: %s — не удалось определить, какой реверс он умеет. Проверьте путь к бинарнику на странице «Настройки».</p>' "$(h "$_binver")"
 			;;
 	esac
-	# Способ задаётся у каждого моста отдельно (общего переключателя нет),
-	# поэтому здесь только объясняем, что умеет сборка, и показываем мосты,
-	# которые из-за этого не попадут в конфиг.
-	printf '<p class="muted">'"$T_the_method_of_a_single_bridg"'</p>'
+	# Если выбранный у моста способ эта сборка xray не понимает — показываем
+	# такие мосты списком, чтобы не было молчаливого пропуска.
 	_badlist=""
 	for _b in $(bridge_sections); do
 		_bs=$(bridge_style "$_b")
@@ -4261,7 +4259,6 @@ page_bridges() {
 	printf '<p class="muted">'"$T_the_panel_detects_the_capabi"'</p>'
 	printf '<p class="muted">'"$T_for_the_new_method_it_is_imp"'</p>'
 	printf '<p class="muted">'"$T_if_you_want_both_methods_at_"'</p>'
-	printf '<p class="muted">'"$T_the_method_of_a_single_bridg"'</p>'
 	printf '</details></div>'
 	cat <<EOF
 <div class="card"><h2>$T_reverse_bridges</h2>
@@ -4322,26 +4319,18 @@ EOF
 			"$_bms" "$(h "$_bstate")" "$(h "$_bstate")" "$SCRIPT_NAME" "$(h "$_b")"
 		printf '<form method="post" style="display:inline"><input type="hidden" name="action" value="bridge_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_bridge"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' "$(h "$_b")" "$_btcls" "$_bttitle" "$_bticon" "$(h "$_b")"
 	done
-	printf '</table></div><p class="muted">'"$T_working_bridges_are_green_de"'</p>\n<p><a class="btn sec" href="%s?page=bridge">'"$T_add_a_bridge"'</a> ' "$SCRIPT_NAME"
+	printf '</table></div><p><a class="btn sec" href="%s?page=bridge">'"$T_add_a_bridge"'</a> ' "$SCRIPT_NAME"
 	apply_form bridges
 	printf '</p></div>\n'
 	printf '<p class="muted">'"$T_the_button_disables_a_bridge"'</p>\n'
 	# диагностика: видно, что именно видит проверка
-	printf '<div class="card"><h2>'"$T_check_what_the_panel_sees"'</h2><pre>'
+	# «что видит панель» — диагностика: держим под спойлером, чтобы не мешала
+	printf '<div class="card"><details class="pick"><summary>'"$T_check_what_the_panel_sees"'</summary><pre>'
 	for _b in $(bridge_sections); do
 		bridge_debug "$(uci -q get "$UCI_APP.$_b.tag")" "$(uci -q get "$UCI_APP.$_b.outbound")" | h_in
 		printf '\n'
 	done
-	printf '</pre></div>\n'
-	cat <<EOF
-<div class="card"><h2>$T_how_to_fill_in</h2>
-<table>
-<tr><th>$T_bridge_tag</th><td>$T_bridge_name_it_must_match_wh</td></tr>
-<tr><th>$T_reverse_mode</th><td>$T_b_old_b_portals_and_bridges_</td></tr>
-<tr><th>$T_domain</th><td>$T_the_domain_on_which_the_port</td></tr>
-<tr><th>$T_outbound</th><td>$T_the_tag_of_the_server_the_ro</td></tr>
-</table></div>
-EOF
+	printf '</pre></details></div>\n'
 }
 
 page_bridge() {

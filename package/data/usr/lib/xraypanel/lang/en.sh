@@ -42,7 +42,6 @@ T_modified='Modified'
 T_or_paste_as_text='Or paste as text'
 T_name='Name'
 T_internet_traffic='Internet traffic'
-T_how_to_fill_in='How to fill in'
 T_which_reverse_modes_your_bui='Which reverse modes your build supports'
 T_which_xray_builds_support_it='Which xray builds support it'
 T_config='Config'
@@ -310,7 +309,6 @@ T_for_the_new_method_it_is_imp='For the new method it is important that the xray
 # Хотите оба способа сразу — нужна сборка, которая понимает и старый, и новый (последняя из проверенных — 26.4.17), и портал, совместимый с её новым реверсом. Если на портале свежий xray, надёжнее держать свежий и на роутере и работать только новым способом.
 T_if_you_want_both_methods_at_='If you want both methods at once — you need a build that understands both the old and the new one (the last one checked — 26.4.17), and a portal compatible with its new reverse. If the portal has a fresh xray, it is safer to keep the router fresh too and use only the new method.'
 # Способ у отдельного моста задаётся в его форме, поле «Способ реверса»; «как у роутера» — значит берётся общий способ, выбранный выше.
-T_the_method_of_a_single_bridg='The reverse method is set for each bridge separately — in its form, the “Reverse method” field. There is no common switch: a new bridge defaults to the new method.'
 # Мост — это обратный туннель: роутер сам подключается к серверу-порталу, и через него к тебе «заходят» сервисы роутера (LuCI, SSH и т.п.).
 T_a_bridge_is_a_reverse_tunnel='A bridge is a reverse tunnel: the router itself connects to the portal server, and through it the router services (LuCI, SSH and so on) “come in” to you.'
 # время ответа выходного сервера (живой замер при открытии страницы)
@@ -324,7 +322,6 @@ T_new_method_vless_reverse_pro='new method — VLESS Reverse Proxy, connection b
 # старый способ — порталы и мосты по домену
 T_old_method_portals_and_bridg='old method — portals and bridges by domain'
 # Работающие мосты — зелёным, отвалившиеся — красным. Причина написана в столбце «Состояние»: панель сначала смотрит, есть ли у роутера живое соединение с сервером моста, а если не видно — насколько свежие записи моста в журнале xray.
-T_working_bridges_are_green_de='Working bridges are green, dead ones are red. The reason is written in the “Status” column: first the panel looks whether the router has a live connection to the bridge server, and if not, how fresh the bridge records in the xray log are.'
 # Кнопка ⏸ выключает мост, не удаляя его: он остаётся в списке серым, но в конфиг не попадает — туннель не поднимается, пока его не включат обратно.
 T_the_button_disables_a_bridge='The ⏸ button disables a bridge without deleting it: it stays in the list greyed out but does not get into the config — the tunnel does not come up until it is turned on again.'
 # Если тут написано «таблица соединений: НЕТ» или пусто в «есть команды» — пришлите этот текст, я скажу, что установить.
@@ -1144,13 +1141,10 @@ T_vless_reverse_proxy_by_tag_c='VLESS Reverse Proxy by tag, <code>"reverse": {"t
 # 25.9.11 и новее: 26.4.25, 26.9.9 и подобные
 T_25_9_11_and_newer_26_4_25_26='25.9.11 and newer: 26.4.25, 26.9.9 and similar'
 # имя моста, оно должно совпадать с тем, что прописано на сервере-портале (в старом конфиге было <code>router-lucy</code>)
-T_bridge_name_it_must_match_wh='bridge name, it must match what is set on the portal server (in the old config it was <code>router-lucy</code>)'
 # <b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.25); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.
 T_b_old_b_portals_and_bridges_='<b>old</b> — portals and bridges by domain (<code>reverse.bridges</code>, xray before 26.4.25); <b>new</b> — VLESS Reverse Proxy: on the portal the client has <code>"reverse": {"tag": "…"}</code>, and the panel puts the same mark on the bridge outbound. The new method does not need a domain, and traffic from the tunnel arrives as an inbound with the bridge tag — that is why routing rules for bridges work the same in both methods.'
 # домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>) — нужен только старому способу
-T_the_domain_on_which_the_port='the domain on which the portal accepts the bridge (it was <code>router-lucy.reverse.xui</code>) — needed only by the old method'
 # тег сервера, через который роутер подключается к порталу; чтобы ходить напрямую, укажите <code>direct</code>
-T_the_tag_of_the_server_the_ro='the tag of the server the router connects to the portal through; to go straight, specify <code>direct</code>'
 # идёт в xray, а дальше по правилам панели: в нужный сервер или напрямую
 T_goes_into_xray_and_then_by_t='goes into xray and then by the panel rules: to the needed server or straight'
 # проверяются первыми — поэтому «частное» правило работает даже при выбранном сервере выше
