@@ -275,28 +275,6 @@ act_update_install() { # скачать и поставить новую вер�
 	exit 0
 }
 
-# Общий способ сборки реверс-мостов. Выбрать можно только то, что понимает
-# установленный бинарник xray: иначе панель писала бы в конфиг блок, из-за
-# которого xray вообще откажется запускаться.
-act_rev_style() {
-	_v=$(param style)
-	case "$_v" in
-		legacy|new) ;;
-		*) redirect bridges "неизвестный способ реверса — ничего не менял" ;;
-	esac
-	_cap=$(reverse_bin_support 2>/dev/null)
-	if [ "$_v" = legacy ] && [ "$_cap" != both ]; then
-		redirect bridges "установленный xray старый реверс не понимает (его удалили в свежих сборках) — этот способ выбрать нельзя. Поставьте сборку до 26.4.18 или переключите мосты на новый способ"
-	fi
-	if [ "$_v" = new ] && [ "$_cap" = none ]; then
-		redirect bridges "установленный xray не умеет ни старый, ни новый реверс — проверьте бинарник на странице «Настройки»"
-	fi
-	printf '%s' "$_v" > "$STATE_DIR/reverse.style" 2>/dev/null
-	pending_note "изменён общий способ реверса: $([ "$_v" = legacy ] && echo 'старый (по домену)' || echo 'новый (по тегу)')"
-	respond_now bridges "общий способ реверса изменён — нажмите «применить конфиг», чтобы он попал в конфиг xray"
-	exit 0
-}
-
 act_save_rule() {
 	_want=$(param sec)
 	# имени у правила больше нет — придумываем своё (r1, r2, …)
@@ -1692,7 +1670,6 @@ case "$ACTION" in
 	save_bridge) act_save_bridge ;;
 	del_bridge)  act_del_bridge ;;
 	bridge_toggle) act_bridge_toggle ;;
-	rev_style)   act_rev_style ;;
 	update_check)   act_update_check ;;
 	update_install) act_update_install ;;
 	confdir_clean) _n=$(config_extra_clean); pending_note "убраны лишние .json из каталога конфига (файлов: $_n)"; redirect "" "лишние файлы убраны (переименованы в .bak): $_n. Осталось нажать «Применить конфиг»." ;;
@@ -2135,7 +2112,7 @@ window.__toast = function (msg, bad) {
 		'traffic_reset','traffic_reset_one','dnslog_on','dnslog_off','dnslog_repair',
 		'trans_on','trans_keep','trans_off','save_rule','save_server','del_server','set_default',
 		'save_bridge','del_bridge','bridge_toggle','dedup','import_link','sub_save','sub_del','sub_update',
-		'geo_build','geo_update','geo_pkg','geo_items','geo_auto','rev_style','update_check','update_install','confdir_clean','restart','rollback','enable_service','fix_tz',
+		'geo_build','geo_update','geo_pkg','geo_items','geo_auto','update_check','update_install','confdir_clean','restart','rollback','enable_service','fix_tz',
 		'panel_install','panel_dirs','settings'];
 	var lastBtn = null;
 
@@ -4247,7 +4224,6 @@ page_bridges() {
 	_cap=$(reverse_bin_support 2>/dev/null)
 	_binver=$("$(xray_bin)" version 2>/dev/null | head -1)
 	[ -n "$_binver" ] || _binver="не найден"
-	_style=$(reverse_style 2>/dev/null)
 	printf '<div class="card"><h2>'"$T_which_reverse_modes_your_bui"'</h2>'
 	case "$_cap" in
 		both)
@@ -4260,12 +4236,23 @@ page_bridges() {
 			printf '<p class="bad">Установленный xray: %s — не удалось определить, какой реверс он умеет. Проверьте путь к бинарнику на странице «Настройки».</p>' "$(h "$_binver")"
 			;;
 	esac
-	printf '<p>Общий способ для мостов, у которых выбрано «как у роутера»: <b>%s</b>.</p>' "$([ "$_style" = legacy ] && echo 'старый (по домену)' || ([ "$_style" = new ] && echo 'новый (по тегу)' || echo 'не выбран'))"
-	printf '<form method="post"><input type="hidden" name="action" value="rev_style">'
-	printf '<div class="row"><div><label>'"$T_change_the_common_method"'</label><select name="style">'
-	printf '<option value="legacy"%s%s>'"$T_old_by_domain_needs_an_xray_"'</option>' "$([ "$_style" = legacy ] && echo ' selected')" "$([ "$_cap" != both ] && echo ' disabled')"
-	printf '<option value="new"%s%s>'"$T_new_vless_reverse_proxy_by_t"'</option>' "$([ "$_style" = new ] && echo ' selected')" "$([ "$_cap" = none ] && echo ' disabled')"
-	printf '</select></div></div><p><button class="btn sec">'"$T_save_mode"'</button> <span class="muted">'"$T_then_press_apply_config"'</span></p></form>'
+	# Способ задаётся у каждого моста отдельно (общего переключателя нет),
+	# поэтому здесь только объясняем, что умеет сборка, и показываем мосты,
+	# которые из-за этого не попадут в конфиг.
+	printf '<p class="muted">'"$T_the_method_of_a_single_bridg"'</p>'
+	_badlist=""
+	for _b in $(bridge_sections); do
+		_bs=$(bridge_style "$_b")
+		_bt=$(uci -q get "$UCI_APP.$_b.tag")
+		[ -n "$_bt" ] || _bt="$_b"
+		case "$_bs:$_cap" in
+			legacy:new|legacy:none) _badlist="$_badlist$_bt, " ;;
+			new:none)               _badlist="$_badlist$_bt, " ;;
+		esac
+	done
+	if [ -n "$_badlist" ]; then
+		printf '<p class="bad">Эти мосты в конфиг не попадут — установленный xray не умеет их способ: %s</p>' "$(h "${_badlist%, }")"
+	fi
 	printf '<details class="pick"><summary>'"$T_short_which_reverse_works_wi"'</summary>'
 	printf '<table><tr><th>'"$T_mode"'</th><th>'"$T_what_it_is"'</th><th>'"$T_which_xray_builds_support_it"'</th></tr>'
 	printf '<tr><td>'"$T_old"'</td><td>'"$T_by_domain_code_reverse_bridg"'</td><td>'"$T_before_26_4_18_24_12_31_26_4"'</td></tr>'
@@ -4302,6 +4289,13 @@ EOF
 		case "$(bridge_style "$_b" 2>/dev/null)" in
 			new) _bstxt='<span class="clip ok" title="'"$T_new_method_vless_reverse_pro"'">новый</span>' ;;
 			*)   _bstxt='<span class="clip" title="'"$T_old_method_portals_and_bridg"'">старый</span>' ;;
+		esac
+		# если выбранный способ эта сборка xray не умеет — пишем прямо, что мост
+		# не попадёт в конфиг (раньше это происходило молча)
+		case "$(bridge_style "$_b"):${_cap:-both}" in
+			legacy:new|legacy:none|new:none)
+				_bstxt="$_bstxt <span class=\"bad\" title=\"установленный xray этот способ не понимает\">в конфиг не попадёт</span>"
+				;;
 		esac
 		_bdom=$(uci -q get "$UCI_APP.$_b.domain")
 		_bout=$(uci -q get "$UCI_APP.$_b.outbound")
@@ -4363,13 +4357,12 @@ page_bridge() {
 	printf '<div class="row">'
 	[ -z "$_sec" ] && printf '<div><label>'"$T_section_name_latin_letters_o"'</label><input name="sec" placeholder="lucy"></div>'
 	printf '<div><label>'"$T_bridge_tag"'</label><input name="tag" value="%s" placeholder="router-lucy"></div>' "$(h "$_bt")"
-	# способ реверса: старый (порталы/мосты по домену) или новый — VLESS
-	# Reverse Proxy по тегу (xray 25.9.11 и новее). Пусто — как у роутера.
+	# способ реверса у ЭТОГО моста: старый (порталы/мосты по домену) или новый —
+	# VLESS Reverse Proxy по тегу (xray 25.9.11 и новее). Общего переключателя
+	# больше нет: способ обязателен для каждого моста, у нового — «новый».
 	_bstyle=$(uci -q get "$UCI_APP.$_sec.style" 2>/dev/null)
-	_global_style=$(reverse_style 2>/dev/null)
-	case "$_global_style" in new) _glbl="новый" ;; off) _glbl="не поддерживается" ;; *) _glbl="старый" ;; esac
+	[ "$_bstyle" = legacy ] || _bstyle=new
 	printf '<div><label>'"$T_reverse_mode"'</label><select name="style">'
-	printf '<option value="" %s>'"$T_same_as_the_router_now_s"'</option>' "$([ -z "$_bstyle" ] && echo selected)" "$_glbl"
 	printf '<option value="legacy" %s>'"$T_old_by_domain_xray_before_26"'</option>' "$([ "$_bstyle" = legacy ] && echo selected)"
 	printf '<option value="new" %s>'"$T_new_vless_reverse_proxy_by_t_2"'</option>' "$([ "$_bstyle" = new ] && echo selected)"
 	printf '</select></div>'

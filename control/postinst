@@ -42,6 +42,26 @@ if [ -n "$_repo_moved" ]; then
 fi
 [ -n "$_tok_removed" ] && echo " прежний токен GitHub из настроек убран (он больше не нужен)"
 
+# Реверс-мосты: раньше способ моста мог быть «как у роутера» и брался из
+# общего значения (/etc/xraypanel/reverse.style). Общий переключатель убран —
+# переносим его в мосты, у которых способ не задан, чтобы поведение не
+# изменилось. Файл после переноса больше не нужен.
+_rs=$(cat /etc/xraypanel/reverse.style 2>/dev/null)
+case "$_rs" in
+	legacy|new) ;;
+	*) _rs=legacy ;;
+esac
+_rs_moved=0
+if [ -f /etc/config/xraypanel ]; then
+	for _b in $(uci -q show xraypanel 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=bridge$/\1/p'); do
+		[ -n "$(uci -q get "xraypanel.$_b.style" 2>/dev/null)" ] && continue
+		uci -q set "xraypanel.$_b.style=$_rs" && _rs_moved=$((_rs_moved + 1))
+	done
+	[ "$_rs_moved" -gt 0 ] && uci commit xraypanel >/dev/null 2>&1
+fi
+[ "$_rs_moved" -gt 0 ] && echo " способ реверса перенесён в мосты: $_rs_moved (общий переключатель убран)"
+rm -f /etc/xraypanel/reverse.style 2>/dev/null
+
 chmod 755 /www/cgi-bin/xraypanel 2>/dev/null
 chmod 755 /usr/lib/xraypanel/transparent.sh 2>/dev/null
 chmod 755 /usr/lib/xraypanel/transparent-enable.sh 2>/dev/null

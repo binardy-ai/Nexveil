@@ -155,7 +155,6 @@ T_build_template='build template'
 T_save_2='save'
 T_save_entry_changes='save entry changes'
 T_save_folders='save folders'
-T_save_mode='save mode'
 T_traffic_2='traffic ↑/↓'
 T_remove_duplicates='remove duplicates'
 T_delete='delete'
@@ -301,9 +300,7 @@ T_client_address_for_example_1='Client address (for example 10.0.0.2/32)'
 # Куда направлять (allowedIPs)
 T_where_to_route_allowedips='Where to route (allowedIPs)'
 # Сменить общий способ
-T_change_the_common_method='Change the common method'
 # старый — по домену (нужна сборка xray до 26.4.18)
-T_old_by_domain_needs_an_xray_='old — by domain (needs an xray build before 26.4.18)'
 # новый — VLESS Reverse Proxy по тегу (сборка 25.9.11+)
 T_new_vless_reverse_proxy_by_t='new — VLESS Reverse Proxy by tag (build 25.9.11+)'
 # Панель определяет возможности установленного бинарника сама: даёт ему тестовый конфиг и запоминает ответ, пока бинарник не заменят. В конфиг попадает только тот способ, который сборка понимает, — поэтому служба не падает и менять настройки вручную не нужно.
@@ -313,7 +310,7 @@ T_for_the_new_method_it_is_imp='For the new method it is important that the xray
 # Хотите оба способа сразу — нужна сборка, которая понимает и старый, и новый (последняя из проверенных — 26.4.17), и портал, совместимый с её новым реверсом. Если на портале свежий xray, надёжнее держать свежий и на роутере и работать только новым способом.
 T_if_you_want_both_methods_at_='If you want both methods at once — you need a build that understands both the old and the new one (the last one checked — 26.4.17), and a portal compatible with its new reverse. If the portal has a fresh xray, it is safer to keep the router fresh too and use only the new method.'
 # Способ у отдельного моста задаётся в его форме, поле «Способ реверса»; «как у роутера» — значит берётся общий способ, выбранный выше.
-T_the_method_of_a_single_bridg='The method of a single bridge is set in its form, the “Reverse method” field; “same as the router” means the common method selected above is used.'
+T_the_method_of_a_single_bridg='The reverse method is set for each bridge separately — in its form, the “Reverse method” field. There is no common switch: a new bridge defaults to the new method.'
 # Мост — это обратный туннель: роутер сам подключается к серверу-порталу, и через него к тебе «заходят» сервисы роутера (LuCI, SSH и т.п.).
 T_a_bridge_is_a_reverse_tunnel='A bridge is a reverse tunnel: the router itself connects to the portal server, and through it the router services (LuCI, SSH and so on) “come in” to you.'
 # время ответа выходного сервера (живой замер при открытии страницы)
@@ -332,7 +329,6 @@ T_working_bridges_are_green_de='Working bridges are green, dead ones are red. Th
 T_the_button_disables_a_bridge='The ⏸ button disables a bridge without deleting it: it stays in the list greyed out but does not get into the config — the tunnel does not come up until it is turned on again.'
 # Если тут написано «таблица соединений: НЕТ» или пусто в «есть команды» — пришлите этот текст, я скажу, что установить.
 # как у роутера (сейчас: %s)
-T_same_as_the_router_now_s='same as the router (now: %s)'
 # старый — по домену (xray до 26.4.25)
 T_old_by_domain_xray_before_26='old — by domain (xray before 26.4.25)'
 # новый — VLESS Reverse Proxy по тегу (xray 25.9.11+)
@@ -923,7 +919,6 @@ T_port='Port'
 # Flow (только VLESS+Reality)
 T_flow_vless_reality_only='Flow (VLESS+Reality only)'
 # после этого нажмите «применить конфиг»
-T_then_press_apply_config='then press “apply config”'
 # (нужен только старому способу)
 T_only_needed_by_the_old_metho='(only needed by the old method)'
 # IP-адрес или сеть — 10.0.0.0/8, 8.8.8.8
