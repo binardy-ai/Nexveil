@@ -3612,6 +3612,62 @@ window.__toast = function (msg, bad) {
 	check();
 	window.__updateWatch = check;
 })();
+/* «Проверить обновление сейчас» и «обновить до …»: раньше это были обычные формы
+   и после нажатия страница перезагружалась — она прыгала наверх, и приходилось
+   снова листать вниз. Теперь отправляем тихо и обновляем саму карточку. */
+(function () {
+	if (!window.fetch) return;
+	function cardHtml() {
+		var cur = document.getElementById('update-card');
+		return cur ? cur.innerHTML : '';
+	}
+	function loadCard() {
+		return fetch('?page=update_card&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (html) {
+				var doc = new DOMParser().parseFromString(html, 'text/html');
+				var fresh = doc.querySelector('#update-card');
+				var cur = document.getElementById('update-card');
+				if (fresh && cur) cur.innerHTML = fresh.innerHTML;
+			})
+			.catch(function () {});
+	}
+	function poll(n, max, before) {
+		if (n >= max) return;
+		setTimeout(function () {
+			loadCard().then(function () {
+				/* карточка изменилась — значит проверка или установка закончилась */
+				if (cardHtml() !== before) return;
+				poll(n + 1, max, before);
+			});
+		}, 2500);
+	}
+	document.addEventListener('submit', function (ev) {
+		var f = ev.target;
+		if (!f || !f.querySelector) return;
+		var a = f.querySelector('input[name="action"]');
+		if (!a) return;
+		var act = a.value;
+		if (act !== 'update_check' && act !== 'update_install') return;
+		ev.preventDefault();
+		var before = cardHtml();
+		var btn = f.querySelector('button');
+		if (btn) btn.disabled = true;
+		fetch(location.pathname + location.search, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ action: act, ajax: '1' }),
+			cache: 'no-store'
+		}).then(function () {
+			return loadCard();
+		}).then(function () {
+			/* проверка релиза — до полуминуты, установка пакета — до двух минут */
+			poll(0, act === 'update_install' ? 48 : 16, before);
+		}).catch(function () {
+			if (btn) btn.disabled = false;
+		});
+	}, true);
+})();
 /* Блок «Готовые списки»: содержимое собирается только когда блок открыли.
    Раньше панель считала это при каждой загрузке «Маршрутов», хотя спойлер
    обычно свёрнут, — и страница открывалась дольше, чем нужно. */
