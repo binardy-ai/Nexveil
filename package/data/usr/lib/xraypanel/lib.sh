@@ -2056,6 +2056,18 @@ bridge_tag_for_outbound() { # $1 = тег сервера-выхода
 	return 0
 }
 
+# Все теги мостов с НОВЫМ способом, которые висят на этом выходе. xray понимает
+# только одну пометку реверса на выход, поэтому на каждый следующий мост панель
+# делает копию выхода со своим тегом (см. gen_config).
+bridge_new_tags_for_outbound() { # $1 = тег сервера-выхода
+	for _b in $(bridge_sections); do
+		bridge_disabled "$_b" && continue
+		[ "$(bridge_style "$_b")" = "new" ] || continue
+		[ "$(uci -q get "$UCI_APP.$_b.outbound" 2>/dev/null)" = "$1" ] || continue
+		uci -q get "$UCI_APP.$_b.tag" 2>/dev/null | head -n1
+	done
+}
+
 # --- создание разделов UCI ---------------------------------------------------
 valid_uci_name() { # имя раздела допустимо для UCI?
 	case "$1" in ''|*[!A-Za-z0-9_]*) return 1 ;; *) return 0 ;; esac
@@ -2175,9 +2187,13 @@ unique_tag() { # $1 желаемый тег выхода -> свободный �
 }
 
 # --- генерация конфига xray -------------------------------------------------
-gen_outbound_server() { # имя секции
+gen_outbound_server() { # имя секции [свой тег выхода] [свой тег реверса]
 	_s="$1"
-	_tag=$(server_tag "$_s")
+	# тег можно переопределить: для второго и следующих мостов с новым способом
+	# на одном и том же сервере панель делает копию выхода (xray понимает только
+	# одну пометку реверса на выход, поэтому нескольким мостам нужны копии)
+	_tag="${2:-$(server_tag "$_s")}"
+	_rtag_fixed="${3:-}"
 	_proto=$(uci -q get "$UCI_APP.$_s.protocol" 2>/dev/null)
 	case "$_proto" in
 		ss|shadowsocks)      _proto=ss ;;
@@ -2283,8 +2299,10 @@ gen_outbound_server() { # имя секции
 	# смотрим именно на способ этого моста (bridge_tag_for_outbound его и
 	# проверяет), а не на общий — иначе мост с новым способом на роутере со
 	# старым общим способом остался бы вообще без реверса
-	if server_is_reverse "$_tag"; then
-		_rtag=$(bridge_tag_for_outbound "$_tag")
+	if [ -n "$_rtag_fixed" ]; then
+		_revt=",\"reverse\":{\"tag\":\"$(jesc "$_rtag_fixed")\"}"
+	else
+		_rtag=$(bridge_tag_for_outbound "$(server_tag "$_s")")
 		[ -n "$_rtag" ] && _revt=",\"reverse\":{\"tag\":\"$(jesc "$_rtag")\"}"
 	fi
 	# Транспорт: tcp (обычный VLESS+Reality, как было) или ws (WebSocket —
@@ -2651,6 +2669,31 @@ EOF
 		[ "$_auto_on" = 0 ] && [ -n "$_default" ] && [ "$_s" = "$(tag_to_section "$_default")" ] && continue
 		printf ',\n'
 		gen_outbound_server "$_s"
+		# Мостов с новым способом на этом выходе может быть несколько. xray
+		# понимает только ОДНУ пометку reverse у выхода, поэтому на каждый
+		# следующий мост пишем копию выхода: тот же сервер, свой тег и своя
+		# пометка реверса. Раньше второй мост просто не попадал в конфиг —
+		# правило для его тега было, а пометки не было, и туннель не поднимался.
+		_st=$(server_tag "$_s")
+		_n=0
+		for _rt in $(bridge_new_tags_for_outbound "$_st"); do
+			_n=$((_n + 1))
+			[ "$_n" -gt 1 ] || continue
+			# имя копии делаем заведомо свободным
+			_copy="${_st}-rev${_n}"
+			_i=0
+			while [ "$_i" -lt 50 ]; do
+				_used=""
+				for _x in $(server_sections); do
+					[ "$(server_tag "$_x")" = "$_copy" ] && _used=1
+				done
+				[ -z "$_used" ] && break
+				_i=$((_i + 1))
+				_copy="${_st}-rev${_n}-${_i}"
+			done
+			printf ',\n'
+			gen_outbound_server "$_s" "$_copy" "$_rt"
+		done
 	done
 	# «домашняя сеть»: разрешено всё — и домашняя сеть, и интернет
 	if [ "$_revhome_need" = 1 ]; then
