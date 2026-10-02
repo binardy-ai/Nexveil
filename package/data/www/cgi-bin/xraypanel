@@ -2176,7 +2176,15 @@ window.__toast = function (msg, bad) {
 						setTimeout(function () { waitApply(n + 1, started); }, 1500);
 						return;
 					}
-					markApply(!j || j.apply_rc === '0');
+					var _ok = (!j || j.apply_rc === '0');
+					markApply(_ok);
+					/* о неудаче говорим словами: раньше было видно только, что
+					   кнопка снова красная, а причина — лишь в журнале */
+					if (!_ok && window.__toast) {
+						var _w = (j && j.apply_msg ? j.apply_msg : '').replace(/\s+/g, ' ').trim();
+						if (_w.length > 140) _w = _w.slice(0, 140) + '…';
+						window.__toast(__t("T_apply_failed") + (_w || __t("T_look_into_the_log")), true);
+					}
 					refreshRules();
 				})
 				.catch(function () { setTimeout(function () { waitApply(n + 1, started); }, 2000); });
@@ -2300,10 +2308,10 @@ window.__toast = function (msg, bad) {
 		});
 		var hdr = document.querySelector('.apply-hdr');
 		if (hdr) {
-			/* применили — кнопка в шапке больше не нужна, убираем её совсем:
-			   так она не может остаться «красной» после успешного применения */
-			if (ok) { if (hdr.parentNode) hdr.parentNode.removeChild(hdr); }
-			else hdr.style.display = '';
+			/* кнопку в шапке не убираем совсем: после успешного применения
+			   прячем, а при новых правках она снова появляется. Раньше она
+			   исчезала навсегда — до перезагрузки страницы. */
+			hdr.style.display = ok ? 'none' : '';
 		}
 	};
 	document.addEventListener('change', function (ev) {
@@ -3534,6 +3542,13 @@ window.__toast = function (msg, bad) {
 		/* всплывающее сообщение вместо плашки: плашка сдвигала страницу вниз */
 		window.__toast(text, cls === 'bad');
 	}
+	/* неудачное применение: показываем причину словами (последняя строка
+	   журнала применения), а не только покрасневшую кнопку */
+	function sayApplyFailed(msg) {
+		var w = (msg || '').replace(/\s+/g, ' ').trim();
+		if (w.length > 140) w = w.slice(0, 140) + '…';
+		say(__t("T_apply_failed") + (w ? w : __t("T_look_into_the_log")), 'bad');
+	}
 	function clearPending() {
 		// надпись «изменено, но ещё не применено» и пометки о неприменённом порядке
 		var ps = document.querySelectorAll('main p.muted');
@@ -3587,8 +3602,9 @@ window.__toast = function (msg, bad) {
 		} else {
 			restore();
 			setApplyButtons(false);
-			/* об ошибке не «выскакиваем»: кнопка снова красная «применить конфиг»,
-			   а подробности лежат в журнале на странице «Конфиг» */
+			/* причина видна и в сообщении: раньше о неудаче говорила только
+			   снова покрасневшая кнопка, а подробности лежали в журнале */
+			sayApplyFailed(msg);
 		}
 	}
 	function poll(n) {
@@ -3604,6 +3620,13 @@ window.__toast = function (msg, bad) {
 	forms.forEach(function (f) {
 		f.addEventListener('submit', function (ev) {
 			ev.preventDefault();
+			/* На «Маршрутах» есть кнопка, которая сначала сохраняет строки
+			   таблицы, а потом применяет конфиг. Кнопка в шапке раньше просто
+			   применяла то, что уже сохранено, — и правки строк (новые правила,
+			   смена «куда»/«через что») молча терялись. Теперь в шапке на этой
+			   странице работает та же кнопка, что и снизу. */
+			var rbtn = document.querySelector('button.rules-apply');
+			if (rbtn) { rbtn.click(); return; }
 			buttons(__t("T_applying"), true);
 			say(__t("T_config_is_being_applied"));
 			fetch(location.pathname + location.search, {
@@ -3925,7 +3948,7 @@ page_status() {
 <form method="post"><input type="hidden" name="action" value="enable_service"><button>$T_enable_xray_autostart</button></form>
 <form method="post" style="margin-top:8px"><input type="hidden" name="action" value="fix_tz"><button class="btn sec">$T_set_log_time_to_router_time</button></form>
 <p>
-<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><button>$T_apply_config</button></form>
+<form method="post" style="display:inline"><input type="hidden" name="action" value="apply"><button class="btn apply-btn pending">$T_apply_config</button></form>
 <form method="post" style="display:inline"><input type="hidden" name="action" value="restart"><button class="btn sec">$T_restart_xray</button></form>
 <form method="post" style="display:inline"><input type="hidden" name="action" value="rollback"><button class="btn danger">$T_roll_back_config</button></form>
 </p></div>

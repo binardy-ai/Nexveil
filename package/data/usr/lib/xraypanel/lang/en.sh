@@ -4,7 +4,7 @@
 # Ключ = T_ + английский текст; рядом комментарий с исходной строкой.
 # XP_JS_KEYS — строки, которые нужны браузерной части (см. xp_js_dict).
 
-XP_JS_KEYS='T_the_whole_local_network T_router_only T_router_and_local_network T_only_selected_clients T_pcs T_none_selected_cannot_enable T_through_the_server_with_the_ T_straight_without_proxy T_through_outbound T_is_not_intercepted_for_clien T_is_intercepted_and_goes_stra T_is_intercepted_and_goes_to_t T_is_not_intercepted_it_goes_a T_goes_through_the_tunnel_the_ T_answers_with_its_own_servers T_plain_dns_over_port_53_2 T_encrypted_doh T_does_not_see_client_dns_is_n T_does_see_client_requests_go_ T_does_not_see_requests_go_pas T_sees_it_only_if_the_devices_ T_depends_on_how_the_devices_a T_does_not_see_names_they_go_o T_sees_names_the_resolver_asks T_does_not_see_names_the_resol T_depends_on_how_the_devices_a_2 T_b_wrapped_b T_br_b_traffic_goes_b T_br_b_client_dns_b T_br_b_router_resolver_b T_br_b_site_names_b_panel T_provider T_br_b_encrypted_dns_b_dot_853 T_closed T_allowed_dns_is_not_intercept T_allowed T_closed_by_list T_browser_and_apple_canaries T_enabled T_disabled_2 T_br_span_class_muted_this_is_ T_saving T_saved T_could_not_save T_did_not_find_the_row_templat T_not_selected T_span_class_muted_new_row_wil T_row_added_choose_sets_and_pr T_drag_the_row_to_the_right_pl T_td_data_label_check_span T_checking T_no_answer T_checking_all T_measuring T_td_data_label_ping T_refreshing T_just_now T_start_typing_category_ru_you T_start_typing_ru_cn_us_privat T_10_0_0_0_8_or_8_8_8_8 T_template_is_empty T_template_does_not_parse T_check_the_brackets T_the_template_has_that_is_an_ T_the_template_matches_everyth T_the_dot_before_the_domain_zo T_write_domains_for_example_vk T_ready_template T_press_add_to_set T_not_saving T_copied T_span_class_muted_style_font_ T_press_to_remove T_holding T_added_to_the_box T_already_in_the_box T_downloading_the_files_and_re T_could_not_start_the_update T_enter_the_list_name T_looking T_reading_the_lists_this_takes T_could_not_look T_enter_a_domain T_searching_the_list_files_are T_could_not_check T_making_two_requests_this_tak T_checking_2 T_collecting_names_this_takes_ T_collecting_failed_look_into_ T_sec_ago T_min_ago T_h_ago T_b T_kb T_mb T_gb T_tb T_set T_removed_traffic_goes_as_usua T_cancelled_the_rules_stay T_will_work_in T_sec_press_confirm T_waiting_for_confirmation T_not_active T_0_b T_b_straight_b T_b_blocked_b T_ago T_span_class_muted_also T_span_class_muted_no_fresh_en T_no_entries T_in_10_minutes T_outbound_2 T_in_10_minutes_2 T_no_fresh_entries T_clients T_router T_through_the_tunnel T_straight_2 T_span_class_muted_empty_so_fa T_not_applied T_differences T_h2_differences_with_the_file T_p_class_ok_config_applied_th T_config_applied_xray_restarte T_applying T_config_is_being_applied T_p_class_muted_collecting_p T_p_class_bad_could_not_collec T_enable_bridge T_disable_bridge_stays_in_the_'
+XP_JS_KEYS='T_the_whole_local_network T_router_only T_router_and_local_network T_only_selected_clients T_pcs T_none_selected_cannot_enable T_through_the_server_with_the_ T_straight_without_proxy T_through_outbound T_is_not_intercepted_for_clien T_is_intercepted_and_goes_stra T_is_intercepted_and_goes_to_t T_is_not_intercepted_it_goes_a T_goes_through_the_tunnel_the_ T_answers_with_its_own_servers T_plain_dns_over_port_53_2 T_encrypted_doh T_does_not_see_client_dns_is_n T_does_see_client_requests_go_ T_does_not_see_requests_go_pas T_sees_it_only_if_the_devices_ T_depends_on_how_the_devices_a T_does_not_see_names_they_go_o T_sees_names_the_resolver_asks T_does_not_see_names_the_resol T_depends_on_how_the_devices_a_2 T_b_wrapped_b T_br_b_traffic_goes_b T_br_b_client_dns_b T_br_b_router_resolver_b T_br_b_site_names_b_panel T_provider T_br_b_encrypted_dns_b_dot_853 T_closed T_allowed_dns_is_not_intercept T_allowed T_closed_by_list T_browser_and_apple_canaries T_enabled T_disabled_2 T_br_span_class_muted_this_is_ T_saving T_saved T_could_not_save T_did_not_find_the_row_templat T_not_selected T_span_class_muted_new_row_wil T_row_added_choose_sets_and_pr T_drag_the_row_to_the_right_pl T_td_data_label_check_span T_checking T_no_answer T_checking_all T_measuring T_td_data_label_ping T_refreshing T_just_now T_start_typing_category_ru_you T_start_typing_ru_cn_us_privat T_10_0_0_0_8_or_8_8_8_8 T_template_is_empty T_template_does_not_parse T_check_the_brackets T_the_template_has_that_is_an_ T_the_template_matches_everyth T_the_dot_before_the_domain_zo T_write_domains_for_example_vk T_ready_template T_press_add_to_set T_not_saving T_copied T_span_class_muted_style_font_ T_press_to_remove T_holding T_added_to_the_box T_already_in_the_box T_downloading_the_files_and_re T_could_not_start_the_update T_enter_the_list_name T_looking T_reading_the_lists_this_takes T_could_not_look T_enter_a_domain T_searching_the_list_files_are T_could_not_check T_making_two_requests_this_tak T_checking_2 T_collecting_names_this_takes_ T_collecting_failed_look_into_ T_sec_ago T_min_ago T_h_ago T_b T_kb T_mb T_gb T_tb T_set T_removed_traffic_goes_as_usua T_cancelled_the_rules_stay T_will_work_in T_sec_press_confirm T_waiting_for_confirmation T_not_active T_0_b T_b_straight_b T_b_blocked_b T_ago T_span_class_muted_also T_span_class_muted_no_fresh_en T_no_entries T_in_10_minutes T_outbound_2 T_in_10_minutes_2 T_no_fresh_entries T_clients T_router T_through_the_tunnel T_straight_2 T_span_class_muted_empty_so_fa T_not_applied T_differences T_h2_differences_with_the_file T_p_class_ok_config_applied_th T_config_applied_xray_restarte T_applying T_config_is_being_applied T_p_class_muted_collecting_p T_p_class_bad_could_not_collec T_enable_bridge T_disable_bridge_stays_in_the_ T_apply_failed T_look_into_the_log'
 
 T_dns_and_other_udp='DNS and other UDP'
 T_dns_through_tunnel='DNS through tunnel'
@@ -299,7 +299,7 @@ T_client_address_for_example_1='Client address (for example 10.0.0.2/32)'
 # Куда направлять (allowedIPs)
 T_where_to_route_allowedips='Where to route (allowedIPs)'
 # Сменить общий способ
-# старый — по домену (нужна сборка xray до 26.4.18)
+# старый — по домену (xray до 26.4.17 включительно)
 # новый — VLESS Reverse Proxy по тегу (сборка 25.9.11+)
 T_new_vless_reverse_proxy_by_t='new — VLESS Reverse Proxy by tag (build 25.9.11+)'
 # Панель определяет возможности установленного бинарника сама: даёт ему тестовый конфиг и запоминает ответ, пока бинарник не заменят. В конфиг попадает только тот способ, который сборка понимает, — поэтому служба не падает и менять настройки вручную не нужно.
@@ -325,10 +325,10 @@ T_old_method_portals_and_bridg='old method — portals and bridges by domain'
 T_the_button_disables_a_bridge='The ⏸ button disables a bridge without deleting it: it stays in the list greyed out but does not get into the config — the tunnel does not come up until it is turned on again.'
 # Если тут написано «таблица соединений: НЕТ» или пусто в «есть команды» — пришлите этот текст, я скажу, что установить.
 # как у роутера (сейчас: %s)
-# старый — по домену (xray до 26.4.25)
-T_old_by_domain_xray_before_26='old — by domain (xray before 26.4.25)'
+# старый — по домену (xray до 26.4.17 включительно)
+T_old_by_domain_xray_before_26='old — by domain (xray up to 26.4.17 included)'
 # новый — VLESS Reverse Proxy по тегу (xray 25.9.11+)
-T_new_vless_reverse_proxy_by_t_2='new — VLESS Reverse Proxy by tag (xray 25.9.11+)'
+T_new_vless_reverse_proxy_by_t_2='new — VLESS Reverse Proxy by tag (xray 25.9.11 and newer)'
 # Новый способ: на сервере-портале у клиента VLESS-входа должен стоять <code>"reverse": {"tag": "имя"}</code> — тогда трафик, предназначенный мосту, уйдёт в этот тег. А в поле «Выход» ниже выбирайте сервер, у которого в UUID прописан именно этот клиент портала.
 T_new_method_on_the_portal_ser='New method: on the portal server the client of the VLESS inbound must have <code>"reverse": {"tag": "name"}</code> — then traffic meant for the bridge goes into this tag. And in the “Outbound” field below choose the server whose UUID contains exactly this portal client.'
 # Выход (через какой сервер подключаться к порталу)
@@ -892,6 +892,8 @@ T_h2_differences_with_the_file='<h2>Differences with the file on the router</h2>
 T_p_class_ok_config_applied_th='<p class="ok">Config applied — the file on the router matches the settings.</p>'
 # Конфиг применён, xray перезапущен.
 T_config_applied_xray_restarte='Config applied, xray restarted.'
+T_apply_failed='could not apply: '
+T_look_into_the_log='details are in the log on the Config page'
 # Применяется…
 T_applying='Applying…'
 # Конфиг применяется…
@@ -1131,17 +1133,17 @@ T_selected='Selected:'
 T_old='old'
 # по домену, <code>reverse.bridges</code>
 T_by_domain_code_reverse_bridg='by domain, <code>reverse.bridges</code>'
-# до 26.4.18: 24.12.31, 26.4.17 и подобные. В 26.4.25 его уже нет
-T_before_26_4_18_24_12_31_26_4='before 26.4.18: 24.12.31, 26.4.17 and similar. In 26.4.25 it is already gone'
+# до 26.4.17 включительно: 24.12.31, 26.4.17 и подобные. В 26.4.25 его уже нет
+T_before_26_4_18_24_12_31_26_4='up to 26.4.17 included: 24.12.31, 26.4.17 and similar. In 26.4.25 it is already gone'
 # новый
 T_new='new'
 # VLESS Reverse Proxy по тегу, <code>"reverse": {"tag": …}</code> у выхода моста
 T_vless_reverse_proxy_by_tag_c='VLESS Reverse Proxy by tag, <code>"reverse": {"tag": …}</code> on the bridge outbound'
 # 25.9.11 и новее: 26.4.25, 26.9.9 и подобные
-T_25_9_11_and_newer_26_4_25_26='25.9.11 and newer: 26.4.25, 26.9.9 and similar'
+T_25_9_11_and_newer_26_4_25_26='25.9.11 and newer: in 25.9.11–26.4.17 works together with the old one, from 26.4.25 — only it'
 # имя моста, оно должно совпадать с тем, что прописано на сервере-портале (в старом конфиге было <code>router-lucy</code>)
-# <b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.25); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.
-T_b_old_b_portals_and_bridges_='<b>old</b> — portals and bridges by domain (<code>reverse.bridges</code>, xray before 26.4.25); <b>new</b> — VLESS Reverse Proxy: on the portal the client has <code>"reverse": {"tag": "…"}</code>, and the panel puts the same mark on the bridge outbound. The new method does not need a domain, and traffic from the tunnel arrives as an inbound with the bridge tag — that is why routing rules for bridges work the same in both methods.'
+# <b>старый</b> — порталы и мосты по домену (<code>reverse.bridges</code>, xray до 26.4.17 включительно); <b>новый</b> — VLESS Reverse Proxy: на портале у клиента стоит <code>"reverse": {"tag": "…"}</code>, а панель ставит такую же пометку у выхода моста. Новому способу домен не нужен, а трафик из туннеля приходит как вход с тегом моста — поэтому правила маршрутизации для мостов работают в обоих способах одинаково.
+T_b_old_b_portals_and_bridges_='<b>old</b> — portals and bridges by domain (<code>reverse.bridges</code>, xray up to 26.4.17 included); <b>new</b> — VLESS Reverse Proxy: on the portal the client has <code>"reverse": {"tag": "…"}</code>, and the panel puts the same mark on the bridge outbound. The new method does not need a domain, and traffic from the tunnel arrives as an inbound with the bridge tag — that is why routing rules for bridges work the same in both methods.'
 # домен, по которому портал принимает мост (было <code>router-lucy.reverse.xui</code>) — нужен только старому способу
 # тег сервера, через который роутер подключается к порталу; чтобы ходить напрямую, укажите <code>direct</code>
 # идёт в xray, а дальше по правилам панели: в нужный сервер или напрямую
