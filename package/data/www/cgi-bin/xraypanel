@@ -173,7 +173,7 @@ act_save_server() {
 	_sec=$(ensure_section server "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел сервера"
 	_oldtag=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null)
-	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_psk wg_address wg_allowed mtu network path hosthdr tls hy_obfs hy_obfs_pass awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
+	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_psk wg_allow_in wg_address wg_allowed wg_keepalive mtu network path hosthdr tls hy_obfs hy_obfs_pass awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
 		_v=$(param "$_f")
 		# тег приводим к безопасному виду: пробелы и посторонние символы ломают
 		# и конфиг xray, и саму панель (она разбирает списки тегов по пробелам)
@@ -4323,6 +4323,7 @@ page_server() {
 	printf '<div class="f-awg"><label>'"$T_awg_preshared_key"'</label><input name="wg_psk" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.wg_psk")")"
 	printf '<div class="f-wg f-awg"><label>'"$T_client_address_for_example_1"'</label><input name="wg_address" value="%s" placeholder="10.0.0.2/32"></div>' "$(h "$_wga")"
 	printf '<div class="f-wg f-awg"><label>'"$T_where_to_route_allowedips"'</label><input name="wg_allowed" value="%s" placeholder="0.0.0.0/0"></div>' "$(h "$_wgl")"
+	printf '<div class="f-wg f-awg"><label>'"$T_answer_keep_alive"'</label><input name="wg_keepalive" value="%s" placeholder="'"$T_answer_keep_alive_ph"'"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.wg_keepalive")")"
 	printf '<div class="f-wg f-awg"><label>MTU</label><input name="mtu" value="%s" placeholder="1420"></div>' "$(h "$_mtu")"
 	# параметры маскировки AmneziaWG: их берут из конфига сервера (или из
 	# ссылки Amnezia). Без них обычный WireGuard-сервер ответит, а AmneziaWG —
@@ -4345,6 +4346,13 @@ page_server() {
 			"$_ik" "$_ik" "$(h "$(uci -q get "$UCI_APP.$_sec.awg_i$_ik")")" "$T_awg_empty_if_no"
 	done
 	printf '<div class="f-awg"><label>'"$T_awg_paste_label"'</label><textarea id="awg-paste" rows="5" placeholder="%s"></textarea><p><button type="button" class="btn sec" id="awg-paste-btn">'"$T_awg_paste_btn"'</button> <span id="awg-paste-msg" class="muted"></span></p></div>' "$T_awg_paste_ph"
+	# входящие через туннель: по умолчанию firewall роутера их отбрасывает,
+	# поэтому для доступа с телефона на панель/SSH нужна отдельная зона
+	printf '<div class="f-awg"><label>%s</label><select name="wg_allow_in"><option value="0" %s>%s</option><option value="1" %s>%s</option></select></div>' \
+		"$T_awg_allow_in" \
+		"$([ "$(uci -q get "$UCI_APP.$_sec.wg_allow_in")" = 1 ] || echo selected)" "$T_no" \
+		"$([ "$(uci -q get "$UCI_APP.$_sec.wg_allow_in")" = 1 ] && echo selected)" "$T_yes"
+	printf '<p class="f-awg muted">%s</p>' "$T_awg_allow_in_hint"
 	printf '<p class="f-awg muted">%s</p>' "$T_awg_how_it_works"
 	printf '</div><p><button>'"$T_save"'</button></p></form>'
 	# показываем только поля выбранного протокола
