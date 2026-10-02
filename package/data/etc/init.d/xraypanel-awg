@@ -1,0 +1,22 @@
+#!/bin/sh /etc/rc.common
+# Автозапуск AmneziaWG-клиентов панели после перезагрузки роутера.
+# Интерфейсы поднимаются из настроек панели (серверы с протоколом AmneziaWG).
+START=97
+STOP=11
+
+start() {
+	[ -x /usr/lib/xraypanel/awg.sh ] || return 0
+	/usr/lib/xraypanel/awg.sh sync >>/etc/xraypanel/awg.log 2>&1
+	return 0
+}
+
+reload() {
+	start
+	return 0
+}
+
+stop() {
+	[ -x /usr/lib/xraypanel/awg.sh ] || return 0
+	/usr/lib/xraypanel/awg.sh stop-all >>/etc/xraypanel/awg.log 2>&1
+	return 0
+}

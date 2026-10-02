@@ -669,3 +669,18 @@ T_are_not_wrapped_in_this_vers='в этой версии не заворачив
 T_app_name='Nexveil'
 T_app_tagline='· Xray-прокси для роутера'
 T_app_title='Nexveil — Xray-прокси для роутера'
+
+# --- AmneziaWG (клиент на роутере) ---
+T_awg_preshared_key='Общий ключ (PresharedKey, если есть в конфиге)'
+T_awg_empty_if_no='пусто, если нет'
+T_awg_how_it_works='AmneziaWG — это WireGuard с маскировкой: сервер отвечает только если параметры Jc, S1–S4 и H1–H4 совпадают с его настройками (берите их из конфига сервера или из ссылки Amnezia). Роутер поднимает отдельный интерфейс этим клиентом, поэтому этот сервер можно выбрать в правилах маршрутизации как обычный выход. Проверка показывает реальный запрос через туннель — если видите «нет ответа», смотрите подсказку при наведении.'
+T_awg_client_missing='AmneziaWG: на роутере не установлен клиент (amneziawg-go и amneziawg-tools) — серверы AmneziaWG в конфиг не попадут. Поставьте пакеты amneziawg-go и amneziawg-tools.'
+T_awg_paste_label='Вставить готовый конфиг AmneziaWG (необязательно)'
+T_awg_paste_ph='Сюда можно вставить текст файла .conf из приложения Amnezia: [Interface] PrivateKey… [Peer] Endpoint = адрес:порт…'
+T_awg_paste_btn='Заполнить поля из конфига'
+T_awg_paste_ok='заполнено полей:'
+T_awg_paste_none='в тексте не нашёл параметров AmneziaWG'
+T_awg_install_btn='Установить клиент AmneziaWG'
+T_awg_install_running='установка клиента идёт… обновите страницу через минуту'
+T_awg_install_log='Журнал установки клиента AmneziaWG'
+T_awg_install_hint='Панель сама поставит клиент AmneziaWG: сначала поищет готовые пакеты на роутере (в /etc/xraypanel/versions или /tmp), потом возьмёт подходящий набор с GitHub. Клиент работает в пользовательском режиме — модуль ядра не нужен, но нужен /dev/net/tun (пакет kmod-tun).'

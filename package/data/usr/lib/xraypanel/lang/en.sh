@@ -1163,3 +1163,18 @@ T_are_not_wrapped_in_this_vers='are not wrapped in this version: the router reso
 T_app_name='Nexveil'
 T_app_tagline='· Xray proxy for the router'
 T_app_title='Nexveil — Xray proxy for the router'
+
+# --- AmneziaWG (client on the router) ---
+T_awg_preshared_key='Preshared key (only if the config has one)'
+T_awg_empty_if_no='empty if none'
+T_awg_how_it_works='AmneziaWG is WireGuard with obfuscation: the server answers only when Jc, S1-S4 and H1-H4 match its own settings (take them from the server config or from an Amnezia link). The router brings up a separate interface with this client, so the server can be used in routing rules like any other outbound. The check makes a real request through the tunnel - if it says "no reply", hover the cell to see the reason.'
+T_awg_client_missing='AmneziaWG: the client is not installed on the router (amneziawg-go and amneziawg-tools) - AmneziaWG servers will not be added to the config. Install the amneziawg-go and amneziawg-tools packages.'
+T_awg_paste_label='Paste an AmneziaWG config (optional)'
+T_awg_paste_ph='Paste the text of a .conf file from the Amnezia app here: [Interface] PrivateKey… [Peer] Endpoint = host:port…'
+T_awg_paste_btn='Fill the fields from the config'
+T_awg_paste_ok='fields filled:'
+T_awg_paste_none='no AmneziaWG parameters found in the text'
+T_awg_install_btn='Install the AmneziaWG client'
+T_awg_install_running='installing the client… refresh the page in a minute'
+T_awg_install_log='AmneziaWG client installation log'
+T_awg_install_hint='The panel installs the AmneziaWG client itself: first it looks for ready packages on the router (/etc/xraypanel/versions or /tmp), then downloads a matching set from GitHub. The client runs in user space - no kernel module needed, but /dev/net/tun (kmod-tun) is required.'

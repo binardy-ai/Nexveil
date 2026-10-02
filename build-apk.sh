@@ -21,6 +21,9 @@ if [ ! -d "$DATA" ]; then
 fi
 
 APK="${APK_STATIC:-$WORK/sbin/apk.static}"
+# APK_STATIC мог быть задан на путь, где файла нет (например, сборка идёт на
+# роутере и статический бинарник ещё не скачан) — тогда берём обычное место.
+[ -x "$APK" ] || APK="$WORK/sbin/apk.static"
 if [ ! -x "$APK" ]; then
 	echo "нужен apk.static (apk-tools 3) — скачиваю apk-tools-static из Alpine…"
 	mkdir -p "$WORK"
@@ -28,9 +31,15 @@ if [ ! -x "$APK" ]; then
 	_pkg=$(curl -sL --max-time 60 "$_dir/" | grep -oE 'apk-tools-static-[0-9][^"<]*\.apk' | head -1)
 	[ -n "$_pkg" ] || { echo "не нашёл apk-tools-static в репозитории Alpine" >&2; exit 1; }
 	curl -sL --max-time 120 -o "$WORK/apk-tools-static.apk" "$_dir/$_pkg"
-	# пакет подписан и собран в старом формате (gzip), поэтому распаковываем
-	# обычным tar с --ignore-zeros — статический бинарник ляжет в sbin/
-	gzip -dc "$WORK/apk-tools-static.apk" | tar --ignore-zeros -x -C "$WORK" 2>/dev/null
+	# пакет подписан и собран в старом формате (два склеенных потока gzip),
+	# поэтому обычный tar на нём спотыкается, а нужен --ignore-zeros. На
+	# роутерах с apk-tools 3 (25.12) в busybox такого ключа нет — зато сам apk
+	# умеет извлекать содержимое пакета. Пробуем оба способа по очереди.
+	if ! gzip -dc "$WORK/apk-tools-static.apk" | tar --ignore-zeros -x -C "$WORK" 2>/dev/null; then
+		if command -v apk >/dev/null 2>&1; then
+			apk extract --allow-untrusted --destination "$WORK" "$WORK/apk-tools-static.apk" >/dev/null 2>&1
+		fi
+	fi
 	[ -x "$APK" ] || { echo "не удалось получить apk.static" >&2; exit 1; }
 fi
 
@@ -59,6 +68,7 @@ rm -f "$OUT"
 	--info "depends:uhttpd" \
 	--files "$DATA" \
 	--script "post-install:$BASE/control/postinst" \
+	--script "post-upgrade:$BASE/control/postinst" \
 	--script "pre-deinstall:$BASE/control/prerm" \
 	--output "$OUT"
 

@@ -1996,6 +1996,12 @@ server_available() { # $1 = имя секции сервера
 			# (в журнале «non existing outTag»).
 			xray_hysteria_ok || return 1
 			;;
+		awg|amneziawg)
+			# AmneziaWG xray не умеет: выход идёт через отдельный интерфейс,
+			# который поднимает клиент amneziawg-go. Нет клиента — сервер в
+			# конфиг не пишем (иначе xray не запустится из-за выхода).
+			awg_bin_ok || return 1
+			;;
 	esac
 	return 0
 }
@@ -2202,6 +2208,7 @@ gen_outbound_server() { # имя секции [свой тег выхода] [с
 	case "$_proto" in
 		ss|shadowsocks)      _proto=ss ;;
 		wg|wireguard)        _proto=wireguard ;;
+		awg|amneziawg)       _proto=amneziawg ;;
 		hy|hysteria|hysteria2) _proto=hysteria ;;
 		vm|vmess)            _proto=vmess ;;
 		trojan)              _proto=trojan ;;
@@ -2236,6 +2243,21 @@ gen_outbound_server() { # имя секции [свой тег выхода] [с
 			"$_tag" \
 			"$(jesc "$(uci -q get "$UCI_APP.$_s.wg_private")")" "$_waddr" \
 			"$_addr" "$_port" "$(jesc "$(uci -q get "$UCI_APP.$_s.wg_peer")")" "$_wallowed" "$_mtu"
+		return 0
+	fi
+	# --- AmneziaWG: сервер поднимает сама панель отдельным интерфейсом
+	# (userspace amneziawg-go), а xray просто выпускает трафик в этот
+	# интерфейс — привязкой выхода к устройству (sockopt.interface). Ядро xray
+	# AmneziaWG не понимает, поэтому параметры маскировки (Jc, S1, H1…) в этом
+	# выходе не пишутся: они живут в настройках интерфейса.
+	if [ "$_proto" = amneziawg ]; then
+		_wname=$(awg_ifname "$_s")
+		# пометка mark 255 — та же, что у остальных выходов: по ней панель
+		# узнаёт «свой» трафик и не заворачивает его второй раз
+		_wmark=""
+		[ "$TRANSPARENT_ON" = 1 ] && _wmark=',"mark":255'
+		printf '{"tag":"%s","protocol":"freedom","settings":{"domainStrategy":"AsIs"},"streamSettings":{"sockopt":{"interface":"%s"%s}}}' \
+			"$_tag" "$_wname" "$_wmark"
 		return 0
 	fi
 	# --- Hysteria 2 (нужен xray 25+, где появился этот транспорт)
@@ -3064,6 +3086,9 @@ apply_config() {
 # прежний конфиг (config.prev.json) и перезапустить снова: так роутер не
 # остаётся без прокси из-за одного неудачного применения.
 apply_and_restart() {
+	# AmneziaWG-выходы работают через интерфейс на роутере: поднимаем их до
+	# применения конфига, иначе xray получит выход, которого ещё нет
+	awg_sync >/dev/null 2>&1
 	apply_config || return 1
 	if svc_restart; then
 		echo "xray перезапущен"
@@ -3202,6 +3227,19 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 	URLTEST_REASON=""
 	_sec=$(tag_to_section "$_tag")
 	[ -n "$_sec" ] || { printf 'нет такого сервера'; return 1; }
+	# AmneziaWG проверяем не через xray (он этот протокол не умеет), а по
+	# самому туннелю: есть ли рукопожатие и идёт ли через него трафик
+	case "$(uci -q get "$UCI_APP.$_sec.protocol" 2>/dev/null)" in
+		awg|amneziawg)
+			_r=$(awg_check "$_sec")
+			URLTEST_REASON="$AWG_REASON"
+			printf '%s' "$_r"
+			case "$_r" in
+				*'нет ответа'*) return 1 ;;
+			esac
+			return 0
+			;;
+	esac
 	_bin=$(xray_bin)
 	[ -x "$_bin" ] || { printf 'xray не найден'; return 1; }
 	# журнал этой проверки переписываем каждый раз: по нему потом видно, из-за
@@ -5136,4 +5174,238 @@ active_server_now() {
 			if (best != "") printf "%s\t%s", best, last[best]
 		}
 	'
+}
+
+# --- AmneziaWG (клиент на роутере) -------------------------------------------
+# AmneziaWG — это WireGuard с маскировкой под обычный трафик, и ядро xray его
+# не умеет: там обычный WireGuard. Поэтому клиент поднимается отдельно на самом
+# роутере (userspace amneziawg-go — модуль ядра не нужен), а xray выпускает
+# трафик в этот интерфейс привязкой выхода (sockopt.interface). Интерфейсами
+# управляет панель: поднимает при сохранении сервера, гасит при удалении,
+# восстанавливает после перезагрузки (/etc/init.d/xraypanel-awg).
+AWG_GO="${XRAYPANEL_AWG_GO:-/usr/bin/amneziawg-go}"
+AWG_TOOL="${XRAYPANEL_AWG_TOOL:-/usr/bin/awg}"
+AWG_DIR="${XRAYPANEL_AWG_DIR:-$STATE_DIR/awg}"
+
+awg_bin_ok() { # установлен ли на роутере клиент AmneziaWG
+	[ -x "$AWG_GO" ] && [ -x "$AWG_TOOL" ]
+}
+
+# Автозапуск интерфейсов должен быть включён в системе (ссылка в /etc/rc.d).
+# При установке пакета это делает postinst, но при обновлении (особенно на
+# системах с apk) он может не выполниться — поэтому панель проверяет сама.
+awg_service_enable() {
+	[ -x "$INITD/xraypanel-awg" ] || return 0
+	for _l in /etc/rc.d/S*xraypanel-awg; do
+		[ -e "$_l" ] && return 0
+	done
+	"$INITD/xraypanel-awg" enable >/dev/null 2>&1
+	return 0
+}
+
+awg_ifname() { # $1 = раздел сервера -> имя интерфейса (ядро: не длиннее 15)
+	printf 'awg%s' "$(printf '%s' "$1" | tr -c 'A-Za-z0-9' '_' | cut -c1-12)"
+}
+
+awg_servers() { # разделы серверов с протоколом AmneziaWG
+	for _s in $(server_sections); do
+		case "$(uci -q get "$UCI_APP.$_s.protocol" 2>/dev/null)" in
+			awg|amneziawg) printf '%s\n' "$_s" ;;
+		esac
+	done
+}
+
+awg_port() { # $1 = раздел: порт сервера (по умолчанию 51820, как у AmneziaWG)
+	_p=$(uci -q get "$UCI_APP.$1.port" 2>/dev/null)
+	case "$_p" in ''|*[!0-9]*) _p=51820 ;; esac
+	printf '%s' "$_p"
+}
+
+awg_allowed() { # $1 = раздел: куда пускать трафик внутри туннеля
+	_a=$(uci -q get "$UCI_APP.$1.wg_allowed" 2>/dev/null)
+	[ -n "$_a" ] || _a="0.0.0.0/0"
+	printf '%s' "$_a"
+}
+
+awg_sum() { # $1 = раздел: отпечаток настроек (изменились — перезапускаем)
+	{
+		for _f in wg_private wg_peer wg_psk wg_address wg_allowed mtu address port \
+				awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 \
+				awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
+			printf '%s=%s\n' "$_f" "$(uci -q get "$UCI_APP.$1.$_f" 2>/dev/null)"
+		done
+	} | md5sum 2>/dev/null | awk '{print $1}'
+}
+
+# имя ключа AmneziaWG в конфиге: awg_jc -> Jc, awg_h3 -> H3
+awg_key_name() {
+	case "$1" in
+		awg_jc) echo Jc ;; awg_jmin) echo Jmin ;; awg_jmax) echo Jmax ;;
+		awg_s1) echo S1 ;; awg_s2) echo S2 ;; awg_s3) echo S3 ;; awg_s4) echo S4 ;;
+		awg_h1) echo H1 ;; awg_h2) echo H2 ;; awg_h3) echo H3 ;; awg_h4) echo H4 ;;
+		awg_i1) echo I1 ;; awg_i2) echo I2 ;; awg_i3) echo I3 ;;
+		awg_i4) echo I4 ;; awg_i5) echo I5 ;;
+		*) echo "" ;;
+	esac
+}
+
+# Конфиг для awg setconf. Address и MTU здесь не пишем: их понимает только
+# awg-quick, а мы применяем адрес и MTU сами (ip addr / ip link).
+awg_conf_write() { # $1 = раздел -> печатает путь к файлу конфига
+	_s="$1"
+	mkdir -p "$AWG_DIR" 2>/dev/null
+	_f="$AWG_DIR/$_s.conf"
+	(
+		umask 077
+		printf '[Interface]\n'
+		printf 'PrivateKey = %s\n' "$(uci -q get "$UCI_APP.$_s.wg_private" 2>/dev/null)"
+		for _k in awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 \
+				awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
+			_v=$(uci -q get "$UCI_APP.$_s.$_k" 2>/dev/null)
+			[ -n "$_v" ] || continue
+			_n=$(awg_key_name "$_k")
+			[ -n "$_n" ] && printf '%s = %s\n' "$_n" "$_v"
+		done
+		printf '\n[Peer]\n'
+		printf 'PublicKey = %s\n' "$(uci -q get "$UCI_APP.$_s.wg_peer" 2>/dev/null)"
+		_psk=$(uci -q get "$UCI_APP.$_s.wg_psk" 2>/dev/null)
+		[ -n "$_psk" ] && printf 'PresharedKey = %s\n' "$_psk"
+		printf 'Endpoint = %s:%s\n' "$(uci -q get "$UCI_APP.$_s.address" 2>/dev/null)" "$(awg_port "$_s")"
+		printf 'AllowedIPs = %s\n' "$(awg_allowed "$_s")"
+		printf 'PersistentKeepalive = 25\n'
+	) > "$_f" 2>/dev/null
+	printf '%s' "$_f"
+}
+
+awg_ping_ms() { # $1 = интерфейс -> средний пинг через туннель (или пусто)
+	ping -I "$1" -c 2 -W 3 "${2:-1.1.1.1}" 2>/dev/null | \
+		sed -n 's@.*= [0-9.]*/\([0-9.]*\)/.*@\1@p' | head -1
+}
+
+awg_if_stop() { # $1 = имя интерфейса: убить процесс и убрать интерфейс
+	for _p in /proc/[0-9]*; do
+		[ -r "$_p/cmdline" ] || continue
+		case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)" in
+			# именно этот интерфейс: имя отделено пробелом, иначе интерфейс
+			# «awgsrv1» совпал бы с «awgsrv11»
+			*amneziawg-go*" $1 "*) kill "${_p#/proc/}" 2>/dev/null ;;
+		esac
+	done
+	sleep 1
+	ip link del "$1" 2>/dev/null
+	rm -f "$AWG_DIR/$1.sum" 2>/dev/null
+	return 0
+}
+
+awg_down() { # $1 = раздел сервера: погасить его интерфейс
+	_s="$1"
+	_if=$(awg_ifname "$_s")
+	awg_if_stop "$_if"
+	rm -f "$AWG_DIR/$_s.conf" 2>/dev/null
+	return 0
+}
+
+awg_up() { # $1 = раздел сервера: поднять интерфейс с его настройками
+	_s="$1"
+	_if=$(awg_ifname "$_s")
+	awg_bin_ok || { printf 'клиент AmneziaWG не установлен (amneziawg-go / awg)'; return 1; }
+	awg_service_enable
+	_sum=$(awg_sum "$_s")
+	# уже поднят с теми же настройками — ничего не делаем (важно для hotplug:
+	# события интерфейсов приходят часто, туннель из-за них рвать нельзя)
+	if [ -n "$_sum" ] && [ "$(cat "$AWG_DIR/$_if.sum" 2>/dev/null)" = "$_sum" ] && \
+			ip link show "$_if" >/dev/null 2>&1; then
+		return 0
+	fi
+	awg_if_stop "$_if"
+	if command -v start-stop-daemon >/dev/null 2>&1; then
+		start-stop-daemon -S -q -b -x "$AWG_GO" -- "$_if"
+	elif command -v setsid >/dev/null 2>&1; then
+		setsid "$AWG_GO" "$_if" </dev/null >/dev/null 2>&1 &
+	else
+		"$AWG_GO" "$_if" </dev/null >/dev/null 2>&1 &
+	fi
+	sleep 3
+	ip link show "$_if" >/dev/null 2>&1 || { printf 'интерфейс %s не создался' "$_if"; return 1; }
+	_cf=$(awg_conf_write "$_s")
+	if ! "$AWG_TOOL" setconf "$_if" "$_cf" >/dev/null 2>&1; then
+		awg_if_stop "$_if"
+		printf 'сервер не принял настройки (проверьте ключи и параметры маскировки)'
+		return 1
+	fi
+	_mtu=$(uci -q get "$UCI_APP.$_s.mtu" 2>/dev/null)
+	case "$_mtu" in ''|*[!0-9]*) _mtu=1280 ;; esac
+	# MTU ставим и до, и после подъёма: клиент создаёт интерфейс с 1420 и
+	# успевает перезаписать значение, если поставить его слишком рано
+	ip link set mtu "$_mtu" dev "$_if" 2>/dev/null
+	_addr=$(uci -q get "$UCI_APP.$_s.wg_address" 2>/dev/null)
+	[ -n "$_addr" ] || _addr=10.0.0.2/32
+	ip addr add "$_addr" dev "$_if" 2>/dev/null
+	ip link set "$_if" up 2>/dev/null
+	ip link set mtu "$_mtu" dev "$_if" 2>/dev/null
+	[ -n "$_sum" ] && printf '%s' "$_sum" > "$AWG_DIR/$_if.sum" 2>/dev/null
+	return 0
+}
+
+awg_sync() { # привести все интерфейсы AmneziaWG к текущим настройкам панели
+	_want=" "
+	for _s in $(awg_servers); do
+		_if=$(awg_ifname "$_s")
+		_want="$_want$_if "
+		if server_disabled "$_s"; then
+			[ -e "$AWG_DIR/$_if.sum" ] && awg_down "$_s"
+			continue
+		fi
+		awg_up "$_s"
+	done
+	# интерфейс остался от удалённого сервера — гасим
+	for _f in "$AWG_DIR"/awg*.sum; do
+		[ -f "$_f" ] || continue
+		_if=$(basename "$_f" .sum)
+		case "$_want" in
+			*" $_if "*) ;;
+			*) awg_if_stop "$_if" ;;
+		esac
+	done
+	return 0
+}
+
+awg_stop_all() { # погасить все интерфейсы AmneziaWG панели
+	for _f in "$AWG_DIR"/awg*.sum; do
+		[ -f "$_f" ] || continue
+		awg_if_stop "$(basename "$_f" .sum)"
+	done
+	return 0
+}
+
+# Проверка AmneziaWG-сервера для столбца «Проверка»: сначала рукопожатие с
+# сервером, потом настоящий запрос через туннель (пинг внутри него).
+# Причина отказа кладётся в AWG_REASON — её показывает подсказка в таблице.
+awg_check() { # $1 = раздел сервера; печатает «<мс> мс» или «нет ответа»
+	_s="$1"
+	AWG_REASON=""
+	_if=$(awg_ifname "$_s")
+	awg_bin_ok || { AWG_REASON="клиент AmneziaWG не установлен"; printf 'нет ответа'; return 1; }
+	if ! ip link show "$_if" >/dev/null 2>&1; then
+		_err=$(awg_up "$_s" 2>&1)
+		if ! ip link show "$_if" >/dev/null 2>&1; then
+			AWG_REASON="${_err:-интерфейс не поднялся}"
+			printf 'нет ответа'
+			return 1
+		fi
+	fi
+	_hs=$("$AWG_TOOL" show "$_if" latest-handshakes 2>/dev/null | awk 'NR==1 {print $2}')
+	case "$_hs" in ''|*[!0-9]*) _hs=0 ;; esac
+	_ms=$(awg_ping_ms "$_if")
+	if [ -n "$_ms" ]; then
+		printf '%s мс' "$_ms"
+		return 0
+	fi
+	if [ "$_hs" != 0 ]; then
+		AWG_REASON="сервер отвечает, но данные через туннель не идут"
+	else
+		AWG_REASON="нет рукопожатия: проверьте адрес, порт, ключи и параметры маскировки"
+	fi
+	printf 'нет ответа'
+	return 1
 }

@@ -173,7 +173,7 @@ act_save_server() {
 	_sec=$(ensure_section server "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел сервера"
 	_oldtag=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null)
-	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_address wg_allowed mtu network path hosthdr tls hy_obfs hy_obfs_pass; do
+	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_psk wg_address wg_allowed mtu network path hosthdr tls hy_obfs hy_obfs_pass awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
 		_v=$(param "$_f")
 		# тег приводим к безопасному виду: пробелы и посторонние символы ломают
 		# и конфиг xray, и саму панель (она разбирает списки тегов по пробелам)
@@ -203,6 +203,21 @@ act_save_server() {
 		_badk=$(ss_key_check "$(param method)" "$(param password)")
 		[ -n "$_badk" ] && _hint="$_hint Внимание: $_badk."
 	fi
+	# AmneziaWG: клиент (amneziawg-go) поднимает отдельный интерфейс на
+	# роутере, поэтому после любого изменения приводим интерфейсы в порядок —
+	# поднимаем нужные, гасим оставшиеся от удалённых или выключенных серверов
+	case "$(param protocol)" in
+		awg|amneziawg)
+			if awg_bin_ok; then
+				bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
+			else
+				_hint="$_hint Внимание: на роутере нет клиента AmneziaWG (amneziawg-go и amneziawg-tools) — сервер сохранён, но в конфиг не попадёт, пока клиент не установлен."
+			fi
+			;;
+		*)
+			bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
+			;;
+	esac
 	[ -n "$_existed" ] && redirect servers "сервер сохранён. Осталось нажать «Применить конфиг» на странице «Статус».$_hint" \
 		|| redirect servers "сервер добавлен. Осталось нажать «Применить конфиг» на странице «Статус».$_hint"
 }
@@ -210,7 +225,14 @@ act_save_server() {
 act_del_server() {
 	_sec=$(param sec)
 	_nt=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null); [ -n "$_nt" ] || _nt="$_sec"
+	# AmneziaWG: у сервера был свой интерфейс — запоминаем его имя, пока
+	# раздел ещё цел, и гасим после удаления
+	_awgif=""
+	case "$(uci -q get "$UCI_APP.$_sec.protocol" 2>/dev/null)" in
+		awg|amneziawg) _awgif=$(awg_ifname "$_sec") ;;
+	esac
 	[ -n "$_sec" ] && { ui_uci delete "$UCI_APP.$_sec"; uci commit "$UCI_APP" >/dev/null 2>&1; }
+	[ -n "$_awgif" ] && awg_if_stop "$_awgif"
 	[ -n "$_sec" ] && pending_note "удалён сервер «$_nt»"
 	redirect servers "сервер удалён"
 }
@@ -397,6 +419,7 @@ act_srv_toggle() { # выключить сервер, не удаляя его
 	if server_disabled "$_sec"; then
 		ui_uci delete "$UCI_APP.$_sec.disabled"
 		uci commit "$UCI_APP" >/dev/null 2>&1
+		bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
 		pending_note "включён сервер «$(server_tag "$_sec")»"
 		redirect servers "сервер включён. Осталось нажать «Применить конфиг»."
 	fi
@@ -406,8 +429,16 @@ act_srv_toggle() { # выключить сервер, не удаляя его
 	fi
 	ui_uci set "$UCI_APP.$_sec.disabled=1"
 	uci commit "$UCI_APP" >/dev/null 2>&1
+	bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
 	pending_note "выключен сервер «$(server_tag "$_sec")»"
 	redirect servers "сервер выключен: он остаётся в списке, но в конфиг больше не попадает. Осталось нажать «Применить конфиг»."
+}
+
+act_awg_install() { # поставить клиент AmneziaWG (amneziawg-go + amneziawg-tools)
+	rm -f "$STATE_DIR/awg-install.log" "$STATE_DIR/awg-install.running" 2>/dev/null
+	bg_run "touch '$STATE_DIR/awg-install.running'; /usr/lib/xraypanel/awg-install.sh; rm -f '$STATE_DIR/awg-install.running'" "$STATE_DIR/awg-install.log"
+	respond_now servers "ставлю клиент AmneziaWG в фоне: сначала ищу готовые пакеты на роутере, потом беру набор с GitHub. Через минуту обновите страницу — результат будет видно под таблицей серверов (журнал /etc/xraypanel/awg-install.log)."
+	exit 0
 }
 
 act_bridge_toggle() { # выключить реверс-мост, не удаляя его
@@ -1667,6 +1698,7 @@ case "$ACTION" in
 	save_server) act_save_server ;;
 	del_server)  act_del_server ;;
 	srv_toggle)  act_srv_toggle ;;
+	awg_install) act_awg_install ;;
 	save_bridge) act_save_bridge ;;
 	del_bridge)  act_del_bridge ;;
 	bridge_toggle) act_bridge_toggle ;;
@@ -4172,6 +4204,24 @@ page_servers() {
 EOF
 	servers_table_html
 	printf '</div>\n'
+	# AmneziaWG-серверы не могут работать без клиента на роутере: предупреждаем
+	# прямо на странице, иначе сервер молча не попадёт в конфиг
+	if ! awg_bin_ok; then
+		if [ -n "$(awg_servers)" ]; then
+			printf '<p class="bad">%s</p>\n' "$T_awg_client_missing"
+		else
+			printf '<p class="muted">%s</p>\n' "$T_awg_client_missing"
+		fi
+		printf '<div><form method="post" style="display:inline"><input type="hidden" name="action" value="awg_install"><button class="btn sec">%s</button></form></div>\n' "$T_awg_install_btn"
+		printf '<p class="muted">%s</p>\n' "$T_awg_install_hint"
+	fi
+	# ход и итог установки клиента показываем всегда, когда журнал есть: иначе
+	# после удачной установки результат нигде не увидеть
+	[ -f "$STATE_DIR/awg-install.running" ] && printf '<p class="muted">%s</p>\n' "$T_awg_install_running"
+	if [ -f "$STATE_DIR/awg-install.log" ]; then
+		printf '<details class="pick"><summary>%s</summary><pre>%s</pre></details>\n' \
+			"$T_awg_install_log" "$(tail -n 20 "$STATE_DIR/awg-install.log" | h_in)"
+	fi
 	printf '<p><button type="button" class="btn sec urltest-all">'"$T_check_all"'</button> <button type="button" class="btn sec ping-all">'"$T_measure_ping"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="dedup"><button class="btn sec">'"$T_remove_duplicates"'</button></form> <a class="btn sec" href="%s?page=server">'"$T_add_a_server_manually"'</a> ' "$SCRIPT_NAME"
 	apply_form servers
 	printf '</p>\n'
@@ -4224,6 +4274,7 @@ page_server() {
 	printf '<option value="vmess" %s>VMess</option>' "$([ "$_pr" = vmess ] && echo selected)"
 	printf '<option value="trojan" %s>Trojan</option>' "$([ "$_pr" = trojan ] && echo selected)"
 	printf '<option value="wireguard" %s>WireGuard</option>' "$([ "$_pr" = wireguard ] && echo selected)"
+	printf '<option value="amneziawg" %s>AmneziaWG</option>' "$([ "$_pr" = amneziawg ] && echo selected)"
 	printf '</select></div>'
 	# Поля показываются в зависимости от протокола (переключает скрипт ниже).
 	# «f-common» — общие для всех (тег, адрес, порт): раньше они были помечены
@@ -4263,14 +4314,46 @@ page_server() {
 	printf '<option value="salamander" %s>'"$T_salamander_as_in_hysteria_2"'</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.hy_obfs")" = salamander ] && echo selected)"
 	printf '</select></div>'
 	printf '<div class="f-hysteria"><label>'"$T_obfuscation_password"'</label><input name="hy_obfs_pass" value="%s" placeholder="'"$T_obfs_password_from_the_link"'"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.hy_obfs_pass")")"
-	printf '<div class="f-wg"><label>'"$T_client_private_key_secretkey"'</label><input name="wg_private" value="%s"></div>' "$(h "$_wgp")"
-	printf '<div class="f-wg"><label>'"$T_server_public_key_publickey"'</label><input name="wg_peer" value="%s"></div>' "$(h "$_wgk")"
-	printf '<div class="f-wg"><label>'"$T_client_address_for_example_1"'</label><input name="wg_address" value="%s"></div>' "$(h "$_wga")"
-	printf '<div class="f-wg"><label>'"$T_where_to_route_allowedips"'</label><input name="wg_allowed" value="%s" placeholder="0.0.0.0/0"></div>' "$(h "$_wgl")"
-	printf '<div class="f-wg"><label>MTU</label><input name="mtu" value="%s" placeholder="1420"></div>' "$(h "$_mtu")"
+	# поля WireGuard и AmneziaWG совпадают (ключи, адрес, allowed IPs, MTU) —
+	# отличается только способ работы: WireGuard поднимает сам xray, а
+	# AmneziaWG — отдельный интерфейс на роутере, поэтому у него ещё есть
+	# параметры маскировки (Jc, S1, H1 и т.д.)
+	printf '<div class="f-wg f-awg"><label>'"$T_client_private_key_secretkey"'</label><input name="wg_private" value="%s"></div>' "$(h "$_wgp")"
+	printf '<div class="f-wg f-awg"><label>'"$T_server_public_key_publickey"'</label><input name="wg_peer" value="%s"></div>' "$(h "$_wgk")"
+	printf '<div class="f-awg"><label>'"$T_awg_preshared_key"'</label><input name="wg_psk" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.wg_psk")")"
+	printf '<div class="f-wg f-awg"><label>'"$T_client_address_for_example_1"'</label><input name="wg_address" value="%s" placeholder="10.0.0.2/32"></div>' "$(h "$_wga")"
+	printf '<div class="f-wg f-awg"><label>'"$T_where_to_route_allowedips"'</label><input name="wg_allowed" value="%s" placeholder="0.0.0.0/0"></div>' "$(h "$_wgl")"
+	printf '<div class="f-wg f-awg"><label>MTU</label><input name="mtu" value="%s" placeholder="1420"></div>' "$(h "$_mtu")"
+	# параметры маскировки AmneziaWG: их берут из конфига сервера (или из
+	# ссылки Amnezia). Без них обычный WireGuard-сервер ответит, а AmneziaWG —
+	# нет: он ждёт другие значения в заголовках пакетов.
+	printf '<div class="f-awg"><label>Jc</label><input name="awg_jc" value="%s" placeholder="6"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_jc")")"
+	printf '<div class="f-awg"><label>Jmin</label><input name="awg_jmin" value="%s" placeholder="1071"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_jmin")")"
+	printf '<div class="f-awg"><label>Jmax</label><input name="awg_jmax" value="%s" placeholder="1266"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_jmax")")"
+	printf '<div class="f-awg"><label>S1</label><input name="awg_s1" value="%s" placeholder="68"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_s1")")"
+	printf '<div class="f-awg"><label>S2</label><input name="awg_s2" value="%s" placeholder="149"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_s2")")"
+	printf '<div class="f-awg"><label>S3</label><input name="awg_s3" value="%s" placeholder="'"$T_awg_empty_if_no"'"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_s3")")"
+	printf '<div class="f-awg"><label>S4</label><input name="awg_s4" value="%s" placeholder="'"$T_awg_empty_if_no"'"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.awg_s4")")"
+	for _hk in 1 2 3 4; do
+		printf '<div class="f-awg"><label>H%s</label><input name="awg_h%s" value="%s"></div>' \
+			"$_hk" "$_hk" "$(h "$(uci -q get "$UCI_APP.$_sec.awg_h$_hk")")"
+	done
+	# I1–I5 — из AmneziaWG 3.x (там вместо H-заголовков свои «вставки»); если
+	# в конфиге их нет, поля остаются пустыми и в набор не попадают
+	for _ik in 1 2 3 4 5; do
+		printf '<div class="f-awg"><label>I%s</label><input name="awg_i%s" value="%s" placeholder="%s"></div>' \
+			"$_ik" "$_ik" "$(h "$(uci -q get "$UCI_APP.$_sec.awg_i$_ik")")" "$T_awg_empty_if_no"
+	done
+	printf '<div class="f-awg"><label>'"$T_awg_paste_label"'</label><textarea id="awg-paste" rows="5" placeholder="%s"></textarea><p><button type="button" class="btn sec" id="awg-paste-btn">'"$T_awg_paste_btn"'</button> <span id="awg-paste-msg" class="muted"></span></p></div>' "$T_awg_paste_ph"
+	printf '<p class="f-awg muted">%s</p>' "$T_awg_how_it_works"
 	printf '</div><p><button>'"$T_save"'</button></p></form>'
 	# показываем только поля выбранного протокола
-	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
+	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"amneziawg":["f-awg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-awg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
+	# Вставка готового конфига AmneziaWG: разбираем текст на стороне браузера и
+	# заполняем поля формы. Так не приходится переносить значения вручную, а
+	# панель принимает обычную форму (многострочный текст ей бы только мешал).
+	_awgjs='<script>(function(){var b=document.getElementById("awg-paste-btn");if(!b)return;var map={privatekey:"wg_private",address:"wg_address",mtu:"mtu",jc:"awg_jc",jmin:"awg_jmin",jmax:"awg_jmax",s1:"awg_s1",s2:"awg_s2",s3:"awg_s3",s4:"awg_s4",h1:"awg_h1",h2:"awg_h2",h3:"awg_h3",h4:"awg_h4",i1:"awg_i1",i2:"awg_i2",i3:"awg_i3",i4:"awg_i4",i5:"awg_i5",publickey:"wg_peer",presharedkey:"wg_psk",allowedips:"wg_allowed"};function set(n,v){var e=document.getElementsByName(n)[0];if(!e)return 0;e.value=v;return 1}b.addEventListener("click",function(){var t=(document.getElementById("awg-paste")||{value:""}).value||"";var got=0;t.split("\n").forEach(function(l){l=l.replace(/\r/g,"");var m=l.match(/^\s*([A-Za-z0-9]+)\s*=\s*(.+?)\s*$/);if(!m)return;var k=m[1].toLowerCase();var v=m[2].replace(/,\s+/g,",");if(k==="endpoint"){var p=v.lastIndexOf(":");if(p>0){got+=set("address",v.slice(0,p));got+=set("port",v.slice(p+1))}return}if(map[k])got+=set(map[k],v)});var msg=document.getElementById("awg-paste-msg");if(msg)msg.textContent=got?("'"$T_awg_paste_ok"' "+got):"'"$T_awg_paste_none"'"})})()</script>'
+	printf '%s\n' "$_awgjs"
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_server"'</button></form>' "$(h "$_sec")"
 	[ -n "$_sec" ] && printf ' <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s">%s</button></form>' \
 		"$(h "$_sec")" "$([ "$(uci -q get "$UCI_APP.$_sec.disabled")" = 1 ] && echo start || echo stop)" \

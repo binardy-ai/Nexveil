@@ -23,6 +23,9 @@ if [ "$ACTION" = "ifup" ]; then
 			sleep 4
 			. /usr/lib/xraypanel/lib.sh 2>/dev/null
 			iface_routes_apply >/dev/null 2>&1
+			# интерфейсы AmneziaWG: если после переподключения провайдера они
+			# пропали — поднимаем заново (уже поднятые не трогаем)
+			awg_sync >/dev/null 2>&1
 			if [ "$(uci -q get xraypanel.settings.transparent 2>/dev/null)" = 1 ]; then
 				_i=0
 				while [ "$_i" -lt 10 ]; do

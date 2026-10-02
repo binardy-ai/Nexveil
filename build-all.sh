@@ -48,14 +48,20 @@ _build_apk_ssh() { # сборка на роутере: там apk.static раб�
 	cp "$BASE/build-apk.sh" "$BASE/.apkbuild/"
 	cp -a "$BASE/control" "$BASE/.apkbuild/"
 	cp -a "$BASE/build" "$BASE/.apkbuild/"
-	[ -n "$_static" ] && cp "$_static" "$BASE/.apkbuild/apk.static"
+	# статический apk передаём только если он у нас реально есть: иначе на
+	# роутере скрипт искал бы несуществующий файл и не скачивал свой
+	_apk_env=""
+	if [ -n "$_static" ]; then
+		cp "$_static" "$BASE/.apkbuild/apk.static"
+		_apk_env="APK_STATIC=$_dir/apk.static"
+	fi
 	echo "собираю на $_host (от root)…"
 	# shellcheck disable=SC2086
 	ssh $APK_BUILD_SSH_OPTS "$_host" "rm -rf $_dir"
 	# shellcheck disable=SC2086
 	scp -q -r $APK_BUILD_SSH_OPTS "$BASE/.apkbuild" "$_host:$_dir"
 	# shellcheck disable=SC2086
-	ssh $APK_BUILD_SSH_OPTS "$_host" "cd $_dir && APK_STATIC=$_dir/apk.static sh build-apk.sh"
+	ssh $APK_BUILD_SSH_OPTS "$_host" "cd $_dir && $_apk_env sh build-apk.sh"
 	# shellcheck disable=SC2086
 	scp -q $APK_BUILD_SSH_OPTS "$_host:$_dir/xraypanel_${VER}_all.apk" "$APK"
 	# shellcheck disable=SC2086
