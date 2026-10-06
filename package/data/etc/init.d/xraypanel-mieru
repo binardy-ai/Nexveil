@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# Автозапуск клиентов Mieru панели после перезагрузки роутера.
+START=97
+STOP=11
+
+start() {
+	[ -x /usr/lib/xraypanel/mieru.sh ] || return 0
+	/usr/lib/xraypanel/mieru.sh sync >>/etc/xraypanel/mieru.log 2>&1
+	return 0
+}
+
+reload() {
+	start
+	return 0
+}
+
+stop() {
+	[ -x /usr/lib/xraypanel/mieru.sh ] || return 0
+	/usr/lib/xraypanel/mieru.sh stop-all >>/etc/xraypanel/mieru.log 2>&1
+	return 0
+}

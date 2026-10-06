@@ -2002,6 +2002,15 @@ server_available() { # $1 = имя секции сервера
 			# конфиг не пишем (иначе xray не запустится из-за выхода).
 			awg_bin_ok || return 1
 			;;
+		mieru|mi)
+			# Mieru тоже поднимает клиент на роутере и даёт локальный SOCKS.
+			# Без клиента выход работать не будет — в конфиг не пишем.
+			mieru_bin_ok || return 1
+			;;
+		naive|naiveproxy)
+			# NaiveProxy: клиент naive на роутере даёт локальный SOCKS
+			naive_bin_run_ok || return 1
+			;;
 	esac
 	return 0
 }
@@ -2209,6 +2218,8 @@ gen_outbound_server() { # имя секции [свой тег выхода] [с
 		ss|shadowsocks)      _proto=ss ;;
 		wg|wireguard)        _proto=wireguard ;;
 		awg|amneziawg)       _proto=amneziawg ;;
+		mieru|mi)            _proto=mieru ;;
+		naive|naiveproxy)    _proto=naive ;;
 		hy|hysteria|hysteria2) _proto=hysteria ;;
 		vm|vmess)            _proto=vmess ;;
 		trojan)              _proto=trojan ;;
@@ -2263,6 +2274,23 @@ gen_outbound_server() { # имя секции [свой тег выхода] [с
 		[ "$TRANSPARENT_ON" = 1 ] && _wmark=',"mark":255'
 		printf '{"tag":"%s","protocol":"freedom","settings":{"domainStrategy":"AsIs"},"streamSettings":{"sockopt":{"interface":"%s"%s}}}' \
 			"$_tag" "$_wname" "$_wmark"
+		return 0
+	fi
+	# --- Mieru: на роутере работает клиент mieru и даёт локальный SOCKS5,
+	# поэтому выход xray — самый обычный socks на 127.0.0.1
+	if [ "$_proto" = mieru ]; then
+		_msp=$(mieru_socks "$_s")
+		[ -n "$_msp" ] || _msp=10830
+		printf '{"tag":"%s","protocol":"socks","settings":{"servers":[{"address":"127.0.0.1","port":%s}]}%s}' \
+			"$_tag" "$_msp" "$_mark"
+		return 0
+	fi
+	# --- NaiveProxy: клиент naive тоже даёт локальный SOCKS5
+	if [ "$_proto" = naive ]; then
+		_nsp=$(naive_socks "$_s")
+		[ -n "$_nsp" ] || _nsp=10840
+		printf '{"tag":"%s","protocol":"socks","settings":{"servers":[{"address":"127.0.0.1","port":%s}]}%s}' \
+			"$_tag" "$_nsp" "$_mark"
 		return 0
 	fi
 	# --- Hysteria 2 (нужен xray 25+, где появился этот транспорт)
@@ -3094,6 +3122,10 @@ apply_and_restart() {
 	# AmneziaWG-выходы работают через интерфейс на роутере: поднимаем их до
 	# применения конфига, иначе xray получит выход, которого ещё нет
 	awg_sync >/dev/null 2>&1
+	# то же для Mieru: клиент должен слушать локальный SOCKS до проверки конфига
+	mieru_sync >/dev/null 2>&1
+	# и для NaiveProxy — то же самое
+	naive_sync >/dev/null 2>&1
 	apply_config || return 1
 	if svc_restart; then
 		echo "xray перезапущен"
@@ -3244,6 +3276,16 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 			esac
 			return 0
 			;;
+		mieru|mi)
+			# Клиент mieru должен быть поднят до проверки: поднимаем, если не
+			# работает. Дальше проверка идёт как у обычного сервера — запросом
+			# через xray на локальный SOCKS клиента.
+			mieru_up "$_sec" >/dev/null 2>&1
+			;;
+		naive|naiveproxy)
+			# клиент Naive тоже поднимаем перед проверкой
+			naive_up "$_sec" >/dev/null 2>&1
+			;;
 	esac
 	_bin=$(xray_bin)
 	[ -x "$_bin" ] || { printf 'xray не найден'; return 1; }
@@ -3299,13 +3341,30 @@ url_test_server() { # $1 = тег сервера; печатает «<мс> мс
 	# страницы), а панель только ждёт, пока в файле появятся три замера.
 	_rcf="$STATE_DIR/urltest.rc.$$"
 	rm -f "$_rcf" 2>/dev/null
+	# Чем делать запрос. На роутере `wget` — это uclient-fetch, и он сам по себе
+	# добавляет 600–900 мс к любому запросу (даже без прокси), из-за чего все
+	# цифры в столбце «Проверка» были завышены. curl таких задержек не даёт,
+	# поэтому используем его, если он есть.
+	if command -v curl >/dev/null 2>&1; then _use_curl=1; else _use_curl=0; fi
 	(
 		_n=1
 		while [ "$_n" -le 3 ]; do
 			_a=$(now_ns)
-			http_proxy="$_proxy" wget -q -O /dev/null -T 5 "$_target" >/dev/null 2>&1
-			_r=$?
-			_b=$(now_ns)
+			if [ "$_use_curl" = 1 ]; then
+				# Время берём у самого curl (time_total): он считает только
+				# запрос. Если мерить снаружи, к цифре добавляется запуск
+				# процесса curl — на этом роутере это 400–600 мс, и все
+				# результаты были завышены в разы.
+				_t=$(curl -s -o /dev/null --max-time 5 -x "$_proxy" \
+					-w '%{time_total}' "$_target" 2>/dev/null)
+				_r=$?
+				case "$_t" in ''|*[!0-9.]*) _t=0 ;; esac
+				_b=$(awk -v t="$_t" -v a="$_a" 'BEGIN{ printf "%.0f", a + t * 1000000000 }')
+			else
+				http_proxy="$_proxy" wget -q -O /dev/null -T 5 "$_target" >/dev/null 2>&1
+				_r=$?
+				_b=$(now_ns)
+			fi
 			printf '%s %s %s\n' "$_a" "$_b" "$_r"
 			_n=$((_n + 1))
 		done
@@ -4046,9 +4105,10 @@ server_key() { # $1 = секция сервера -> строка для сра�
 		"$(uci -q get "$UCI_APP.$1.wg_private" 2>/dev/null)"
 }
 
-sub_fetch() { # $1 = имя секции подписки
+sub_fetch() { # $1 = имя секции подписки, $2 = необязательный адрес вместо сохранённого
 	_s="$1"
-	_url=$(uci -q get "$UCI_APP.$_s.url" 2>/dev/null)
+	_url="$2"
+	[ -n "$_url" ] || _url=$(uci -q get "$UCI_APP.$_s.url" 2>/dev/null)
 	[ -n "$_url" ] || return 1
 	_ua=$(uci -q get "$UCI_APP.$_s.ua" 2>/dev/null)
 	[ -n "$_ua" ] || _ua="v2rayNG/1.8.5"
@@ -4095,75 +4155,140 @@ sub_fetch() { # $1 = имя секции подписки
 		fi
 		grep -q '://' "$_links" 2>/dev/null || cp -f "$_raw" "$_links"
 	fi
+	# Приводим ответ к «одна ссылка на строку». Так бывает нужно, когда
+	# подписка отдаёт не список, а веб-страницу (например, страница
+	# «mieru connection» у mieru-панели) или все ссылки в одной строке:
+	# построчный разбор такие ответы не понимает и пишет «не понял ссылок».
+	# Заодно раскодируем HTML-мнемоники: без этого в ссылке остаётся
+	# '&amp;' вместо '&' и параметры (mtu, port, profile) не разбираются.
+	_clean="$STATE_DIR/sub.$_s.clean"
+	_all="$STATE_DIR/sub.$_s.all"
+	sed -e 's/&amp;/\&/g' -e 's/&#38;/\&/g' -e 's/&quot;/"/g' -e 's/&#34;/"/g' \
+	    -e 's/&#x2F;/\//g' -e 's/&#47;/\//g' \
+	    -e 's/&lt;/</g' -e 's/&gt;/>/g' "$_links" 2>/dev/null | \
+	    tr ' \t' '\n\n' 2>/dev/null | \
+	    grep -oE '[A-Za-z][A-Za-z0-9+.-]*://[^"<>[:space:]]+' 2>/dev/null > "$_all"
+	grep -E '^(vless|ss|hysteria2|hy2|vmess|trojan|wireguard|wg|mierus|mieru|naive\+https|naive\+quic|naive)://' \
+	    "$_all" > "$_clean" 2>/dev/null
+	# Некоторые панели отдают ссылку Naive в «нативной HTTPS-схеме»:
+	#   https://<base64(логин:пароль@адрес:порт)>?remarks=…
+	# Превращаем такие ссылки в привычную naive+https://…, иначе разбор их
+	# пропускает и подписка выглядит пустой.
+	while IFS= read -r _l; do
+		case "$_l" in
+			https://*|http://*)
+				_b="${_l#*://}"; _b="${_b%%\?*}"; _b="${_b%%#*}"
+				_dec=$(printf '%s' "$_b" | b64d 2>/dev/null)
+				case "$_dec" in
+					*:*'@'*) printf 'naive+https://%s\n' "${_dec%%#*}" >> "$_clean" ;;
+				esac
+				;;
+		esac
+	done < "$_all"
+	if [ -s "$_clean" ]; then
+		cp -f "$_clean" "$_links"
+	fi
 	[ -s "$_links" ] || return 1
 	printf '%s' "$_links"
 }
 
+# Некоторые панели отдают подписку не списком ссылок, а файлом конфигурации
+# Clash (YAML). Для Mieru такой файл тоже подходит: в нём есть имя, адрес, порт,
+# логин и пароль узла. Превращаем такие узлы в привычные ссылки mierus://.
+clash_to_mierus() { # $1 = файл с YAML -> ссылки mierus:// (по одной на строку)
+	[ -f "$1" ] || return 1
+	grep -qi '^[[:space:]]*proxies:' "$1" 2>/dev/null || return 1
+	awk '
+	function flush() {
+		if (typ == "mieru" && srv != "" && usr != "" && pas != "") {
+			if (prt == "") prt = 8964
+			if (tr == "") tr = "TCP"
+			printf "mierus://%s:%s@%s?mtu=1400&multiplexing=MULTIPLEXING_MIDDLE&port=%s&protocol=%s\n", usr, pas, srv, prt, toupper(tr)
+		}
+		typ = ""; srv = ""; usr = ""; pas = ""; prt = ""; tr = ""
+	}
+	/^[[:space:]]*-[[:space:]]*name:/   { flush(); next }
+	/^[[:space:]]*type:/       { typ = $2; gsub(/"/, "", typ); next }
+	/^[[:space:]]*server:/     { srv = $2; gsub(/"/, "", srv); next }
+	/^[[:space:]]*port:/       { prt = $2; gsub(/"/, "", prt); next }
+	/^[[:space:]]*username:/   { usr = $2; gsub(/"/, "", usr); next }
+	/^[[:space:]]*password:/   { pas = $2; gsub(/"/, "", pas); next }
+	/^[[:space:]]*transport:/  { tr  = $2; gsub(/"/, "", tr);  next }
+	END { flush() }
+	' "$1" 2>/dev/null
+}
+
 # Обновить подписку: заново добавить все её узлы.
 # Печатает «добавлено N (ошибок M)»; старые узлы этой подписки удаляются.
-sub_update() { # $1 = имя секции подписки
+# Подписка может быть смешанной: в одном списке обычные ссылки (vless/ss/…),
+# ссылки Mieru (mierus://) и Naive (naive+https://). Такую подписку отдают
+# новые панели (например, «Naive + Mieru by RIXXX»), и раньше она не
+# разбиралась: каждая ветка принимала только «свои» ссылки.
+sub_update_mixed() { # $1 = имя секции подписки: узлы по типу каждой ссылки
 	_s="$1"
 	_links=$(sub_fetch "$_s" 2>&1)
 	if [ ! -f "$_links" ]; then
-		# sub_fetch печатает либо путь к файлу, либо причину
 		printf '%s' "${_links:-не удалось скачать подписку}"
 		return 1
+	fi
+	# подписка может отдать Clash-YAML: достаём из неё узлы Mieru
+	if ! grep -q '://' "$_links" 2>/dev/null; then
+		_y="$STATE_DIR/sub.$_s.yaml"
+		clash_to_mierus "$_links" > "$_y" 2>/dev/null
+		[ -s "$_y" ] && mv -f "$_y" "$_links" || rm -f "$_y"
 	fi
 	for _sec in $(server_sections); do
 		[ "$(uci -q get "$UCI_APP.$_sec.sub" 2>/dev/null)" = "$_s" ] && uci -q delete "$UCI_APP.$_sec"
 	done
 	uci -q commit "$UCI_APP" >/dev/null 2>&1
-	_added=0; _failed=0; _total=0; _unsup=0; _schemes=""
+	_added=0; _failed=0; _total=0
 	while IFS= read -r _ln; do
 		[ -n "$_ln" ] || continue
+		case "$_ln" in *'://'*) ;; *) continue ;; esac
 		_total=$((_total + 1))
 		case "$_ln" in
-			vless://*|ss://*|hysteria2://*|hy2://*|vmess://*|trojan://*|wireguard://*|wg://*) ;;
-			*)
-				_unsup=$((_unsup + 1))
-				_sc=${_ln%%://*}
-				case " $_schemes " in
-					*" $_sc "*) ;;
-					*) _schemes="$_schemes $_sc" ;;
-				esac
-				continue
-				;;
+			mierus://*|mieru://*)  _tag=$(mieru_add_from_link "$_ln" 2>&1) ;;
+			naive+*://*|naive://*) _tag=$(naive_add_from_link "$_ln" 2>&1) ;;
+			*)                     _tag=$(server_add_from_link "$_ln" 2>&1) ;;
 		esac
-		_tag=$(server_add_from_link "$_ln" 2>&1)
 		case "$_tag" in
 			*' '*) _failed=$((_failed + 1)) ;;
 			'')    _failed=$((_failed + 1)) ;;
 			*)
 				_sec=$(tag_to_section "$_tag")
-				if [ -z "$_sec" ]; then
-					_failed=$((_failed + 1))
+				if [ -n "$_sec" ]; then
+					uci -q set "$UCI_APP.$_sec.sub=$_s"
+					_added=$((_added + 1))
 				else
-					# такой же сервер уже может быть в списке — тогда дубль не нужен
-					_key=$(server_key "$_sec")
-					_dup=""
-					for _o in $(server_sections); do
-						[ "$_o" = "$_sec" ] && continue
-						[ "$(server_key "$_o")" = "$_key" ] && { _dup="$_o"; break; }
-					done
-					if [ -n "$_dup" ]; then
-						uci -q delete "$UCI_APP.$_sec"
-						_skipped=$((_skipped + 1))
-					else
-						_added=$((_added + 1))
-						uci -q set "$UCI_APP.$_sec.sub=$_s"
-					fi
+					_failed=$((_failed + 1))
 				fi
 				;;
 		esac
 	done < "$_links"
-	uci -q set "$UCI_APP.$_s.updated=$(date '+%Y-%m-%d %H:%M:%S')"
 	uci -q set "$UCI_APP.$_s.count=$_added"
+	uci -q set "$UCI_APP.$_s.updated=$(date '+%Y-%m-%d %H:%M:%S')"
 	uci -q commit "$UCI_APP" >/dev/null 2>&1
-	printf 'ссылок в подписке: %s, добавлено узлов: %s' "$_total" "$_added"
-	[ "$_failed" -gt 0 ] && printf ', не разобрал: %s' "$_failed"
-	[ "$_unsup" -gt 0 ] && printf ', не поддерживаю схемы:%s' "$_schemes"
-	[ "${_skipped:-0}" -gt 0 ] && printf ', уже есть таких: %s' "$_skipped"
+	printf 'узлов: %s' "$_added"
+	[ "$_failed" -gt 0 ] && printf ' (не разобрал ссылок: %s)' "$_failed"
 	return 0
+}
+
+sub_update() { # $1 = имя секции подписки
+	_s="$1"
+	# подписка Mieru собирается по своим правилам: там ссылки mierus://,
+	# а сервера получаются с протоколом mieru
+	if [ "$(uci -q get "$UCI_APP.$_s.proto" 2>/dev/null)" = mieru ]; then
+		mieru_sub_update "$_s"
+		return $?
+	fi
+	if [ "$(uci -q get "$UCI_APP.$_s.proto" 2>/dev/null)" = naive ]; then
+		naive_sub_update "$_s"
+		return $?
+	fi
+	# без явного протокола — универсальный разбор: в одной подписке могут быть
+	# и обычные ссылки, и Mieru, и Naive (так отдают новые панели)
+	sub_update_mixed "$_s"
+	return $?
 }
 
 # все подписки разом — для cron
@@ -5558,34 +5683,53 @@ awg_check() { # $1 = раздел сервера; печатает «<мс> мс
 	fi
 	_hs=$("$AWG_TOOL" show "$_if" latest-handshakes 2>/dev/null | awk 'NR==1 {print $2}')
 	case "$_hs" in ''|*[!0-9]*) _hs=0 ;; esac
-	# Сначала пингуем сам сервер внутри туннеля (обычно 10.0.0.1): это проверка
-	# именно туннеля, она не зависит от того, отвечает ли кто-то в интернете на
-	# ping. Раньше проверка сразу шла наружу (1.1.1.1), и если ICMP где-то
-	# фильтруется, рабочий сервер выглядел «нет ответа».
+	# Основная проверка — настоящий запрос через туннель, тем же тестовым
+	# адресом, что и у остальных протоколов. Раньше здесь был только ping до
+	# сервера внутри туннеля: цифра получалась в разы меньше, чем у других
+	# серверов, и не показывала, ходит ли трафик наружу вообще.
+	if command -v curl >/dev/null 2>&1; then
+		_url=$(url_test_url 2>/dev/null)
+		[ -n "$_url" ] || _url="http://www.gstatic.com/generate_204"
+		_res=$(curl --interface "$_if" -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 15 "$_url" 2>/dev/null)
+		_rc=${_res%% *}
+		_rt=${_res##* }
+		case "$_rc" in
+			''|000) ;;
+			*)
+				_ms=$(awk -v t="$_rt" 'BEGIN{printf "%.0f", t*1000}')
+				case "$_ms" in ''|*[!0-9]*) _ms="$_rt" ;; esac
+				printf '%s мс' "$_ms"
+				return 0
+				;;
+		esac
+	fi
+	# Запрос не прошёл — смотрим туннель по ping (диагностика для подсказки):
+	# пинг до сервера внутри туннеля не зависит от фильтрации ICMP в интернете.
 	_ms=""
 	_srvip=$(awg_server_ip "$_s")
 	if [ -n "$_srvip" ]; then
 		_ms=$(awg_ping_ms "$_if" "$_srvip")
 	fi
 	if [ -n "$_ms" ]; then
-		printf '%s мс' "$_ms"
-		return 0
+		AWG_REASON="запрос через туннель не проходит, но пинг до сервера внутри туннеля идёт ($_ms мс) — значит туннель поднят, а трафик наружу не ходит"
+		printf 'нет ответа'
+		return 1
 	fi
 	_ms=$(awg_ping_ms "$_if")
 	if [ -n "$_ms" ]; then
-		printf '%s мс' "$_ms"
-		return 0
+		AWG_REASON="запрос через туннель не проходит, хотя пинг наружу идёт ($_ms мс)"
+		printf 'нет ответа'
+		return 1
 	fi
 	if [ "$_hs" != 0 ]; then
 		_now=$(date +%s 2>/dev/null)
 		case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
 		_age=$((_now - _hs))
 		if [ "$_now" != 0 ] && [ "$_age" -ge 0 ] && [ "$_age" -le 180 ]; then
-			# туннель живой (рукопожатие свежее), но ping через него не проходит —
-			# значит ICMP где-то фильтруется (частая история у серверов Amnezia)
-			AWG_REASON="туннель работает: рукопожатие было $_age с назад, но ping через него не проходит (ICMP фильтруется)"
-			printf 'работает'
-			return 0
+			# рукопожатие свежее, но ни запрос, ни пинг через туннель не идут
+			AWG_REASON="рукопожатие с сервером свежее ($_age с назад), но ни запрос, ни пинг через туннель не проходят"
+			printf 'нет ответа'
+			return 1
 		fi
 		AWG_REASON="сервер отвечал $_age с назад, сейчас не отвечает"
 	else
@@ -5593,4 +5737,732 @@ awg_check() { # $1 = раздел сервера; печатает «<мс> мс
 	fi
 	printf 'нет ответа'
 	return 1
+}
+
+# --- Mieru (клиент на роутере) -----------------------------------------------
+# Mieru — прокси, который трудно распознать и «прощупать». Клиент mieru
+# поднимается на роутере и даёт локальный SOCKS5 — поэтому xray ходит через
+# него как через обычный сервер (в отличие от AmneziaWG, интерфейс не нужен).
+# У клиента один SOCKS-порт на профиль, поэтому на каждого такого сервера
+# панель запускает отдельный экземпляр со своей папкой конфига (HOME) и своими
+# локальными портами.
+MIERU_BIN="${XRAYPANEL_MIERU_BIN:-/usr/bin/mieru}"
+MIERU_DIR="${XRAYPANEL_MIERU_DIR:-$STATE_DIR/mieru}"
+
+mieru_bin_ok() { [ -x "$MIERU_BIN" ]; }
+
+mieru_servers() { # разделы серверов с протоколом mieru
+	for _s in $(server_sections); do
+		case "$(uci -q get "$UCI_APP.$_s.protocol" 2>/dev/null)" in
+			mieru|mi) printf '%s\n' "$_s" ;;
+		esac
+	done
+}
+
+mieru_sum() { # отпечаток настроек: изменились — перезапускаем клиента
+	{
+		for _f in address port mieru_user mieru_pass mieru_mtu mieru_mux mieru_proto \
+				mieru_port mieru_rpc; do
+			printf '%s=%s\n' "$_f" "$(uci -q get "$UCI_APP.$1.$_f" 2>/dev/null)"
+		done
+	} | md5sum 2>/dev/null | awk '{print $1}'
+}
+
+mieru_port_free() { # $1 = порт: свободен ли (с учётом уже выданных панелью)
+	_p="$1"
+	# порты, которые панель уже выдала своим mieru-серверам, тоже заняты
+	for _s in $(mieru_servers); do
+		for _f in mieru_port mieru_rpc; do
+			[ "$(uci -q get "$UCI_APP.$_s.$_f" 2>/dev/null)" = "$_p" ] && return 1
+		done
+	done
+	# занят, если порт уже кем-то слушается на этой машине
+	netstat -ln 2>/dev/null | grep -qE "[:.]$_p[[:space:]]" && return 1
+	return 0
+}
+
+mieru_alloc_port() { # $1 = с какого порта искать -> печатает свободный
+	_p="${1:-10830}"
+	_max=$((_p + 170))
+	while [ "$_p" -lt "$_max" ]; do
+		if mieru_port_free "$_p"; then printf '%s' "$_p"; return 0; fi
+		_p=$((_p + 1))
+	done
+	return 1
+}
+
+mieru_socks() { # $1 = раздел: локальный SOCKS-порт (выдаём при первом обращении)
+	_p=$(uci -q get "$UCI_APP.$1.mieru_port" 2>/dev/null)
+	case "$_p" in ''|*[!0-9]*) ;; *) printf '%s' "$_p"; return 0 ;; esac
+	_p=$(mieru_alloc_port 10830) || return 1
+	uci -q set "$UCI_APP.$1.mieru_port=$_p" >/dev/null 2>&1
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_p"
+}
+
+mieru_rpc() { # $1 = раздел: локальный порт управления клиентом
+	_p=$(uci -q get "$UCI_APP.$1.mieru_rpc" 2>/dev/null)
+	case "$_p" in ''|*[!0-9]*) ;; *) printf '%s' "$_p"; return 0 ;; esac
+	_p=$(mieru_alloc_port 11030) || return 1
+	uci -q set "$UCI_APP.$1.mieru_rpc=$_p" >/dev/null 2>&1
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_p"
+}
+
+mieru_mtu() { # $1 = раздел
+	_m=$(uci -q get "$UCI_APP.$1.mieru_mtu" 2>/dev/null)
+	case "$_m" in ''|*[!0-9]*) _m=1400 ;; esac
+	[ "$_m" -lt 1280 ] && _m=1400
+	[ "$_m" -gt 1500 ] && _m=1400
+	printf '%s' "$_m"
+}
+
+mieru_mux() { # $1 = раздел: уровень мультиплексирования
+	_x=$(uci -q get "$UCI_APP.$1.mieru_mux" 2>/dev/null)
+	case "$_x" in
+		MULTIPLEXING_OFF|MULTIPLEXING_LOW|MULTIPLEXING_MIDDLE|MULTIPLEXING_HIGH) ;;
+		*) _x=MULTIPLEXING_LOW ;;
+	esac
+	printf '%s' "$_x"
+}
+
+mieru_proto() { # $1 = раздел: TCP или UDP
+	_x=$(uci -q get "$UCI_APP.$1.mieru_proto" 2>/dev/null)
+	case "$_x" in UDP|udp) printf 'UDP' ;; *) printf 'TCP' ;; esac
+}
+
+mieru_conf_write() { # $1 = раздел -> печатает путь к конфигу клиента
+	_s="$1"
+	_dir="$MIERU_DIR/$_s"
+	mkdir -p "$_dir" 2>/dev/null
+	_f="$_dir/config.json"
+	_sp=$(mieru_socks "$_s")
+	_rp=$(mieru_rpc "$_s")
+	_port=$(uci -q get "$UCI_APP.$_s.port" 2>/dev/null)
+	case "$_port" in ''|*[!0-9]*) _port=8964 ;; esac
+	(
+		umask 077
+		printf '{\n'
+		printf '  "profiles": [\n    {\n'
+		printf '      "profileName": "default",\n'
+		printf '      "user": { "name": "%s", "password": "%s" },\n' \
+			"$(uci -q get "$UCI_APP.$_s.mieru_user" 2>/dev/null)" \
+			"$(uci -q get "$UCI_APP.$_s.mieru_pass" 2>/dev/null)"
+		printf '      "servers": [\n        {\n'
+		printf '          "ipAddress": "%s",\n' "$(uci -q get "$UCI_APP.$_s.address" 2>/dev/null)"
+		printf '          "portBindings": [ { "port": %s, "protocol": "%s" } ]\n' "$_port" "$(mieru_proto "$_s")"
+		printf '        }\n      ],\n'
+		printf '      "mtu": %s,\n' "$(mieru_mtu "$_s")"
+		printf '      "multiplexing": { "level": "%s" },\n' "$(mieru_mux "$_s")"
+		printf '      "handshakeMode": "HANDSHAKE_STANDARD"\n'
+		printf '    }\n  ],\n'
+		printf '  "activeProfile": "default",\n'
+		printf '  "rpcPort": %s,\n' "$_rp"
+		printf '  "socks5Port": %s,\n' "$_sp"
+		printf '  "loggingLevel": "INFO",\n'
+		printf '  "socks5ListenLAN": false\n'
+		printf '}\n'
+	) > "$_f" 2>/dev/null
+	printf '%s' "$_f"
+}
+
+mieru_socks_up() { # $1 = локальный порт: слушается ли
+	netstat -lnt 2>/dev/null | grep -q "127.0.0.1:$1 "
+}
+
+mieru_up() { # $1 = раздел сервера: поднять клиента
+	_s="$1"
+	mieru_bin_ok || { printf 'клиент mieru не установлен'; return 1; }
+	_dir="$MIERU_DIR/$_s"
+	_sp=$(mieru_socks "$_s") || { printf 'не нашёл свободный локальный порт'; return 1; }
+	_sum=$(mieru_sum "$_s")
+	if [ -n "$_sum" ] && [ "$(cat "$_dir/.sum" 2>/dev/null)" = "$_sum" ] && mieru_socks_up "$_sp"; then
+		return 0
+	fi
+	mieru_down "$_s"
+	_conf=$(mieru_conf_write "$_s")
+	# применяем конфиг и запускаем клиента в его собственной папке (HOME)
+	HOME="$_dir" "$MIERU_BIN" apply config "$_conf" >/dev/null 2>&1 || {
+		printf 'клиент не принял настройки (проверьте адрес, порт, логин и пароль)'
+		return 1
+	}
+	if command -v setsid >/dev/null 2>&1; then
+		setsid env HOME="$_dir" "$MIERU_BIN" start </dev/null >/dev/null 2>&1 &
+	else
+		env HOME="$_dir" "$MIERU_BIN" start </dev/null >/dev/null 2>&1 &
+	fi
+	_i=0
+	while [ "$_i" -lt 12 ]; do
+		mieru_socks_up "$_sp" && break
+		sleep 1
+		_i=$((_i + 1))
+	done
+	if ! mieru_socks_up "$_sp"; then
+		printf 'клиент не поднял локальный порт %s' "$_sp"
+		return 1
+	fi
+	[ -n "$_sum" ] && printf '%s' "$_sum" > "$_dir/.sum" 2>/dev/null
+	return 0
+}
+
+mieru_down() { # $1 = раздел сервера: остановить клиента
+	_s="$1"
+	_dir="$MIERU_DIR/$_s"
+	[ -x "$MIERU_BIN" ] && HOME="$_dir" "$MIERU_BIN" stop >/dev/null 2>&1
+	# на случай, если клиент остался процессом
+	for _p in /proc/[0-9]*; do
+		[ -r "$_p/cmdline" ] || continue
+		case "$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)" in
+			*mieru*start*) ;;
+			*) continue ;;
+		esac
+		# убеждаемся, что это именно наш экземпляр (по папке конфига в окружении)
+		if tr '\0' '\n' < "$_p/environ" 2>/dev/null | grep -q "^HOME=$_dir$"; then
+			kill "${_p#/proc/}" 2>/dev/null
+		fi
+	done
+	# папку клиента убираем целиком: в её конфиге лежит пароль, держать его
+	# после выключения или удаления сервера не нужно (при запуске создаём заново)
+	rm -rf "$_dir" 2>/dev/null
+	return 0
+}
+
+mieru_sync() { # привести всех клиентов mieru к текущим настройкам панели
+	_want=" "
+	for _s in $(mieru_servers); do
+		_want="$_want$_s "
+		if server_disabled "$_s"; then
+			[ -e "$MIERU_DIR/$_s/.sum" ] && mieru_down "$_s"
+			continue
+		fi
+		mieru_up "$_s"
+	done
+	# папки клиентов, которых больше нет в настройках, — убираем
+	for _d in "$MIERU_DIR"/*; do
+		[ -d "$_d" ] || continue
+		_s=$(basename "$_d")
+		case "$_want" in
+			*" $_s "*) ;;
+			*) mieru_down "$_s" ;;
+		esac
+	done
+	return 0
+}
+
+mieru_stop_all() {
+	for _d in "$MIERU_DIR"/*; do
+		[ -d "$_d" ] || continue
+		mieru_down "$(basename "$_d")"
+	done
+	return 0
+}
+
+# Ссылка для устройства: в Mieru «клиент» — это логин с паролем на сервере и
+# ссылка mierus://, которую устройство импортирует одной командой.
+link_urlenc() { # процентное кодирование логина/пароля для ссылки
+	printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/@/%40/g' -e 's/:/%3A/g' \
+		-e 's|/|%2F|g' -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/&/%26/g' -e 's/+/%2B/g'
+}
+
+# прежнее имя оставлено, чтобы ничего не сломалось в уже написанном коде
+mieru_urlenc() { link_urlenc "$1"; }
+
+mieru_link() { # $1 = раздел сервера -> ссылка mierus:// для устройства
+	_u=$(mieru_urlenc "$(uci -q get "$UCI_APP.$1.mieru_user" 2>/dev/null)")
+	_p=$(mieru_urlenc "$(uci -q get "$UCI_APP.$1.mieru_pass" 2>/dev/null)")
+	_a=$(uci -q get "$UCI_APP.$1.address" 2>/dev/null)
+	_pt=$(uci -q get "$UCI_APP.$1.port" 2>/dev/null)
+	case "$_pt" in ''|*[!0-9]*) _pt=8964 ;; esac
+	printf 'mierus://%s:%s@%s?handshake-mode=HANDSHAKE_STANDARD&mtu=%s&multiplexing=%s&port=%s&profile=default&protocol=%s' \
+		"$_u" "$_p" "$_a" "$(mieru_mtu "$1")" "$(mieru_mux "$1")" "$_pt" "$(mieru_proto "$1")"
+}
+
+# --- Mieru: разбор ссылки и подписка ------------------------------------------
+# Ссылка Mieru бывает двух видов: простая (mierus://логин:пароль@адрес?параметры)
+# и стандартная (mieru://<base64>) — её панель не разбирает, потому что внутри
+# protobuf. Простую ссылку выдаёт и панель Imugi, и сама утилита mieru
+# (mieru export config simple).
+mieru_urldec() { # осторожное декодирование: «+» не трогаем (в пароле это плюс)
+	printf '%s' "$1" | sed -e 's/%20/ /g' -e 's/%2B/+/g' -e 's/%40/@/g' -e 's/%3A/:/g' \
+		-e 's|%2F|/|g' -e 's/%23/#/g' -e 's/%3F/?/g' -e 's/%26/\&/g' -e 's/%25/%/g'
+}
+
+mieru_add_from_link() { # $1 = ссылка mierus://… -> тег созданного сервера
+	_raw=$(printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	case "$_raw" in
+		mierus://*) ;;
+		mieru://*)  printf 'стандартную ссылку mieru:// панель не разбирает (внутри сжатый профиль) — возьмите простую mierus://'; return 1 ;;
+		*)          printf 'это не ссылка Mieru'; return 1 ;;
+	esac
+	_body=${_raw#mierus://}
+	_query=""
+	case "$_body" in *'?'*) _query=${_body#*'?'}; _body=${_body%%'?'*} ;; esac
+	_auth=${_body%%@*}
+	_host=${_body#*@}
+	[ "$_auth" != "$_body" ] || { printf 'в ссылке нет логина и пароля'; return 1; }
+	_user=${_auth%%:*}
+	_pass=${_auth#*:}
+	_q() { _v=$(printf '%s' "$_query" | tr '&' '\n' | sed -n "s/^$1=//p" | head -1); [ -n "$_v" ] && mieru_urldec "$_v"; }
+	_port=$(_q port); case "$_port" in ''|*[!0-9]*) _port=8964 ;; esac
+	_mtu=$(_q mtu)
+	_mux=$(_q multiplexing)
+	_mp=$(_q protocol)
+	_user=$(mieru_urldec "$_user")
+	_pass=$(mieru_urldec "$_pass")
+	_host=$(mieru_urldec "$_host")
+	[ -n "$_host" ] || { printf 'в ссылке нет адреса сервера'; return 1; }
+	# имя сервера делаем по адресу: так несколько узлов не сливаются в один
+	_base=$(printf 'mieru-%s' "$_host" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{1,\}/-/g' -e 's/^[._-]*//' -e 's/[._-]*$//')
+	[ -n "$_base" ] || _base=mieru
+	_tag=$(unique_tag "$_base")
+	# если такой же узел уже есть (тот же адрес, порт и логин) — обновляем его
+	_sec=""
+	for _x in $(server_sections); do
+		if [ "$(uci -q get "$UCI_APP.$_x.protocol" 2>/dev/null)" = mieru ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.address" 2>/dev/null)" = "$_host" ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.port" 2>/dev/null)" = "$_port" ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.mieru_user" 2>/dev/null)" = "$_user" ]; then
+			_sec="$_x"; _tag=$(server_tag "$_x")
+			break
+		fi
+	done
+	if [ -z "$_sec" ]; then
+		_sec=$(ensure_section server "$(unique_section_name "$_tag")")
+		[ -n "$_sec" ] || { printf 'не удалось создать раздел сервера'; return 1; }
+		uci -q set "$UCI_APP.$_sec.tag=$_tag"
+	fi
+	uci -q set "$UCI_APP.$_sec.protocol=mieru"
+	uci -q set "$UCI_APP.$_sec.address=$_host"
+	uci -q set "$UCI_APP.$_sec.port=$_port"
+	uci -q set "$UCI_APP.$_sec.mieru_user=$_user"
+	uci -q set "$UCI_APP.$_sec.mieru_pass=$_pass"
+	case "$_mtu" in ''|*[!0-9]*) ;; *) uci -q set "$UCI_APP.$_sec.mieru_mtu=$_mtu" ;; esac
+	case "$_mux" in
+		MULTIPLEXING_OFF|MULTIPLEXING_LOW|MULTIPLEXING_MIDDLE|MULTIPLEXING_HIGH)
+			uci -q set "$UCI_APP.$_sec.mieru_mux=$_mux" ;;
+	esac
+	case "$_mp" in UDP|udp) uci -q set "$UCI_APP.$_sec.mieru_proto=UDP" ;; *) uci -q set "$UCI_APP.$_sec.mieru_proto=TCP" ;; esac
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_tag"
+}
+
+mieru_sub_update() { # $1 = секция подписки Mieru
+	_s="$1"
+	_out=$(sub_fetch "$_s" 2>&1)
+	if [ -f "$_out" ]; then
+		_links="$_out"
+	else
+		# sub_fetch мог отказаться от ответа: например, подписка отдала не
+		# список ссылок, а файл конфигурации Clash (YAML). Для Mieru такой файл
+		# годится — достаём узлы прямо из него.
+		_raw="$STATE_DIR/sub.$_s.raw"
+		_y="$STATE_DIR/sub.$_s.yaml"
+		clash_to_mierus "$_raw" > "$_y" 2>/dev/null
+		if [ -s "$_y" ]; then
+			_links="$STATE_DIR/sub.$_s.links"
+			mv -f "$_y" "$_links"
+		else
+			rm -f "$_y"
+			printf '%s' "${_out:-не удалось скачать подписку}"
+			return 1
+		fi
+	fi
+	# В ответе может не быть готовых ссылок mierus://. Тогда пробуем понять,
+	# что это за формат: Clash-YAML с узлом mieru или формат «mieru», для
+	# которого у таких панелей обычно есть вариант format=mierus.
+	if ! grep -q 'mierus://' "$_links" 2>/dev/null; then
+		_y="$STATE_DIR/sub.$_s.yaml"
+		clash_to_mierus "$_links" > "$_y" 2>/dev/null
+		if [ -s "$_y" ]; then
+			mv -f "$_y" "$_links"
+		else
+			rm -f "$_y"
+			_url=$(uci -q get "$UCI_APP.$_s.url" 2>/dev/null)
+			case "$_url" in
+				*'format=mierus'*) ;;
+				*'format='*) _try=$(printf '%s' "$_url" | sed 's/format=[^&]*/format=mierus/') ;;
+				*'?'*) _try="${_url}&format=mierus" ;;
+				'')    _try="" ;;
+				*)     _try="${_url}?format=mierus" ;;
+			esac
+			if [ -n "$_try" ]; then
+				_l2=$(sub_fetch "$_s" "$_try" 2>&1)
+				if [ -f "$_l2" ] && grep -q 'mierus://' "$_l2" 2>/dev/null && [ "$_l2" != "$_links" ]; then
+					cp -f "$_l2" "$_links"
+				fi
+			fi
+		fi
+	fi
+	# узлы этой подписки пересобираем заново, как и у обычных подписок
+	for _sec in $(server_sections); do
+		[ "$(uci -q get "$UCI_APP.$_sec.sub" 2>/dev/null)" = "$_s" ] && uci -q delete "$UCI_APP.$_sec"
+	done
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	_ok=0; _bad=0; _unsup=0
+	while IFS= read -r _ln; do
+		[ -n "$_ln" ] || continue
+		case "$_ln" in
+			mierus://*|mieru://*) ;;
+			*) _unsup=$((_unsup + 1)); continue ;;
+		esac
+		_tag=$(mieru_add_from_link "$_ln" 2>&1)
+		case "$_tag" in
+			*' '*) _bad=$((_bad + 1)) ;;
+			'')    _bad=$((_bad + 1)) ;;
+			*)
+				_sec=$(tag_to_section "$_tag")
+				if [ -n "$_sec" ]; then
+					uci -q set "$UCI_APP.$_sec.sub=$_s"
+					_ok=$((_ok + 1))
+				else
+					_bad=$((_bad + 1))
+				fi
+				;;
+		esac
+	done < "$_links"
+	# как и у обычных подписок, пишем число узлов и время обновления: иначе в
+	# списке подписок у Mieru всегда было «—» и «ещё не обновлялась»
+	uci -q set "$UCI_APP.$_s.count=$_ok"
+	uci -q set "$UCI_APP.$_s.updated=$(date '+%Y-%m-%d %H:%M:%S')"
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf 'узлов Mieru: %s (не понял ссылок: %s)' "$_ok" "$((_bad + _unsup))"
+}
+
+# --- NaiveProxy (клиент на роутере) -------------------------------------------
+# Официальный клиент naive — это Chrome-подобный TLS-клиент: он сам поднимает
+# локальный SOCKS, поэтому xray ходит через него как через обычный сервер.
+# Важно: сертификат сервера проверяется обязательно (отключить проверку в этом
+# клиенте нельзя), поэтому у сервера должен быть обычный сертификат
+# (Let's Encrypt), а в адресе лучше указывать домен, а не IP.
+NAIVE_BIN="${XRAYPANEL_NAIVE_BIN:-/usr/bin/naive}"
+NAIVE_DIR="${XRAYPANEL_NAIVE_DIR:-$STATE_DIR/naive}"
+
+# Официальные сборки naive с GitHub собраны под glibc и на роутерах OpenWrt
+# (там musl) не запускаются: файл на месте, а shell отвечает «not found».
+# Поэтому мало проверить наличие файла — надо проверить, что он запускается.
+naive_file_run_ok() { # $1 — путь к файлу клиента
+	[ -x "$1" ] || return 1
+	# ищем у файла загрузчик (interpreter) и проверяем, что он есть в системе
+	_ld=$(head -c 4096 "$1" 2>/dev/null | grep -a -o '/lib[^ ]*ld-[A-Za-z0-9._-]*' | head -1)
+	if [ -n "$_ld" ] && [ ! -e "$_ld" ]; then
+		return 1
+	fi
+	_out=$("$1" --version 2>&1 </dev/null)
+	_rc=$?
+	case "$_out" in *"not found"*) return 1 ;; esac
+	[ "$_rc" != 127 ] || return 1
+	return 0
+}
+
+naive_bin_ok() { [ -x "$NAIVE_BIN" ]; }
+
+naive_bin_run_ok() { # клиент установлен и действительно запускается
+	[ "$NAIVE_RUN_CACHE" = yes ] && return 0
+	[ "$NAIVE_RUN_CACHE" = no ] && return 1
+	if naive_file_run_ok "$NAIVE_BIN"; then
+		NAIVE_RUN_CACHE=yes
+		return 0
+	fi
+	NAIVE_RUN_CACHE=no
+	return 1
+}
+
+naive_servers() { # разделы серверов с протоколом naive
+	for _s in $(server_sections); do
+		case "$(uci -q get "$UCI_APP.$_s.protocol" 2>/dev/null)" in
+			naive|naiveproxy) printf '%s\n' "$_s" ;;
+		esac
+	done
+}
+
+naive_quic() { # $1 = раздел: 1 — транспорт QUIC (naive+quic), иначе TCP
+	[ "$(uci -q get "$UCI_APP.$1.naive_quic" 2>/dev/null)" = 1 ] && printf '1' || printf '0'
+}
+
+naive_sum() { # отпечаток настроек: изменились — перезапускаем клиента
+	{
+		for _f in address port naive_user naive_pass naive_quic naive_port; do
+			printf '%s=%s\n' "$_f" "$(uci -q get "$UCI_APP.$1.$_f" 2>/dev/null)"
+		done
+	} | md5sum 2>/dev/null | awk '{print $1}'
+}
+
+naive_port_free() { # $1 = порт: свободен ли (с учётом уже выданных панелью)
+	_p="$1"
+	for _s in $(naive_servers); do
+		[ "$(uci -q get "$UCI_APP.$_s.naive_port" 2>/dev/null)" = "$_p" ] && return 1
+	done
+	for _s in $(mieru_servers); do
+		for _f in mieru_port mieru_rpc; do
+			[ "$(uci -q get "$UCI_APP.$_s.$_f" 2>/dev/null)" = "$_p" ] && return 1
+		done
+	done
+	netstat -ln 2>/dev/null | grep -qE "[:.]$_p[[:space:]]" && return 1
+	return 0
+}
+
+naive_alloc_port() { # $1 = с какого порта искать -> печатает свободный
+	_p="${1:-10840}"
+	_max=$((_p + 150))
+	while [ "$_p" -lt "$_max" ]; do
+		if naive_port_free "$_p"; then printf '%s' "$_p"; return 0; fi
+		_p=$((_p + 1))
+	done
+	return 1
+}
+
+naive_socks() { # $1 = раздел: локальный SOCKS-порт клиента
+	_p=$(uci -q get "$UCI_APP.$1.naive_port" 2>/dev/null)
+	case "$_p" in ''|*[!0-9]*) ;; *) printf '%s' "$_p"; return 0 ;; esac
+	_p=$(naive_alloc_port 10840) || return 1
+	uci -q set "$UCI_APP.$1.naive_port=$_p" >/dev/null 2>&1
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_p"
+}
+
+naive_socks_up() { # $1 = локальный порт: слушается ли
+	netstat -lnt 2>/dev/null | grep -q "127.0.0.1:$1 "
+}
+
+naive_scheme() { # $1 = раздел: https (TCP) или quic
+	[ "$(naive_quic "$1")" = 1 ] && printf 'quic' || printf 'https'
+}
+
+naive_up() { # $1 = раздел сервера: поднять клиента
+	_s="$1"
+	if ! naive_bin_run_ok; then
+		if naive_bin_ok; then
+			printf 'клиент Naive установлен, но не запускается (сборка не подходит этой системе) — переустановите его на вкладке Naive'
+		else
+			printf 'клиент Naive не установлен'
+		fi
+		return 1
+	fi
+	_dir="$NAIVE_DIR/$_s"
+	mkdir -p "$_dir" 2>/dev/null
+	_sp=$(naive_socks "$_s") || { printf 'не нашёл свободный локальный порт'; return 1; }
+	_sum=$(naive_sum "$_s")
+	if [ -n "$_sum" ] && [ "$(cat "$_dir/.sum" 2>/dev/null)" = "$_sum" ] && naive_socks_up "$_sp"; then
+		return 0
+	fi
+	naive_down "$_s"
+	mkdir -p "$_dir" 2>/dev/null
+	_u=$(link_urlenc "$(uci -q get "$UCI_APP.$_s.naive_user" 2>/dev/null)")
+	_p=$(link_urlenc "$(uci -q get "$UCI_APP.$_s.naive_pass" 2>/dev/null)")
+	_a=$(uci -q get "$UCI_APP.$_s.address" 2>/dev/null)
+	_pt=$(uci -q get "$UCI_APP.$_s.port" 2>/dev/null)
+	case "$_pt" in ''|*[!0-9]*) _pt=443 ;; esac
+	_scheme=$(naive_scheme "$_s")
+	# адрес клиента: он сам поднимает SOCKS на 127.0.0.1
+	if command -v setsid >/dev/null 2>&1; then
+		setsid "$NAIVE_BIN" --listen="socks://127.0.0.1:$_sp" \
+			--proxy="$_scheme://$_u:$_p@$_a:$_pt" --log="$_dir/log.txt" \
+			</dev/null >/dev/null 2>&1 &
+	else
+		"$NAIVE_BIN" --listen="socks://127.0.0.1:$_sp" \
+			--proxy="$_scheme://$_u:$_p@$_a:$_pt" --log="$_dir/log.txt" \
+			</dev/null >/dev/null 2>&1 &
+	fi
+	_i=0
+	while [ "$_i" -lt 12 ]; do
+		naive_socks_up "$_sp" && break
+		sleep 1
+		_i=$((_i + 1))
+	done
+	if ! naive_socks_up "$_sp"; then
+		printf 'клиент не поднял локальный порт %s' "$_sp"
+		return 1
+	fi
+	[ -n "$_sum" ] && printf '%s' "$_sum" > "$_dir/.sum" 2>/dev/null
+	return 0
+}
+
+naive_down() { # $1 = раздел сервера: остановить клиента
+	_s="$1"
+	_dir="$NAIVE_DIR/$_s"
+	_sp=$(uci -q get "$UCI_APP.$_s.naive_port" 2>/dev/null)
+	for _p in /proc/[0-9]*; do
+		[ -r "$_p/cmdline" ] || continue
+		_cmd=$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)
+		case "$_cmd" in
+			*naive*--listen=*)
+				case "$_cmd" in
+					*"socks://127.0.0.1:$_sp "*) kill "${_p#/proc/}" 2>/dev/null ;;
+				esac
+				;;
+		esac
+	done
+	# папку убираем целиком: в журнале клиента могут быть данные подключения
+	rm -rf "$_dir" 2>/dev/null
+	return 0
+}
+
+naive_sync() { # привести всех клиентов Naive к текущим настройкам панели
+	_want=" "
+	for _s in $(naive_servers); do
+		_want="$_want$_s "
+		if server_disabled "$_s"; then
+			[ -e "$NAIVE_DIR/$_s/.sum" ] && naive_down "$_s"
+			continue
+		fi
+		naive_up "$_s"
+	done
+	for _d in "$NAIVE_DIR"/*; do
+		[ -d "$_d" ] || continue
+		_s=$(basename "$_d")
+		case "$_want" in
+			*" $_s "*) ;;
+			*) naive_down "$_s" ;;
+		esac
+	done
+	# Гасим «осиротевшие» клиенты: если сервер удалили из панели, локального
+	# порта в настройках уже нет, и остановка по порту его не находила —
+	# клиенты копились в памяти (у одного клиента naive это десятки мегабайт).
+	_wports=" "
+	for _s in $(naive_servers); do
+		_p=$(uci -q get "$UCI_APP.$_s.naive_port" 2>/dev/null)
+		[ -n "$_p" ] && _wports="$_wports$_p "
+	done
+	for _pp in /proc/[0-9]*; do
+		[ -r "$_pp/cmdline" ] || continue
+		_cmd=$(tr '\0' ' ' < "$_pp/cmdline" 2>/dev/null)
+		case "$_cmd" in
+			*naive*--listen=socks://127.0.0.1:*) ;;
+			*) continue ;;
+		esac
+		_p=$(printf '%s' "$_cmd" | sed -n 's/.*--listen=socks:\/\/127\.0\.0\.1:\([0-9]*\).*/\1/p')
+		[ -n "$_p" ] || continue
+		case "$_wports" in
+			*" $_p "*) ;;
+			*) kill "${_pp#/proc/}" 2>/dev/null ;;
+		esac
+	done
+	return 0
+}
+
+naive_stop_all() {
+	for _d in "$NAIVE_DIR"/*; do
+		[ -d "$_d" ] || continue
+		naive_down "$(basename "$_d")"
+	done
+	return 0
+}
+
+naive_add_from_link() { # $1 = ссылка naive+https://… или naive+quic://…
+	_raw=$(printf '%s' "$1" | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	# «Нативная HTTPS-схема» от некоторых панелей:
+	#   https://<base64(логин:пароль@адрес:порт)>?remarks=…
+	# — разбираем её тоже, иначе вставленная из такой панели ссылка не понимается.
+	case "$_raw" in
+		https://*|http://*)
+			_qm=0
+			case "$_raw" in naive+quic://*) _qm=1 ;; esac
+			_b="${_raw#*://}"; _b="${_b%%\?*}"; _b="${_b%%#*}"
+			_dec=$(printf '%s' "$_b" | b64d 2>/dev/null)
+			case "$_dec" in
+				*:*'@'*)
+					_raw="naive+https://$(printf '%s' "${_dec%%#*}" | tr -d ' ')"
+					[ "$_qm" = 1 ] && _raw=$(printf '%s' "$_raw" | sed 's|^naive+https://|naive+quic://|')
+					;;
+			esac
+			;;
+	esac
+	case "$_raw" in
+		naive+https://*) _qmode=0 ;;
+		naive+quic://*)  _qmode=1 ;;
+		naive://*)       printf 'это не ссылка подключения Naive — нужна вида naive+https://логин:пароль@адрес:порт'; return 1 ;;
+		*)               printf 'это не ссылка Naive'; return 1 ;;
+	esac
+	_body=${_raw#*://}
+	_frag=""
+	case "$_body" in *'#'*) _frag=${_body#*'#'}; _body=${_body%%'#'*} ;; esac
+	_query=""
+	case "$_body" in *'?'*) _query=${_body#*'?'}; _body=${_body%%'?'*} ;; esac
+	_auth=${_body%%@*}
+	_hp=${_body#*@}
+	[ "$_auth" != "$_body" ] || { printf 'в ссылке нет логина и пароля'; return 1; }
+	_user=$(mieru_urldec "${_auth%%:*}")
+	_pass=$(mieru_urldec "${_auth#*:}")
+	case "$_hp" in
+		\[*\]*) _host=$(printf '%s' "${_hp%%]*}" | sed 's/^\[//'); _port=$(printf '%s' "${_hp#*]}" | sed 's/^://') ;;
+		*:*)    _host=${_hp%:*}; _port=${_hp##*:} ;;
+		*)      _host=$_hp; _port=443 ;;
+	esac
+	_host=$(mieru_urldec "$_host")
+	[ -n "$_host" ] || { printf 'в ссылке нет адреса сервера'; return 1; }
+	case "$_port" in ''|*[!0-9]*) _port=443 ;; esac
+	_base=$(printf 'naive-%s' "$_host" | sed -e 's/[^A-Za-z0-9._-]/-/g' -e 's/-\{1,\}/-/g' -e 's/^[._-]*//' -e 's/[._-]*$//')
+	[ -n "$_base" ] || _base=naive
+	_tag=$(unique_tag "$_base")
+	_sec=""
+	for _x in $(server_sections); do
+		if [ "$(uci -q get "$UCI_APP.$_x.protocol" 2>/dev/null)" = naive ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.address" 2>/dev/null)" = "$_host" ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.port" 2>/dev/null)" = "$_port" ] && \
+				[ "$(uci -q get "$UCI_APP.$_x.naive_user" 2>/dev/null)" = "$_user" ]; then
+			_sec="$_x"; _tag=$(server_tag "$_x")
+			break
+		fi
+	done
+	if [ -z "$_sec" ]; then
+		_sec=$(ensure_section server "$(unique_section_name "$_tag")")
+		[ -n "$_sec" ] || { printf 'не удалось создать раздел сервера'; return 1; }
+		uci -q set "$UCI_APP.$_sec.tag=$_tag"
+	fi
+	uci -q set "$UCI_APP.$_sec.protocol=naive"
+	uci -q set "$UCI_APP.$_sec.address=$_host"
+	uci -q set "$UCI_APP.$_sec.port=$_port"
+	uci -q set "$UCI_APP.$_sec.naive_user=$_user"
+	uci -q set "$UCI_APP.$_sec.naive_pass=$_pass"
+	[ "$_qmode" = 1 ] && uci -q set "$UCI_APP.$_sec.naive_quic=1" || uci -q delete "$UCI_APP.$_sec.naive_quic"
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf '%s' "$_tag"
+}
+
+naive_sub_update() { # $1 = секция подписки Naive
+	_s="$1"
+	_links=$(sub_fetch "$_s" 2>&1)
+	if [ ! -f "$_links" ]; then
+		printf '%s' "${_links:-не удалось скачать подписку}"
+		return 1
+	fi
+	for _sec in $(server_sections); do
+		[ "$(uci -q get "$UCI_APP.$_sec.sub" 2>/dev/null)" = "$_s" ] && uci -q delete "$UCI_APP.$_sec"
+	done
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	_ok=0; _bad=0; _unsup=0
+	while IFS= read -r _ln; do
+		[ -n "$_ln" ] || continue
+		case "$_ln" in
+			naive+https://*|naive+quic://*) ;;
+			*) _unsup=$((_unsup + 1)); continue ;;
+		esac
+		_tag=$(naive_add_from_link "$_ln" 2>&1)
+		case "$_tag" in
+			*' '*) _bad=$((_bad + 1)) ;;
+			'')    _bad=$((_bad + 1)) ;;
+			*)
+				_sec=$(tag_to_section "$_tag")
+				if [ -n "$_sec" ]; then
+					uci -q set "$UCI_APP.$_sec.sub=$_s"
+					_ok=$((_ok + 1))
+				else
+					_bad=$((_bad + 1))
+				fi
+				;;
+		esac
+	done < "$_links"
+	uci -q set "$UCI_APP.$_s.count=$_ok"
+	uci -q set "$UCI_APP.$_s.updated=$(date '+%Y-%m-%d %H:%M:%S')"
+	uci -q commit "$UCI_APP" >/dev/null 2>&1
+	printf 'узлов Naive: %s (не понял ссылок: %s)' "$_ok" "$((_bad + _unsup))"
+}
+
+naive_link() { # $1 = раздел сервера -> ссылка для устройства (naive+https://…)
+	_u=$(link_urlenc "$(uci -q get "$UCI_APP.$1.naive_user" 2>/dev/null)")
+	_p=$(link_urlenc "$(uci -q get "$UCI_APP.$1.naive_pass" 2>/dev/null)")
+	_a=$(uci -q get "$UCI_APP.$1.address" 2>/dev/null)
+	_pt=$(uci -q get "$UCI_APP.$1.port" 2>/dev/null)
+	case "$_pt" in ''|*[!0-9]*) _pt=443 ;; esac
+	printf 'naive+%s://%s:%s@%s:%s' "$(naive_scheme "$1")" "$_u" "$_p" "$_a" "$_pt"
 }

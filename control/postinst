@@ -76,6 +76,20 @@ chmod 755 /usr/lib/xraypanel/awg.sh 2>/dev/null
 chmod 755 /etc/init.d/xraypanel-awg 2>/dev/null
 [ -x /etc/init.d/xraypanel-awg ] && /etc/init.d/xraypanel-awg enable >/dev/null 2>&1
 
+# Mieru: клиенты панели поднимаются этим автозапуском (клиент mieru ставится
+# отдельно кнопкой в панели; без него автозапуск просто ничего не делает)
+mkdir -p /etc/xraypanel/mieru 2>/dev/null
+chmod 755 /usr/lib/xraypanel/mieru.sh /usr/lib/xraypanel/mieru-install.sh 2>/dev/null
+chmod 755 /etc/init.d/xraypanel-mieru 2>/dev/null
+[ -x /etc/init.d/xraypanel-mieru ] && /etc/init.d/xraypanel-mieru enable >/dev/null 2>&1
+
+# NaiveProxy: клиенты панели поднимаются этим автозапуском (клиент naive
+# ставится кнопкой в панели; без него автозапуск просто ничего не делает)
+mkdir -p /etc/xraypanel/naive 2>/dev/null
+chmod 755 /usr/lib/xraypanel/naive.sh /usr/lib/xraypanel/naive-install.sh 2>/dev/null
+chmod 755 /etc/init.d/xraypanel-naive 2>/dev/null
+[ -x /etc/init.d/xraypanel-naive ] && /etc/init.d/xraypanel-naive enable >/dev/null 2>&1
+
 # подсказка с адресом панели в баннере при входе по SSH/консоли
 if [ -f /etc/banner ] && ! grep -q "cgi-bin/xraypanel" /etc/banner 2>/dev/null; then
 	printf '\n Панель Xray: http://<адрес роутера>/cgi-bin/xraypanel\n' >> /etc/banner 2>/dev/null

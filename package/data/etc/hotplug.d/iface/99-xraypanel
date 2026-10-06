@@ -26,6 +26,11 @@ if [ "$ACTION" = "ifup" ]; then
 			# интерфейсы AmneziaWG: если после переподключения провайдера они
 			# пропали — поднимаем заново (уже поднятые не трогаем)
 			awg_sync >/dev/null 2>&1
+			# клиенты Mieru: если после переподключения они остановились —
+			# поднимаем заново (работающие не перезапускаем)
+			mieru_sync >/dev/null 2>&1
+			# клиенты NaiveProxy — то же самое
+			naive_sync >/dev/null 2>&1
 			if [ "$(uci -q get xraypanel.settings.transparent 2>/dev/null)" = 1 ]; then
 				_i=0
 				while [ "$_i" -lt 10 ]; do

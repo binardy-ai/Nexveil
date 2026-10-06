@@ -173,7 +173,7 @@ act_save_server() {
 	_sec=$(ensure_section server "$_want")
 	[ -n "$_sec" ] || redirect servers "не удалось создать раздел сервера"
 	_oldtag=$(uci -q get "$UCI_APP.$_sec.tag" 2>/dev/null)
-	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_psk wg_allow_in wg_address wg_allowed wg_keepalive mtu network path hosthdr tls hy_obfs hy_obfs_pass awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5; do
+	for _f in tag protocol address port uuid flow sni publickey shortid fingerprint method password insecure wg_private wg_peer wg_psk wg_allow_in wg_address wg_allowed wg_keepalive mtu network path hosthdr tls hy_obfs hy_obfs_pass awg_jc awg_jmin awg_jmax awg_s1 awg_s2 awg_s3 awg_s4 awg_h1 awg_h2 awg_h3 awg_h4 awg_i1 awg_i2 awg_i3 awg_i4 awg_i5 mieru_user mieru_pass mieru_mtu mieru_mux mieru_proto naive_user naive_pass naive_quic; do
 		_v=$(param "$_f")
 		# тег приводим к безопасному виду: пробелы и посторонние символы ломают
 		# и конфиг xray, и саму панель (она разбирает списки тегов по пробелам)
@@ -218,6 +218,33 @@ act_save_server() {
 			bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
 			;;
 	esac
+	# Mieru: клиент тоже живёт на роутере — поднимаем его (или гасим, если
+	# сервер больше не Mieru) в фоне, чтобы не задерживать страницу
+	case "$(param protocol)" in
+		mieru|mi)
+			if mieru_bin_ok; then
+				bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+			else
+				_hint="$_hint Внимание: на роутере нет клиента Mieru — сервер сохранён, но в конфиг не попадёт, пока клиент не установлен."
+			fi
+			;;
+		*)
+			bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+			;;
+	esac
+	# NaiveProxy: клиент тоже живёт на роутере
+	case "$(param protocol)" in
+		naive|naiveproxy)
+			if naive_bin_run_ok; then
+				bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
+			else
+				_hint="$_hint Внимание: на роутере нет рабочего клиента NaiveProxy — сервер сохранён, но в конфиг не попадёт, пока клиент не установлен (вкладка «Naive»)."
+			fi
+			;;
+		*)
+			bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
+			;;
+	esac
 	[ -n "$_existed" ] && redirect servers "сервер сохранён. Осталось нажать «Применить конфиг» на странице «Статус».$_hint" \
 		|| redirect servers "сервер добавлен. Осталось нажать «Применить конфиг» на странице «Статус».$_hint"
 }
@@ -231,8 +258,19 @@ act_del_server() {
 	case "$(uci -q get "$UCI_APP.$_sec.protocol" 2>/dev/null)" in
 		awg|amneziawg) _awgif=$(awg_ifname "$_sec") ;;
 	esac
+	# Mieru: у сервера был свой клиент — гасим его после удаления
+	_mieru_was=""
+	case "$(uci -q get "$UCI_APP.$_sec.protocol" 2>/dev/null)" in
+		mieru|mi) _mieru_was=1 ;;
+	esac
+	_naive_was=""
+	case "$(uci -q get "$UCI_APP.$_sec.protocol" 2>/dev/null)" in
+		naive|naiveproxy) _naive_was=1 ;;
+	esac
 	[ -n "$_sec" ] && { ui_uci delete "$UCI_APP.$_sec"; uci commit "$UCI_APP" >/dev/null 2>&1; }
 	[ -n "$_awgif" ] && awg_if_stop "$_awgif"
+	[ -n "$_mieru_was" ] && bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+	[ -n "$_naive_was" ] && bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
 	[ -n "$_sec" ] && pending_note "удалён сервер «$_nt»"
 	redirect servers "сервер удалён"
 }
@@ -420,6 +458,8 @@ act_srv_toggle() { # выключить сервер, не удаляя его
 		ui_uci delete "$UCI_APP.$_sec.disabled"
 		uci commit "$UCI_APP" >/dev/null 2>&1
 		bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
+		bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+		bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
 		pending_note "включён сервер «$(server_tag "$_sec")»"
 		redirect servers "сервер включён. Осталось нажать «Применить конфиг»."
 	fi
@@ -430,6 +470,8 @@ act_srv_toggle() { # выключить сервер, не удаляя его
 	ui_uci set "$UCI_APP.$_sec.disabled=1"
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	bg_run ". '$LIB' >/dev/null 2>&1; awg_sync" "$STATE_DIR/awg.log"
+	bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+	bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
 	pending_note "выключен сервер «$(server_tag "$_sec")»"
 	redirect servers "сервер выключен: он остаётся в списке, но в конфиг больше не попадает. Осталось нажать «Применить конфиг»."
 }
@@ -437,8 +479,53 @@ act_srv_toggle() { # выключить сервер, не удаляя его
 act_awg_install() { # поставить клиент AmneziaWG (amneziawg-go + amneziawg-tools)
 	rm -f "$STATE_DIR/awg-install.log" "$STATE_DIR/awg-install.running" 2>/dev/null
 	bg_run "touch '$STATE_DIR/awg-install.running'; /usr/lib/xraypanel/awg-install.sh; rm -f '$STATE_DIR/awg-install.running'" "$STATE_DIR/awg-install.log"
-	respond_now servers "ставлю клиент AmneziaWG в фоне: сначала ищу готовые пакеты на роутере, потом беру набор с GitHub. Через минуту обновите страницу — результат будет видно под таблицей серверов (журнал /etc/xraypanel/awg-install.log)."
+	respond_now awg "ставлю клиент AmneziaWG в фоне: сначала ищу готовые пакеты на роутере, потом беру набор с GitHub. Через минуту обновите страницу — журнал установки здесь же, на вкладке AmneziaWG (файл /etc/xraypanel/awg-install.log)."
 	exit 0
+}
+
+act_mieru_install() { # поставить клиент Mieru
+	rm -f "$STATE_DIR/mieru-install.log" "$STATE_DIR/mieru-install.running" 2>/dev/null
+	bg_run "touch '$STATE_DIR/mieru-install.running'; /usr/lib/xraypanel/mieru-install.sh; rm -f '$STATE_DIR/mieru-install.running'" "$STATE_DIR/mieru-install.log"
+	respond_now mieru "ставлю клиент Mieru в фоне: сначала ищу готовый архив на роутере, потом беру сборку с GitHub. Через минуту обновите страницу — журнал установки здесь же, на вкладке Mieru (файл /etc/xraypanel/mieru-install.log)."
+	exit 0
+}
+
+act_mieru_import_link() { # добавить сервер Mieru из ссылки mierus://
+	_ln=$(param link)
+	[ -n "$_ln" ] || redirect mieru "вставьте ссылку Mieru (mierus://…)"
+	_tag=$(mieru_add_from_link "$_ln" 2>&1)
+	case "$_tag" in
+		*' '*) redirect mieru "не удалось добавить: $_tag" ;;
+		'')    redirect mieru "не удалось разобрать ссылку" ;;
+		*)
+			# клиента поднимаем сразу, чтобы сервер был готов к проверке
+			bg_run ". '$LIB' >/dev/null 2>&1; mieru_sync" "$STATE_DIR/mieru.log"
+			pending_note "добавлен сервер Mieru «$_tag»"
+			redirect mieru "сервер Mieru «$_tag» добавлен по ссылке. Проверьте его и нажмите «Применить конфиг»."
+			;;
+	esac
+}
+
+act_naive_install() { # поставить клиент NaiveProxy
+	rm -f "$STATE_DIR/naive-install.log" "$STATE_DIR/naive-install.running" 2>/dev/null
+	bg_run "touch '$STATE_DIR/naive-install.running'; /usr/lib/xraypanel/naive-install.sh; rm -f '$STATE_DIR/naive-install.running'" "$STATE_DIR/naive-install.log"
+	respond_now naive "ставлю клиент NaiveProxy в фоне: сначала ищу готовый файл на роутере, потом беру официальную сборку с GitHub. Через минуту обновите страницу — журнал установки здесь же, на вкладке Naive (файл /etc/xraypanel/naive-install.log)."
+	exit 0
+}
+
+act_naive_import_link() { # добавить сервер Naive из ссылки naive+https://…
+	_ln=$(param link)
+	[ -n "$_ln" ] || redirect naive "вставьте ссылку Naive (naive+https://…)"
+	_tag=$(naive_add_from_link "$_ln" 2>&1)
+	case "$_tag" in
+		*' '*) redirect naive "не удалось добавить: $_tag" ;;
+		'')    redirect naive "не удалось разобрать ссылку" ;;
+		*)
+			bg_run ". '$LIB' >/dev/null 2>&1; naive_sync" "$STATE_DIR/naive.log"
+			pending_note "добавлен сервер Naive «$_tag»"
+			redirect naive "сервер Naive «$_tag» добавлен по ссылке. Проверьте его и нажмите «Применить конфиг»."
+			;;
+	esac
 }
 
 act_bridge_toggle() { # выключить реверс-мост, не удаляя его
@@ -1223,22 +1310,32 @@ dns_try_repair() {
 act_sub_save() { # добавить подписку и сразу её обновить
 	_want=$(param sec | sed -e 's/[^A-Za-z0-9._-]/-/g')
 	_url=$(param url)
-	[ -n "$_url" ] || redirect servers "нужен адрес подписки"
+	_proto=$(param proto)
+	_back=$(param back); [ -n "$_back" ] || _back=servers
+	[ -n "$_url" ] || redirect "$_back" "нужен адрес подписки"
 	# Имя не подставляем жёстко: если поле пустое, ensure_section подберёт
 	# свободное имя (sub1, sub2 …). Иначе вторая подписка без имени попадала
 	# в тот же раздел «sub» и затирала первую.
 	_sec=$(ensure_section sub "$_want")
-	[ -n "$_sec" ] || redirect servers "не удалось создать раздел подписки"
+	[ -n "$_sec" ] || redirect "$_back" "не удалось создать раздел подписки"
 	ui_uci set "$UCI_APP.$_sec.url=$_url"
+	# подписка Mieru помечается, чтобы её узлы собирались по правилам Mieru
+	# и чтобы список подписок не путался с обычными
+	case "$_proto" in
+		mieru|mi) ui_uci set "$UCI_APP.$_sec.proto=mieru" ;;
+		naive|naiveproxy) ui_uci set "$UCI_APP.$_sec.proto=naive" ;;
+		*)        ui_uci delete "$UCI_APP.$_sec.proto" ;;
+	esac
 	_ua=$(param ua); [ -n "$_ua" ] && ui_uci set "$UCI_APP.$_sec.ua=$_ua"
 	uci commit "$UCI_APP" >/dev/null 2>&1
 	_out=$(sub_update "$_sec" 2>&1)
 	pending_note "добавлена подписка «$_sec» и обновлены её узлы"
-	redirect servers "подписка $_sec: $_out. Осталось нажать «Применить конфиг» на странице «Статус»."
+	redirect "$_back" "подписка $_sec: $_out. Осталось нажать «Применить конфиг» на странице «Статус»."
 }
 
 act_sub_update() {
 	_s=$(param sec)
+	_back=$(param back); [ -n "$_back" ] || _back=servers
 	# тихое обновление со страницы: ответ в виде JSON, страница не перезагружается
 	if [ "$(param ajax)" = 1 ]; then
 		printf 'Content-Type: application/json; charset=utf-8\n\n'
@@ -1254,20 +1351,21 @@ act_sub_update() {
 			"$(jesc "$(uci -q get "$UCI_APP.$_s.updated" 2>/dev/null)")"
 		exit 0
 	fi
-	[ -n "$_s" ] || redirect servers "не выбрана подписка"
+	[ -n "$_s" ] || redirect "$_back" "не выбрана подписка"
 	_out=$(sub_update "$_s" 2>&1)
-	redirect servers "подписка $_s обновлена: $_out. Осталось нажать «Применить конфиг»."
+	redirect "$_back" "подписка $_s обновлена: $_out. Осталось нажать «Применить конфиг»."
 }
 
 act_sub_del() {
 	_s=$(param sec)
-	[ -n "$_s" ] || redirect servers "не выбрана подписка"
+	_back=$(param back); [ -n "$_back" ] || _back=servers
+	[ -n "$_s" ] || redirect "$_back" "не выбрана подписка"
 	for _sec in $(server_sections); do
 		[ "$(uci -q get "$UCI_APP.$_sec.sub" 2>/dev/null)" = "$_s" ] && ui_uci delete "$UCI_APP.$_sec"
 	done
 	ui_uci delete "$UCI_APP.$_s"
 	uci commit "$UCI_APP" >/dev/null 2>&1
-	redirect servers "подписка $_s и её серверы удалены"
+	redirect "$_back" "подписка $_s и её серверы удалены"
 }
 
 # --- проверка DNS: куда реально уходит запрос --------------------------------
@@ -1699,6 +1797,10 @@ case "$ACTION" in
 	del_server)  act_del_server ;;
 	srv_toggle)  act_srv_toggle ;;
 	awg_install) act_awg_install ;;
+	mieru_install) act_mieru_install ;;
+	mieru_import_link) act_mieru_import_link ;;
+	naive_install) act_naive_install ;;
+	naive_import_link) act_naive_import_link ;;
 	save_bridge) act_save_bridge ;;
 	del_bridge)  act_del_bridge ;;
 	bridge_toggle) act_bridge_toggle ;;
@@ -1898,6 +2000,9 @@ EOF
 <nav>
 <a href="$SCRIPT_NAME?page=" class="$([ "$(param page)" = "" ] && echo on)">$T_status_2</a>
 <a href="$SCRIPT_NAME?page=servers" class="$([ "$(param page)" = servers ] && echo on)">$T_servers</a>
+<a href="$SCRIPT_NAME?page=awg" class="$([ "$(param page)" = awg ] && echo on)">AmneziaWG</a>
+<a href="$SCRIPT_NAME?page=mieru" class="$([ "$(param page)" = mieru ] && echo on)">Mieru</a>
+<a href="$SCRIPT_NAME?page=naive" class="$([ "$(param page)" = naive ] && echo on)">Naive</a>
 <a href="$SCRIPT_NAME?page=bridges" class="$([ "$(param page)" = bridges ] && echo on)">$T_reverse</a>
 <a href="$SCRIPT_NAME?page=transparent" class="$([ "$(param page)" = transparent ] && echo on)">$T_proxy</a>
 <a href="$SCRIPT_NAME?page=rules" class="$([ "$(param page)" = rules ] && echo on)">$T_routes</a>
@@ -2671,6 +2776,40 @@ window.__toast = function (msg, bad) {
 	}
 	window.__serversRefresh = refreshServers;
 
+	/* Вкладка «Mieru»: её таблица перерисовывается отдельно — после проверки,
+	   обновления подписки и добавления сервера, без перезагрузки страницы. */
+	var mieruBox = document.getElementById('mieru-box');
+	function refreshMieru() {
+		if (!mieruBox) return Promise.resolve();
+		return fetch('?page=mieru_table&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (h) { mieruBox.innerHTML = h; })
+			.catch(function () {});
+	}
+	window.__mieruRefresh = refreshMieru;
+
+	/* Вкладка «Naive»: своя таблица и своя перерисовка */
+	var naiveBox = document.getElementById('naive-box');
+	function refreshNaive() {
+		if (!naiveBox) return Promise.resolve();
+		return fetch('?page=naive_table&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (h) { naiveBox.innerHTML = h; })
+			.catch(function () {});
+	}
+	window.__naiveRefresh = refreshNaive;
+
+	/* Вкладка «AmneziaWG»: своя таблица серверов — перерисовываем отдельно */
+	var awgBox = document.getElementById('awg-box');
+	function refreshAwg() {
+		if (!awgBox) return Promise.resolve();
+		return fetch('?page=awg_table&t=' + Date.now(), { cache: 'no-store' })
+			.then(function (r) { return r.text(); })
+			.then(function (h) { awgBox.innerHTML = h; })
+			.catch(function () {});
+	}
+	window.__awgRefresh = refreshAwg;
+
 	/* Список подписок — отдельный блок: после добавления и удаления подписки
 	   он тоже должен обновиться, иначе строка появляется только после F5. */
 	var subsBox = document.getElementById('subs-box');
@@ -2729,6 +2868,11 @@ window.__toast = function (msg, bad) {
 		var t = setInterval(function () {
 			n++;
 			refreshServers();
+			/* таблицы вкладок клиентов обновляем тоже: иначе после «проверить
+			   все» на вкладке AmneziaWG/Mieru/Naive результат не появлялся */
+			if (window.__awgRefresh) window.__awgRefresh();
+			if (window.__mieruRefresh) window.__mieruRefresh();
+			if (window.__naiveRefresh) window.__naiveRefresh();
 			jobs().then(function (d) {
 				if (d.urltest !== 'running') {
 					clearInterval(t);
@@ -2782,7 +2926,10 @@ window.__toast = function (msg, bad) {
 			.then(function (d) {
 				if (cnt && d.count) cnt.textContent = d.count;
 				if (upd) upd.textContent = d.updated ? d.updated : __t("T_just_now");
-				return refreshServers();
+				/* обновляем обе таблицы — серверов и Mieru: какая есть на странице */
+				refreshServers();
+				refreshMieru();
+				return refreshNaive();
 			})
 			.catch(function () {})
 			.then(function () { b.disabled = false; b.textContent = old; });
@@ -4166,16 +4313,35 @@ servers_table_html() {
 # Таблица подписок отдельным куском: страница «Серверы» обновляет её без
 # перезагрузки — раньше после добавления или удаления подписки серверы
 # появлялись и исчезали, а строка подписки оставалась прежней до F5.
-subs_table_html() {
-	_subs=$(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=sub$/\1/p')
+subs_table_html() { # $1 = фильтр: mieru|naive — только такие подписки, иначе все
+	_kind="${1:-}"
+	_subs=""
+	for _sx in $(uci -q show "$UCI_APP" 2>/dev/null | sed -n 's/^xraypanel\.\([^.]*\)=sub$/\1/p'); do
+		_px=$(uci -q get "$UCI_APP.$_sx.proto" 2>/dev/null)
+		# по умолчанию показываем все подписки: раньше подписки Mieru были
+		# видны только на своей вкладке, а на «Серверах» пропадали совсем
+		case "$_kind" in
+			mieru) [ "$_px" = mieru ] && _subs="$_subs $_sx" ;;
+			naive) [ "$_px" = naive ] && _subs="$_subs $_sx" ;;
+			*)     _subs="$_subs $_sx" ;;
+		esac
+	done
+	_subs=$(printf '%s' "$_subs")
 	[ -n "$_subs" ] || return 0
 	printf '<table class="responsive"><tr><th>'"$T_name"'</th><th>'"$T_address"'</th><th>'"$T_nodes"'</th><th>'"$T_updated"'</th><th></th></tr>'
 	for _s in $_subs; do
 		_su=$(uci -q get "$UCI_APP.$_s.url")
 		_sc=$(uci -q get "$UCI_APP.$_s.count")
 		_st=$(uci -q get "$UCI_APP.$_s.updated")
-		printf '<tr data-sub="%s"><td data-label="'"$T_name"'">%s</td><td data-label="'"$T_address"'" class="url"><span class="muted">%s</span></td><td data-label="'"$T_nodes"'"><span class="sub-count">%s</span></td><td data-label="'"$T_updated"'"><span class="sub-updated">%s</span></td><td data-label="'"$T_actions"'"><button type="button" class="btn sec sub-update" data-sub="%s">'"$T_update"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' \
-			"$(h "$_s")" "$(h "$_s")" "$(h "$_su")" "$(h "${_sc:-—}")" "$(h "${_st:-ещё не обновлялась}")" "$(h "$_s")" "$(h "$_s")"
+		# пометка протокола: чтобы подписки Mieru и Naive не путались с обычными
+		_px=$(uci -q get "$UCI_APP.$_s.proto" 2>/dev/null)
+		_mark=""
+		case "$_px" in
+			mieru) _mark=' <span class="muted">(Mieru)</span>' ;;
+			naive) _mark=' <span class="muted">(Naive)</span>' ;;
+		esac
+		printf '<tr data-sub="%s"><td data-label="'"$T_name"'">%s%s</td><td data-label="'"$T_address"'" class="url"><span class="muted">%s</span></td><td data-label="'"$T_nodes"'"><span class="sub-count">%s</span></td><td data-label="'"$T_updated"'"><span class="sub-updated">%s</span></td><td data-label="'"$T_actions"'"><button type="button" class="btn sec sub-update" data-sub="%s">'"$T_update"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="sub_del"><input type="hidden" name="sec" value="%s"><input type="hidden" name="back" value="servers"><button class="btn danger">'"$T_delete"'</button></form></td></tr>\n' \
+			"$(h "$_s")" "$(h "$_s")" "$_mark" "$(h "$_su")" "$(h "${_sc:-—}")" "$(h "${_st:-ещё не обновлялась}")" "$(h "$_s")" "$(h "$_s")"
 	done
 	printf '</table>'
 }
@@ -4191,9 +4357,259 @@ subs_card_html() {
 	printf '<form method="post"><input type="hidden" name="action" value="sub_save"><div class="row">'
 	printf '<div><label>'"$T_subscription_name_latin_lett"'</label><input name="sec" placeholder="sub1"></div>'
 	printf '<div><label>'"$T_subscription_address"'</label><input name="url" placeholder="https://..."></div>'
+	# протокол подписки: обычные узлы (vless/ss/hysteria) или ссылки Mieru/Naive
+	printf '<div><label>%s</label><select name="proto"><option value="">%s</option><option value="mieru">только Mieru</option><option value="naive">только Naive</option></select></div>' \
+		"$T_sub_proto" "$T_sub_proto_normal"
 	printf '<div><label>'"$T_user_agent_some_servers_requ"'</label><input name="ua" value="v2rayNG/1.8.5"></div>'
 	printf '</div><p><button>'"$T_add_and_update"'</button></p></form>'
 	printf '<p class="muted">'"$T_some_subscriptions_give_node"'</p></div>\n'
+}
+
+# --- вкладка Mieru -----------------------------------------------------------
+# --- вкладка NaiveProxy ------------------------------------------------------
+# Клиент naive — официальный, Chrome-подобный: он сам даёт локальный SOCKS, и
+# xray ходит через него как через обычный сервер. Сертификат сервера клиент
+# проверяет обязательно, поэтому у сервера должен быть настоящий сертификат.
+naive_table_html() {
+	if [ -z "$(naive_servers)" ]; then
+		printf '<p class="muted">%s</p>' "$T_naive_none_yet"
+		return 0
+	fi
+	printf '<table class="responsive"><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr>' \
+		"$T_name" "$T_address" "$T_check_proxy" "$T_mieru_link_col" "$T_actions"
+	for _s in $(naive_servers); do
+		_tag=$(server_tag "$_s")
+		_nm=$(server_label "$_s")
+		_off=""
+		server_disabled "$_s" && _off=' <span class="bad">выключен</span>'
+		_res=$(url_test_saved "$_tag")
+		case "$_res" in
+			*'('*')'*) _res=$(printf '%s' "$_res" | sed 's/ *(.*//') ;;
+		esac
+		case "$_res" in
+			*"нет ответа"*) _rcls='clip bad' ;;
+			'')             _rcls='clip muted'; _res="не проверялся" ;;
+			*)              _rcls='clip ok' ;;
+		esac
+		_reason=$(url_test_saved_reason "$_tag")
+		_rtitle="$(h "$_res")"
+		[ -n "$_reason" ] && _rtitle="$(h "$_reason")"
+		_addrhp="$(h "$(uci -q get "$UCI_APP.$_s.address")") : $(h "$(uci -q get "$UCI_APP.$_s.port")")"
+		_link=$(naive_link "$_s")
+		_ticon="⏸"; _tcls="stop"
+		[ "$(uci -q get "$UCI_APP.$_s.disabled")" = 1 ] && { _ticon="▶"; _tcls="start"; }
+		printf '<tr data-tag="%s"><td data-label="%s"><span class="clip" title="%s">%s</span>%s</td><td data-label="%s"><span class="clip" title="%s">%s</span></td><td data-label="%s"><span class="%s" title="%s">%s</span></td><td data-label="%s"><details><summary>%s</summary><input type="text" readonly value="%s" onclick="this.select()" style="width:100%%"></details></td><td data-label="%s"><a class="btn sec" href="%s?page=server&amp;sec=%s&amp;proto=naive">%s</a> <button type="button" class="btn sec urltest-one" data-tag="%s">%s</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">%s</button></form></td></tr>\n' \
+			"$(h "$_tag")" "$(h "$T_name")" "$(h "$_nm")" "$(h "$_nm")" "$_off" \
+			"$T_address" "$_addrhp" "$_addrhp" \
+			"$(h "$T_check_2")" "$_rcls" "$_rtitle" "$(h "$_res")" \
+			"$(h "$T_mieru_link_col")" "$T_mieru_show_link" "$(h "$_link")" \
+			"$(h "$T_actions")" "$SCRIPT_NAME" "$(h "$_s")" "$T_edit_2" "$(h "$_tag")" "$T_check" \
+			"$(h "$_s")" "$_tcls" "$T_the_button_disables_a_server" "$_ticon" "$(h "$_s")" "$T_delete"
+	done
+	printf '</table>'
+}
+
+# --- вкладки клиентов: AmneziaWG, Mieru, Naive -------------------------------
+# Три протокола работают через свои системные пакеты (amneziawg-go, mieru,
+# naiveproxy). На каждой вкладке одна и та же карточка: состояние клиента,
+# постоянная кнопка установки, пояснение что это системные пакеты и те же шаги
+# командами — на случай, если установка кнопкой не получилась.
+client_manual_cmds() { # $1 = awg|mieru|naive
+	case "$1" in
+		awg)
+			if [ "$(pkg_mgr)" = apk ]; then
+				printf 'apk update && apk add amneziawg-go amneziawg-tools kmod-tun'
+			else
+				printf 'opkg update && opkg install amneziawg-go amneziawg-tools kmod-tun'
+			fi
+			;;
+		mieru)
+			printf 'wget -O /tmp/mieru.tar.gz https://github.com/enfein/mieru/releases/download/v3.38.0/mieru_3.38.0_linux_amd64.tar.gz\ncd /tmp && tar xzf mieru.tar.gz && cp mieru /usr/bin/mieru && chmod 755 /usr/bin/mieru\n# для другой архитектуры замените amd64 на arm64 или armv7'
+			;;
+		naive)
+			if [ "$(pkg_mgr)" = apk ]; then
+				printf 'apk update && apk add naiveproxy'
+			else
+				printf 'opkg update && opkg install naiveproxy'
+			fi
+			;;
+	esac
+}
+
+client_install_block() { # $1 = awg|mieru|naive
+	case "$1" in
+		awg)
+			_act=awg_install; _need="$T_awg_need"; _btn="$T_awg_install_btn"
+			_hint="$T_awg_install_hint"; _logf="$STATE_DIR/awg-install.log"; _runf="$STATE_DIR/awg-install.running"
+			_runtxt="$T_awg_install_running"; _logtxt="$T_awg_install_log"
+			if awg_bin_ok; then _ready=1; else _ready=0; fi
+			;;
+		mieru)
+			_act=mieru_install; _need="$T_mieru_need"; _btn="$T_mieru_install_btn"
+			_hint="$T_mieru_install_hint"; _logf="$STATE_DIR/mieru-install.log"; _runf="$STATE_DIR/mieru-install.running"
+			_runtxt="$T_mieru_install_running"; _logtxt="$T_mieru_install_log"
+			if mieru_bin_ok; then _ready=1; else _ready=0; fi
+			;;
+		*)
+			_act=naive_install; _need="$T_naive_need"; _btn="$T_naive_install_btn"
+			_hint="$T_naive_install_hint"; _logf="$STATE_DIR/naive-install.log"; _runf="$STATE_DIR/naive-install.running"
+			_runtxt="$T_naive_install_running"; _logtxt="$T_naive_install_log"
+			if naive_bin_run_ok; then _ready=1; else _ready=0; fi
+			;;
+	esac
+	if [ "$_ready" = 1 ]; then
+		printf '<p class="ok">%s</p>' "$T_client_ready"
+	else
+		printf '<p class="bad">%s</p>' "$T_client_not_ready"
+	fi
+	printf '<p class="muted">%s</p>' "$_need"
+	printf '<p class="muted">%s</p>' "$T_pkg_install_note"
+	printf '<form method="post"><input type="hidden" name="action" value="%s"><button class="btn sec">%s</button></form>' "$_act" "$_btn"
+	printf '<p class="muted">%s</p>' "$_hint"
+	[ -f "$_runf" ] && printf '<p class="muted">%s</p>' "$_runtxt"
+	if [ -f "$_logf" ]; then
+		printf '<details class="pick"><summary>%s</summary><pre>%s</pre></details>\n' \
+			"$_logtxt" "$(tail -n 15 "$_logf" | h_in)"
+	fi
+	printf '<details class="pick"><summary>%s</summary><pre id="cmd-%s">%s</pre><p><button type="button" class="btn sec" data-cmd="cmd-%s">%s</button></p></details>\n' \
+		"$T_manual_cmds" "$1" "$(client_manual_cmds "$1" | h_in)" "$1" "$T_manual_copy"
+	# копирование команд: один общий обработчик на страницу
+	printf '%s\n' '<script>(function(){if(window.__cmdCopy)return;window.__cmdCopy=1;document.addEventListener("click",function(e){var b=e.target.closest?e.target.closest("[data-cmd]"):null;if(!b)return;var t=document.getElementById(b.getAttribute("data-cmd"));if(!t)return;var v=t.textContent;function done(){var w=b.textContent;b.textContent="'"$T_manual_copied"'";setTimeout(function(){b.textContent=w},900)}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(done,function(){});return}var a=document.createElement("textarea");a.value=v;a.style.position="fixed";a.style.left="-1000px";document.body.appendChild(a);a.select();try{document.execCommand("copy")}catch(x){}document.body.removeChild(a);done()})})()</script>'
+}
+
+# таблица серверов AmneziaWG — как у Mieru и Naive, только без столбца со ссылкой
+awg_table_html() {
+	_srv=""
+	for _s in $(awg_servers); do _srv="$_srv $_s"; done
+	if [ -z "$(printf '%s' "$_srv" | tr -d ' ')" ]; then
+		printf '<p class="muted">%s</p>' "$T_awg_none_yet"
+		return 0
+	fi
+	printf '<table class="responsive"><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr>' \
+		"$T_name" "$T_address" "$T_check_proxy" "$T_actions"
+	for _s in $(awg_servers); do
+		_tag=$(server_tag "$_s")
+		_nm=$(server_label "$_s")
+		_off=""
+		server_disabled "$_s" && _off=' <span class="bad">выключен</span>'
+		_res=$(url_test_saved "$_tag")
+		case "$_res" in
+			*'('*')'*) _res=$(printf '%s' "$_res" | sed 's/ *(.*//') ;;
+		esac
+		case "$_res" in
+			*"нет ответа"*) _rcls='clip bad' ;;
+			'')             _rcls='clip muted'; _res="не проверялся" ;;
+			*)              _rcls='clip ok' ;;
+		esac
+		_reason=$(url_test_saved_reason "$_tag")
+		_rtitle="$(h "$_res")"
+		[ -n "$_reason" ] && _rtitle="$(h "$_reason")"
+		_addrhp="$(h "$(uci -q get "$UCI_APP.$_s.address")") : $(h "$(uci -q get "$UCI_APP.$_s.port")")"
+		_ticon="⏸"; _tcls="stop"
+		[ "$(uci -q get "$UCI_APP.$_s.disabled")" = 1 ] && { _ticon="▶"; _tcls="start"; }
+		printf '<tr data-tag="%s"><td data-label="%s"><span class="clip" title="%s">%s</span>%s</td><td data-label="%s"><span class="clip" title="%s">%s</span></td><td data-label="%s"><span class="%s" title="%s">%s</span></td><td data-label="%s"><a class="btn sec" href="%s?page=server&amp;sec=%s&amp;proto=amneziawg">%s</a> <button type="button" class="btn sec urltest-one" data-tag="%s">%s</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">%s</button></form></td></tr>\n' \
+			"$(h "$_tag")" "$(h "$T_name")" "$(h "$_nm")" "$(h "$_nm")" "$_off" \
+			"$T_address" "$_addrhp" "$_addrhp" \
+			"$(h "$T_check_2")" "$_rcls" "$_rtitle" "$(h "$_res")" \
+			"$(h "$T_actions")" "$SCRIPT_NAME" "$(h "$_s")" "$T_edit_2" "$(h "$_tag")" "$T_check" \
+			"$(h "$_s")" "$_tcls" "$T_the_button_disables_a_server" "$_ticon" "$(h "$_s")" "$T_delete"
+	done
+	printf '</table>'
+}
+
+page_awg() {
+	printf '<div class="card"><h2>AmneziaWG</h2>'
+	printf '<details class="pick"><summary>%s</summary><p class="muted">%s</p></details>' \
+		"$T_awg_how_spoiler" "$T_awg_how_it_works"
+	client_install_block awg
+	printf '</div>'
+	printf '<div id="awg-box">'
+	awg_table_html
+	printf '</div>'
+	printf '<p><a class="btn sec" href="%s?page=server&amp;proto=amneziawg">%s</a> <button type="button" class="btn sec urltest-all">%s</button> ' "$SCRIPT_NAME" "$T_awg_add" "$T_check_all"
+	apply_form awg
+	printf '</p>'
+	printf '<p class="muted">%s</p>\n' "$T_the_button_disables_a_server"
+}
+
+page_naive() {
+	printf '<div class="card"><h2>NaiveProxy</h2>'
+	printf '<details class="pick"><summary>%s</summary><p class="muted">%s</p></details>' "$T_naive_how_spoiler" "$T_naive_how"
+	client_install_block naive
+	printf '<div id="naive-box">'
+	naive_table_html
+	printf '</div>'
+	printf '<p><a class="btn sec" href="%s?page=server&amp;proto=naive">%s</a> <button type="button" class="btn sec urltest-all">%s</button> ' "$SCRIPT_NAME" "$T_naive_add" "$T_check_all"
+	apply_form naive
+	printf '</p>'
+	printf '<p class="muted">%s</p>' "$T_naive_link_hint"
+	printf '</div>\n'
+}
+
+# --- вкладка Mieru -----------------------------------------------------------
+
+# --- вкладка Mieru -----------------------------------------------------------
+# У Mieru «клиент» — это не отдельный ключ, как у AmneziaWG, а пара логин/пароль
+# на сервере плюс ссылка mierus://, которую устройство импортирует. Поэтому в
+# этой вкладке у каждого сервера видно и проверку, и готовую ссылку.
+mieru_table_html() {
+	_srv=""
+	for _s in $(mieru_servers); do _srv="$_srv $_s"; done
+	if [ -z "$(printf '%s' "$_srv" | tr -d ' ')" ]; then
+		printf '<p class="muted">%s</p>' "$T_mieru_none_yet"
+		return 0
+	fi
+	printf '<table class="responsive"><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr>' \
+		"$T_name" "$T_address" "$T_check_proxy" "$T_mieru_link_col" "$T_actions"
+	for _s in $(mieru_servers); do
+		_tag=$(server_tag "$_s")
+		_nm=$(server_label "$_s")
+		_off=""
+		if server_disabled "$_s"; then
+			_off=' <span class="bad">выключен</span>'
+		fi
+		_res=$(url_test_saved "$_tag")
+		case "$_res" in
+			*'('*')'*)
+				_res=$(printf '%s' "$_res" | sed 's/ *(.*//')
+				;;
+		esac
+		case "$_res" in
+			*"нет ответа"*) _rcls='clip bad' ;;
+			'')             _rcls='clip muted'; _res="не проверялся" ;;
+			*)                 _rcls='clip ok' ;;
+		esac
+		_reason=$(url_test_saved_reason "$_tag")
+		_rtitle="$(h "$_res")"
+		[ -n "$_reason" ] && _rtitle="$(h "$_reason")"
+		_addrhp="$(h "$(uci -q get "$UCI_APP.$_s.address")") : $(h "$(uci -q get "$UCI_APP.$_s.port")")"
+		_link=$(mieru_link "$_s")
+		_ticon="⏸"; _tcls="stop"
+		[ "$(uci -q get "$UCI_APP.$_s.disabled")" = 1 ] && { _ticon="▶"; _tcls="start"; }
+		printf '<tr data-tag="%s"><td data-label="%s"><span class="clip" title="%s">%s</span>%s</td><td data-label="%s"><span class="clip" title="%s">%s</span></td><td data-label="%s"><span class="%s" title="%s">%s</span></td><td data-label="%s"><details><summary>%s</summary><input type="text" readonly value="%s" onclick="this.select()" style="width:100%%"></details></td><td data-label="%s"><a class="btn sec" href="%s?page=server&amp;sec=%s&amp;proto=mieru">%s</a> <button type="button" class="btn sec urltest-one" data-tag="%s">%s</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="srv_toggle"><input type="hidden" name="sec" value="%s"><button class="btn %s" title="%s">%s</button></form> <form method="post" style="display:inline"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">%s</button></form></td></tr>\n' \
+			"$(h "$_tag")" "$(h "$T_name")" "$(h "$_nm")" "$(h "$_nm")" "$_off" \
+			"$T_address" "$_addrhp" "$_addrhp" \
+			"$(h "$T_check_2")" "$_rcls" "$_rtitle" "$(h "$_res")" \
+			"$(h "$T_mieru_link_col")" "$T_mieru_show_link" "$(h "$_link")" \
+			"$(h "$T_actions")" "$SCRIPT_NAME" "$(h "$_s")" "$T_edit_2" "$(h "$_tag")" "$T_check" \
+			"$(h "$_s")" "$_tcls" "$T_the_button_disables_a_server" "$_ticon" "$(h "$_s")" "$T_delete"
+	done
+	printf '</table>'
+}
+
+page_mieru() {
+	printf '<div class="card"><h2>Mieru</h2>'
+	# пояснения и инструкция — под спойлером, чтобы список серверов был сверху
+	printf '<details class="pick"><summary>%s</summary><p class="muted">%s</p></details>' "$T_mieru_how_spoiler" "$T_mieru_tab_how"
+	client_install_block mieru
+	printf '<div id="mieru-box">'
+	mieru_table_html
+	printf '</div>'
+	printf '<p><a class="btn sec" href="%s?page=server&amp;proto=mieru">%s</a> <button type="button" class="btn sec urltest-all">%s</button> ' "$SCRIPT_NAME" "$T_mieru_add" "$T_check_all"
+	apply_form mieru
+	printf '</p>'
+	printf '<p class="muted">%s</p>' "$T_mieru_link_hint"
+	printf '</div>\n'
 }
 
 page_servers() {
@@ -4204,23 +4620,15 @@ page_servers() {
 EOF
 	servers_table_html
 	printf '</div>\n'
-	# AmneziaWG-серверы не могут работать без клиента на роутере: предупреждаем
-	# прямо на странице, иначе сервер молча не попадёт в конфиг
+	# AmneziaWG-серверы не могут работать без клиента на роутере: коротко
+	# предупреждаем и отправляем на вкладку AmneziaWG (там кнопка установки,
+	# пояснения и журнал — всё про клиент живёт только там)
 	if ! awg_bin_ok; then
 		if [ -n "$(awg_servers)" ]; then
-			printf '<p class="bad">%s</p>\n' "$T_awg_client_missing"
+			printf '<p class="bad">%s <a href="%s?page=awg">AmneziaWG</a></p>\n' "$T_awg_client_missing" "$SCRIPT_NAME"
 		else
-			printf '<p class="muted">%s</p>\n' "$T_awg_client_missing"
+			printf '<p class="muted">%s <a href="%s?page=awg">AmneziaWG</a></p>\n' "$T_awg_client_missing" "$SCRIPT_NAME"
 		fi
-		printf '<div><form method="post" style="display:inline"><input type="hidden" name="action" value="awg_install"><button class="btn sec">%s</button></form></div>\n' "$T_awg_install_btn"
-		printf '<p class="muted">%s</p>\n' "$T_awg_install_hint"
-	fi
-	# ход и итог установки клиента показываем всегда, когда журнал есть: иначе
-	# после удачной установки результат нигде не увидеть
-	[ -f "$STATE_DIR/awg-install.running" ] && printf '<p class="muted">%s</p>\n' "$T_awg_install_running"
-	if [ -f "$STATE_DIR/awg-install.log" ]; then
-		printf '<details class="pick"><summary>%s</summary><pre>%s</pre></details>\n' \
-			"$T_awg_install_log" "$(tail -n 20 "$STATE_DIR/awg-install.log" | h_in)"
 	fi
 	printf '<p><button type="button" class="btn sec urltest-all">'"$T_check_all"'</button> <button type="button" class="btn sec ping-all">'"$T_measure_ping"'</button> <form method="post" style="display:inline"><input type="hidden" name="action" value="dedup"><button class="btn sec">'"$T_remove_duplicates"'</button></form> <a class="btn sec" href="%s?page=server">'"$T_add_a_server_manually"'</a> ' "$SCRIPT_NAME"
 	apply_form servers
@@ -4231,20 +4639,15 @@ EOF
 	printf '<p class="muted">'"$T_the_ping_column_is_filled_by"'</p>\n'
 	# подписки: список узлов по ссылке
 	subs_card_html
-	cat <<EOF
-<div class="card"><h2>$T_add_from_link</h2>
-<form method="post"><input type="hidden" name="action" value="import_link">
-<label>$T_vless_link_reality</label>
-<input name="link" placeholder="$T_vless_uuid_server_443_securi">
-<p><button>$T_add_server_from_link</button></p></form>
-<p class="muted">$T_the_link_gives_the_address_p</p></div>
-EOF
 }
 
 page_server() {
 	_sec=$(param sec)
 	_t=$(uci -q get "$UCI_APP.$_sec.tag")
 	_pr=$(uci -q get "$UCI_APP.$_sec.protocol")
+	# протокол можно задать ссылкой (например, со вкладки Mieru открываем
+	# форму с уже выбранным Mieru) — но только когда это новый сервер
+	[ -n "$_sec" ] || [ -n "$_pr" ] || _pr=$(param proto)
 	[ -n "$_pr" ] || _pr=vless
 	_a=$(uci -q get "$UCI_APP.$_sec.address")
 	_p=$(uci -q get "$UCI_APP.$_sec.port")
@@ -4267,7 +4670,20 @@ page_server() {
 	printf '<div class="row">'
 	[ -z "$_sec" ] && printf '<div><label>'"$T_section_name_latin_letters_o"'</label><input name="sec" placeholder="de1"></div>'
 	# протокол выхода: от него зависит, какие поля нужны
-	printf '<div><label>'"$T_protocol"'</label><select name="protocol" id="proto">'
+	# если протокол задан ссылкой (например, «добавить сервер» с вкладки Mieru),
+	# выбор протокола не показываем — он уже выбран, и менять его тут незачем
+	_forced=$(param proto)
+	case "$_forced" in
+		mieru|mi) _forced=mieru ;;
+		naive|naiveproxy) _forced=naive ;;
+		''|vless|ss|hysteria|vmess|trojan|wireguard|amneziawg) ;;
+		*) _forced="" ;;
+	esac
+	if [ -n "$_forced" ]; then
+		printf '<div><label>'"$T_protocol"'</label><select name="protocol" id="proto" style="display:none">'
+	else
+		printf '<div><label>'"$T_protocol"'</label><select name="protocol" id="proto">'
+	fi
 	printf '<option value="vless" %s>VLESS + Reality</option>' "$([ "$_pr" = vless ] && echo selected)"
 	printf '<option value="ss" %s>Shadowsocks</option>' "$([ "$_pr" = ss ] && echo selected)"
 	printf '<option value="hysteria" %s>Hysteria 2</option>' "$([ "$_pr" = hysteria ] && echo selected)"
@@ -4275,7 +4691,14 @@ page_server() {
 	printf '<option value="trojan" %s>Trojan</option>' "$([ "$_pr" = trojan ] && echo selected)"
 	printf '<option value="wireguard" %s>WireGuard</option>' "$([ "$_pr" = wireguard ] && echo selected)"
 	printf '<option value="amneziawg" %s>AmneziaWG</option>' "$([ "$_pr" = amneziawg ] && echo selected)"
+	printf '<option value="mieru" %s>Mieru</option>' "$([ "$_pr" = mieru ] && echo selected)"
+	printf '<option value="naive" %s>NaiveProxy</option>' "$([ "$_pr" = naive ] && echo selected)"
 	printf '</select></div>'
+	[ -n "$_forced" ] && printf '<p class="muted">%s %s</p>' "$T_protocol" "$(printf '%s' "$_forced" | tr 'a-z' 'A-Z')"
+	# Вставка ссылки на сервер: живёт здесь, в форме создания, — как вставка
+	# .conf у AmneziaWG. Разбираем ссылку браузером и заполняем поля формы.
+	printf '<div class="f-common"><label>%s</label><textarea id="link-paste" rows="3" placeholder="%s"></textarea><p><button type="button" class="btn sec" id="link-paste-btn">%s</button> <span id="link-paste-msg" class="muted"></span></p><p class="muted">%s</p></div>' \
+		"$T_link_paste_label" "$T_link_paste_ph" "$T_link_paste_btn" "$T_link_paste_hint"
 	# Поля показываются в зависимости от протокола (переключает скрипт ниже).
 	# «f-common» — общие для всех (тег, адрес, порт): раньше они были помечены
 	# как «только для VLESS» и у остальных протоколов пропадали, поэтому сервер
@@ -4354,12 +4777,74 @@ page_server() {
 		"$([ "$(uci -q get "$UCI_APP.$_sec.wg_allow_in")" = 1 ] && echo selected)" "$T_yes"
 	printf '<p class="f-awg muted">%s</p>' "$T_awg_allow_in_hint"
 	printf '<p class="f-awg muted">%s</p>' "$T_awg_how_it_works"
+	# Mieru: у него нет ключей — только адрес, порт, логин и пароль. Клиент
+	# mieru поднимается на роутере и даёт локальный SOCKS, поэтому xray ходит
+	# через него как через обычный сервер.
+	printf '<div class="f-mieru"><label>'"$T_mieru_user"'</label><input name="mieru_user" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.mieru_user")")"
+	printf '<div class="f-mieru"><label>'"$T_mieru_pass"'</label><input name="mieru_pass" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.mieru_pass")")"
+	printf '<div class="f-mieru"><label>'"$T_mieru_mtu"'</label><input name="mieru_mtu" value="%s" placeholder="1400"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.mieru_mtu")")"
+	printf '<div class="f-mieru"><label>'"$T_mieru_mux"'</label><select name="mieru_mux">'
+	for _mx in MULTIPLEXING_OFF MULTIPLEXING_LOW MULTIPLEXING_MIDDLE MULTIPLEXING_HIGH; do
+		printf '<option value="%s" %s>%s</option>' "$_mx" \
+			"$([ "$(uci -q get "$UCI_APP.$_sec.mieru_mux")" = "$_mx" ] && echo selected)" "${_mx#MULTIPLEXING_}"
+	done
+	printf '</select></div>'
+	printf '<div class="f-mieru"><label>'"$T_mieru_proto"'</label><select name="mieru_proto">'
+	printf '<option value="TCP" %s>TCP</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.mieru_proto")" != UDP ] && echo selected)"
+	printf '<option value="UDP" %s>UDP</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.mieru_proto")" = UDP ] && echo selected)"
+	printf '</select></div>'
+	printf '<p class="f-mieru muted">%s</p>' "$T_mieru_how"
+	# NaiveProxy: только логин и пароль — остальное в общих полях (адрес, порт).
+	# Сертификат сервера клиент проверяет сам, поэтому в адресе лучше домен.
+	printf '<div class="f-naive"><label>'"$T_naive_user"'</label><input name="naive_user" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.naive_user")")"
+	printf '<div class="f-naive"><label>'"$T_naive_pass"'</label><input name="naive_pass" value="%s"></div>' "$(h "$(uci -q get "$UCI_APP.$_sec.naive_pass")")"
+	printf '<div class="f-naive"><label>'"$T_naive_transport"'</label><select name="naive_quic">'
+	printf '<option value="0" %s>TCP (naive+https)</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.naive_quic")" != 1 ] && echo selected)"
+	printf '<option value="1" %s>QUIC (naive+quic)</option>' "$([ "$(uci -q get "$UCI_APP.$_sec.naive_quic")" = 1 ] && echo selected)"
+	printf '</select></div>'
+	printf '<p class="f-naive muted">%s</p>' "$T_naive_how_form"
 	printf '</div><p><button>'"$T_save"'</button></p></form>'
 	# показываем только поля выбранного протокола
-	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"amneziawg":["f-awg"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-awg,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
+	printf '<script>(function(){var s=document.getElementById("proto");if(!s)return;function u(){var v=s.value;var show={"vless":["f-vless"],"ss":["f-ss"],"hysteria":["f-hysteria"],"wireguard":["f-wg"],"amneziawg":["f-awg"],"mieru":["f-mieru"],"naive":["f-naive"],"vmess":["f-vmess"],"trojan":["f-trojan"]}[v]||[];document.querySelectorAll(".f-common,.f-vless,.f-ss,.f-hysteria,.f-wg,.f-awg,.f-mieru,.f-naive,.f-vmess,.f-trojan").forEach(function(e){var cl=e.className;var on=cl.indexOf("f-common")>=0;show.forEach(function(c){if(cl.indexOf(c)>=0)on=true});e.style.display=on?"":"none"});}s.addEventListener("change",u);u()})()</script>\n'
 	# Вставка готового конфига AmneziaWG: разбираем текст на стороне браузера и
 	# заполняем поля формы. Так не приходится переносить значения вручную, а
 	# панель принимает обычную форму (многострочный текст ей бы только мешал).
+	_linkjs='<script>(function(){var b=document.getElementById("link-paste-btn");if(!b)return;
+function set(n,v){v=(v==null?"":String(v));if(!v)return 0;var e=document.getElementsByName(n)[0];if(!e)return 0;e.value=v;return 1}
+function proto(p){var s=document.getElementById("proto");if(!s)return;for(var i=0;i<s.options.length;i++){if(s.options[i].value===p){s.value=p;if(s.dispatchEvent){var ev;try{ev=new Event("change")}catch(e){ev=document.createEvent("HTMLEvents");ev.initEvent("change",true,false)}s.dispatchEvent(ev)}return}}}
+function b64(s){try{s=String(s).replace(/-/g,"+").replace(/_/g,"/");while(s.length%4)s+="=";return decodeURIComponent(escape(atob(s)))}catch(e){return ""}}
+function qs(u){u=String(u).split("#")[0];var o={},i=u.indexOf("?");if(i<0)return o;u.slice(i+1).split("&").forEach(function(p){var j=p.indexOf("=");if(j<0)return;var k=decodeURIComponent(p.slice(0,j)).toLowerCase();if(k)o[k]=decodeURIComponent(p.slice(j+1))});return o}
+function hp(v){var p=v.lastIndexOf(":");if(p<0)return[v,""];return[v.slice(0,p),v.slice(p+1)]}
+function ui(s){var p=s.indexOf(":");if(p<0)return[decodeURIComponent(s),""];return[decodeURIComponent(s.slice(0,p)),decodeURIComponent(s.slice(p+1))]}
+b.addEventListener("click",function(){
+var t=((document.getElementById("link-paste")||{}).value||"").replace(/^\s+|\s+$/g,"");if(!t)return;
+var got=0,o={},c="",at=0,hpp=["",""],u=["",""];
+if(/^https?:\/\//i.test(t)){var m0=document.getElementById("link-paste-msg");if(m0)m0.textContent="'"$T_link_paste_is_url"'";return;}
+try{
+if(t.indexOf("vless://")===0){o=qs(t);c=t.slice(8).split("#")[0];at=c.indexOf("@");u=[c.slice(0,at),""];hpp=hp(c.slice(at+1).split("?")[0]);
+got+=set("uuid",u[0]);got+=set("address",hpp[0]);got+=set("port",hpp[1]);got+=set("flow",o.flow);got+=set("sni",o.sni);
+got+=set("publickey",o.pbk);got+=set("shortid",o.sid);got+=set("fingerprint",o.fp);got+=set("network",o.type);got+=set("path",o.path);got+=set("hosthdr",o.host);proto("vless");}
+else if(t.indexOf("ss://")===0){c=t.slice(5).split("#")[0];at=c.indexOf("@");
+if(at>0){var lf=decodeURIComponent(c.slice(0,at));if(lf.indexOf(":")<0)lf=b64(c.slice(0,at));u=ui(lf);hpp=hp(c.slice(at+1).split("?")[0]);}
+else{var full=b64(c);if(full){at=full.indexOf("@");if(at>0){u=ui(full.slice(0,at));hpp=hp(full.slice(at+1));}}}
+got+=set("method",u[0]);got+=set("password",u[1]);got+=set("address",hpp[0]);got+=set("port",hpp[1]);proto("ss");}
+else if(t.indexOf("hysteria2://")===0||t.indexOf("hy2://")===0||t.indexOf("hysteria://")===0){o=qs(t);c=t.slice(t.indexOf("://")+3).split("#")[0];at=c.indexOf("@");u=ui(c.slice(0,at));hpp=hp(c.slice(at+1).split("?")[0]);
+got+=set("password",u[0]);got+=set("address",hpp[0]);got+=set("port",hpp[1]);got+=set("sni",o.sni);if(o.obfs)got+=set("hy_obfs",o.obfs);got+=set("hy_obfs_pass",o["obfs-password"]);proto("hysteria");}
+else if(t.indexOf("trojan://")===0){o=qs(t);c=t.slice(9).split("#")[0];at=c.indexOf("@");u=ui(c.slice(0,at));hpp=hp(c.slice(at+1).split("?")[0]);
+got+=set("password",u[0]);got+=set("address",hpp[0]);got+=set("port",hpp[1]);got+=set("sni",o.sni);proto("trojan");}
+else if(t.indexOf("vmess://")===0){var js=b64(t.slice(8));var d=js?JSON.parse(js):{};
+got+=set("uuid",d.id);got+=set("address",d.add);got+=set("port",d.port);got+=set("network",d.net);got+=set("path",d.path);got+=set("hosthdr",d.host);got+=set("sni",d.sni||d.host);
+if(d.tls&&d.tls!=="none"){var ts=document.getElementsByName("tls")[0];if(ts){ts.value="1";got++}}proto("vmess");}
+else if(t.indexOf("mierus://")===0||t.indexOf("mieru://")===0){o=qs(t);c=t.slice(t.indexOf("://")+3);at=c.indexOf("@");u=ui(c.slice(0,at));hpp=hp(c.slice(at+1).split("?")[0]);
+got+=set("mieru_user",u[0]);got+=set("mieru_pass",u[1]);got+=set("address",hpp[0]);got+=set("port",o.port||hpp[1]);got+=set("mieru_mtu",o.mtu);
+if(o.multiplexing){var mx=String(o.multiplexing).toUpperCase();if(mx.indexOf("MULTIPLEXING_")!==0)mx="MULTIPLEXING_"+mx;var ms=document.getElementsByName("mieru_mux")[0];if(ms){ms.value=mx;got++}}
+if(o.protocol){var ps=document.getElementsByName("mieru_proto")[0];if(ps){ps.value=String(o.protocol).toUpperCase();got++}}proto("mieru");}
+else if(t.indexOf("naive+https://")===0||t.indexOf("naive+quic://")===0||t.indexOf("naive://")===0){var quic=t.indexOf("naive+quic://")===0;c=t.slice(t.indexOf("://")+3);at=c.indexOf("@");u=ui(c.slice(0,at));hpp=hp(c.slice(at+1).split("?")[0]);
+got+=set("naive_user",u[0]);got+=set("naive_pass",u[1]);got+=set("address",hpp[0]);got+=set("port",hpp[1]);var nq=document.getElementsByName("naive_quic")[0];if(nq){nq.value=quic?"1":"0";got++}proto("naive");}
+}catch(e){}
+var msg=document.getElementById("link-paste-msg");if(msg)msg.textContent=got?("'"$T_link_paste_ok"' "+got):"'"$T_link_paste_none"'";
+});})()</script>'
+	printf '%s\n' "$_linkjs"
 	_awgjs='<script>(function(){var b=document.getElementById("awg-paste-btn");if(!b)return;var map={privatekey:"wg_private",address:"wg_address",mtu:"mtu",jc:"awg_jc",jmin:"awg_jmin",jmax:"awg_jmax",s1:"awg_s1",s2:"awg_s2",s3:"awg_s3",s4:"awg_s4",h1:"awg_h1",h2:"awg_h2",h3:"awg_h3",h4:"awg_h4",i1:"awg_i1",i2:"awg_i2",i3:"awg_i3",i4:"awg_i4",i5:"awg_i5",publickey:"wg_peer",presharedkey:"wg_psk",allowedips:"wg_allowed"};function set(n,v){var e=document.getElementsByName(n)[0];if(!e)return 0;e.value=v;return 1}b.addEventListener("click",function(){var t=(document.getElementById("awg-paste")||{value:""}).value||"";var got=0;t.split("\n").forEach(function(l){l=l.replace(/\r/g,"");var m=l.match(/^\s*([A-Za-z0-9]+)\s*=\s*(.+?)\s*$/);if(!m)return;var k=m[1].toLowerCase();var v=m[2].replace(/,\s+/g,",");if(k==="endpoint"){var p=v.lastIndexOf(":");if(p>0){got+=set("address",v.slice(0,p));got+=set("port",v.slice(p+1))}return}if(map[k])got+=set(map[k],v)});var msg=document.getElementById("awg-paste-msg");if(msg)msg.textContent=got?("'"$T_awg_paste_ok"' "+got):"'"$T_awg_paste_none"'"})})()</script>'
 	printf '%s\n' "$_awgjs"
 	[ -n "$_sec" ] && printf '<form method="post"><input type="hidden" name="action" value="del_server"><input type="hidden" name="sec" value="%s"><button class="btn danger">'"$T_delete_server"'</button></form>' "$(h "$_sec")"
@@ -6216,6 +6701,27 @@ if [ "$(param page)" = servers_table ]; then
 	exit 0
 fi
 
+# таблица серверов Mieru отдельным куском: вкладка «Mieru» обновляет её сама
+if [ "$(param page)" = mieru_table ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n\n'
+	mieru_table_html
+	exit 0
+fi
+
+# таблица серверов NaiveProxy отдельным куском
+if [ "$(param page)" = naive_table ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n\n'
+	naive_table_html
+	exit 0
+fi
+
+# таблица серверов AmneziaWG отдельным куском: вкладка «AmneziaWG» обновляет её сама
+if [ "$(param page)" = awg_table ]; then
+	printf 'Content-Type: text/html; charset=utf-8\n\n'
+	awg_table_html
+	exit 0
+fi
+
 # таблица подписок отдельным куском: страница «Серверы» обновляет список
 # подписок без перезагрузки (добавление, удаление, обновление)
 if [ "$(param page)" = subs_table ]; then
@@ -6260,6 +6766,9 @@ fi
 page_header
 case "$(param page)" in
 	servers)  page_servers ;;
+	awg)      page_awg ;;
+	mieru)    page_mieru ;;
+	naive)    page_naive ;;
 	server)   page_server ;;
 	bridges)  page_bridges ;;
 	bridge)   page_bridge ;;

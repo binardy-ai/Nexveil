@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# Автозапуск клиентов NaiveProxy панели после перезагрузки роутера.
+START=97
+STOP=11
+
+start() {
+	[ -x /usr/lib/xraypanel/naive.sh ] || return 0
+	/usr/lib/xraypanel/naive.sh sync >>/etc/xraypanel/naive.log 2>&1
+	return 0
+}
+
+reload() {
+	start
+	return 0
+}
+
+stop() {
+	[ -x /usr/lib/xraypanel/naive.sh ] || return 0
+	/usr/lib/xraypanel/naive.sh stop-all >>/etc/xraypanel/naive.log 2>&1
+	return 0
+}

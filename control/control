@@ -1,5 +1,5 @@
 Package: xraypanel
-Version: 0.67.28
+Version: 0.67.40
 Depends: uhttpd
 Source: local
 SourceName: xraypanel
@@ -9,7 +9,7 @@ Architecture: all
 Installed-Size: 165
 Maintainer: local
 Description: Nexveil — панель Xray-прокси для роутеров OpenWrt/ImmortalWrt (прокси, DNS, маршруты, реверс-мосты).
- Умеет: серверы (VLESS/Reality, Shadowsocks, Hysteria 2, AmneziaWG),
+ Умеет: серверы (VLESS/Reality, Shadowsocks, Hysteria 2, AmneziaWG, Mieru, NaiveProxy),
  реверс-мосты (обратные туннели),
  правила маршрутизации, проверку задержки серверов и выбор основного,
  применение конфига с проверкой и откатом.
