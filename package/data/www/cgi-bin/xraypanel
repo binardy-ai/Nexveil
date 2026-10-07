@@ -2736,11 +2736,32 @@ window.__toast = function (msg, bad) {
 							if (window.__syncDnsOwn) window.__syncDnsOwn();
 							if (window.__renderDnsPreview) window.__renderDnsPreview();
 							if (window.__valueChipsRefresh) window.__valueChipsRefresh();
+							/* Кнопку «применить конфиг» в шапке тоже приводим к
+							   тому виду, что на свежей странице: если изменения
+							   уже применены (фоновая задача дописала конфиг),
+							   она должна спрятаться сама, без перезагрузки. */
+							var freshApply = doc.querySelector('button.apply-btn');
+							if (freshApply && window.setApplyButtons) {
+								window.setApplyButtons(/\bdone\b/.test(freshApply.className || ''));
+							}
 						})
 						.catch(function () {});
 				};
 				if (live.length) {
-					if (slow) setTimeout(refreshOnce, 3000); else refreshOnce();
+					if (slow) {
+						/* Включение, выключение и подтверждение прокси — долгие
+						   операции: панель ставит правила, применяет конфиг и
+						   перезапускает xray. Одного обновления через 3 секунды
+						   не хватало — страница показывала прежнее состояние, и
+						   кнопки «зависали» до перезагрузки. Теперь обновляем
+						   несколько раз, пока всё не успокоится. */
+						var _n = 0;
+						var _timer = setInterval(function () {
+							_n++;
+							refreshOnce();
+							if (_n >= 8) clearInterval(_timer);
+						}, 3000);
+					} else refreshOnce();
 				}
 			})
 			.catch(function () {})
