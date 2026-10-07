@@ -2020,9 +2020,13 @@ EOF
 	if [ -n "$_pend" ]; then
 		# кнопка применения в шапке: у неё свой класс, чтобы страница могла
 		# синхронизировать её состояние с кнопкой в карточке правил
-		printf '<span class="apply-hdr" style="margin-left:auto">'
-		apply_form "$(param page)"
-		printf '</span>'
+		# На странице «Прокси» она не нужна: там свои кнопки (включить,
+		# подтвердить, выключить), а конфиг применяется сам после нажатия.
+		if [ "$(param page)" != transparent ]; then
+			printf '<span class="apply-hdr" style="margin-left:auto">'
+			apply_form "$(param page)"
+			printf '</span>'
+		fi
 	fi
 	printf '</header><main>\n'
 	_msg=$(param msg)
@@ -2439,6 +2443,11 @@ window.__toast = function (msg, bad) {
 		/* надписи на кнопках берём из языка панели (см. window.__xpLbl) */
 		var L = window.__xpLbl || { apply: __t("T_apply_config_2"), done: __t("T_config_applied") };
 		Array.prototype.forEach.call(document.querySelectorAll('button.apply-btn'), function (b) {
+			/* Только кнопки «применить конфиг». У кнопок на странице «Прокси»
+			   («включить», «подтвердить») тот же класс для оформления, но есть
+			   свой name=action — их подписи и цвета менять нельзя, иначе они
+			   превращаются в одинаковые зелёные «конфиг применён». */
+			if (b.getAttribute('name')) return;
 			b.disabled = false;
 			b.textContent = ok ? L.done : L.apply;
 			b.className = b.className.replace(/\b(done|pending)\b/g, '').replace(/\s+/g, ' ').trim() + (ok ? ' done' : ' pending');
@@ -2736,13 +2745,29 @@ window.__toast = function (msg, bad) {
 							if (window.__syncDnsOwn) window.__syncDnsOwn();
 							if (window.__renderDnsPreview) window.__renderDnsPreview();
 							if (window.__valueChipsRefresh) window.__valueChipsRefresh();
-							/* Кнопку «применить конфиг» в шапке тоже приводим к
-							   тому виду, что на свежей странице: если изменения
-							   уже применены (фоновая задача дописала конфиг),
-							   она должна спрятаться сама, без перезагрузки. */
-							var freshApply = doc.querySelector('button.apply-btn');
-							if (freshApply && window.setApplyButtons) {
-								window.setApplyButtons(/\bdone\b/.test(freshApply.className || ''));
+							/* Кнопку «применить конфиг» в шапке приводим к тому
+							   виду, что на свежей странице: если фоновое
+							   применение уже прошло, она должна спрятаться сама,
+							   без перезагрузки страницы.
+							   Важно: трогаем ТОЛЬКО кнопку внутри шапки
+							   (.apply-hdr). На странице «Прокси» свои кнопки
+							   («включить», «подтвердить») носят тот же класс
+							   apply-btn для оформления — их подписи и цвета
+							   менять нельзя. */
+							var freshHdr = doc.querySelector('.apply-hdr');
+							var curHdr = document.querySelector('.apply-hdr');
+							if (curHdr) {
+								if (!freshHdr) {
+									curHdr.style.display = 'none';
+								} else {
+									curHdr.style.display = '';
+									var fb = freshHdr.querySelector('button');
+									var cb = curHdr.querySelector('button');
+									if (fb && cb) {
+										cb.textContent = fb.textContent;
+										cb.className = fb.className;
+									}
+								}
 							}
 						})
 						.catch(function () {});
